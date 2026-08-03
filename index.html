@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Klondike Solitaire</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="topbar">
+    <h1>Klondike</h1>
+    <div class="stats">
+      <span id="moves">Moves: 0</span>
+      <span id="timer">Time: 0:00</span>
+    </div>
+    <div class="controls">
+      <button id="drawModeBtn">Draw 3</button>
+      <button id="undoBtn">Undo</button>
+      <button id="newGameBtn">New Game</button>
+    </div>
+  </header>
+
+  <main id="board">
+    <div id="top-row">
+      <div id="stock-waste">
+        <div class="pile" id="stock" data-pile="stock"></div>
+        <div class="pile" id="waste" data-pile="waste"></div>
+      </div>
+      <div id="foundations">
+        <div class="pile foundation" id="foundation-0" data-pile="foundation" data-index="0"></div>
+        <div class="pile foundation" id="foundation-1" data-pile="foundation" data-index="1"></div>
+        <div class="pile foundation" id="foundation-2" data-pile="foundation" data-index="2"></div>
+        <div class="pile foundation" id="foundation-3" data-pile="foundation" data-index="3"></div>
+      </div>
+    </div>
+
+    <div id="tableau">
+      <div class="pile column" id="tableau-0" data-pile="tableau" data-index="0"></div>
+      <div class="pile column" id="tableau-1" data-pile="tableau" data-index="1"></div>
+      <div class="pile column" id="tableau-2" data-pile="tableau" data-index="2"></div>
+      <div class="pile column" id="tableau-3" data-pile="tableau" data-index="3"></div>
+      <div class="pile column" id="tableau-4" data-pile="tableau" data-index="4"></div>
+      <div class="pile column" id="tableau-5" data-pile="tableau" data-index="5"></div>
+      <div class="pile column" id="tableau-6" data-pile="tableau" data-index="6"></div>
+    </div>
+  </main>
+
+  <div id="win-overlay" class="hidden">
+    <div id="win-card">
+      <h2>You win!</h2>
+      <p id="win-stats"></p>
+      <button id="winNewGameBtn">Play again</button>
+    </div>
+  </div>
+
+  <div id="drag-layer"></div>
+
+  <script src="script.js"></script>
+</body>
+</html>

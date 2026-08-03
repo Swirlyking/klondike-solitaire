@@ -1,0 +1,208 @@
+:root {
+  --card-w: 84px;
+  --card-h: 122px;
+  --cascade: 26px;
+  --felt: #0b5d3b;
+  --felt-dark: #084a2f;
+  --gold: #d9b45c;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: radial-gradient(ellipse at top, var(--felt), var(--felt-dark));
+  color: #eee;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  overflow-x: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 10px 20px;
+  background: rgba(0,0,0,0.25);
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  flex-wrap: wrap;
+}
+
+#topbar h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.04em;
+  color: var(--gold);
+  margin-right: auto;
+}
+
+.stats {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+  color: #cde;
+  font-variant-numeric: tabular-nums;
+}
+
+.controls {
+  display: flex;
+  gap: 8px;
+}
+
+.controls button {
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: #eee;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.controls button:hover { background: rgba(255,255,255,0.18); }
+.controls button:disabled { opacity: 0.4; cursor: default; }
+
+#board {
+  padding: 24px 28px 60px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+#top-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 34px;
+}
+
+#stock-waste, #foundations, #tableau {
+  display: flex;
+  gap: 14px;
+}
+
+.pile {
+  position: relative;
+  width: var(--card-w);
+  height: var(--card-h);
+  border-radius: 8px;
+  border: 1.5px solid rgba(255,255,255,0.18);
+  background: rgba(0,0,0,0.12);
+}
+
+.foundation::before {
+  content: attr(data-suit-glyph);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  color: rgba(255,255,255,0.12);
+  pointer-events: none;
+}
+
+.column {
+  min-height: 420px;
+  border: none;
+  background: rgba(0,0,0,0.10);
+  border-radius: 8px;
+}
+
+#tableau { align-items: flex-start; }
+
+.card {
+  position: absolute;
+  top: 0; left: 0;
+  width: var(--card-w);
+  height: var(--card-h);
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.4);
+  transition: box-shadow 0.15s;
+  cursor: grab;
+}
+
+.card.dragging {
+  cursor: grabbing;
+  box-shadow: 0 12px 24px rgba(0,0,0,0.55);
+  z-index: 500;
+}
+
+.card img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.card.face-up {
+  background: #fbf7ee;
+  border: 1px solid rgba(0,0,0,0.15);
+}
+
+.card.face-down {
+  border: 1px solid rgba(0,0,0,0.25);
+  cursor: default;
+}
+
+.card.not-draggable { cursor: default; }
+
+.empty-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255,255,255,0.35);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+#drag-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1000;
+}
+
+#win-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+#win-overlay.hidden { display: none; }
+
+#win-card {
+  background: #133;
+  border: 1px solid var(--gold);
+  border-radius: 12px;
+  padding: 32px 40px;
+  text-align: center;
+}
+#win-card h2 { color: var(--gold); margin: 0 0 8px; }
+#win-card button {
+  margin-top: 16px;
+  background: var(--gold);
+  border: none;
+  color: #222;
+  font-weight: 600;
+  padding: 8px 18px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  :root { --card-w: 42px; --card-h: 60px; --cascade: 16px; }
+  #board { padding: 12px; }
+  .card-corner { font-size: 9px; width: 12px; }
+  .card-corner .suit { font-size: 8px; }
+  .card-center { font-size: 18px; }
+  #top-row { margin-bottom: 20px; }
+  .column { min-height: 260px; }
+}
