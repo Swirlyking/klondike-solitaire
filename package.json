@@ -1,0 +1,8 @@
+{
+  "name": "klondike-solitaire",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

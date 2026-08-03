@@ -1,9 +1,19 @@
+import {
+  canPlaceOnFoundation,
+  anyFoundationFor,
+  canPlaceOnTableau,
+  getStackFrom,
+  resolveClickDestination,
+  applyMove,
+  cloneState,
+} from './game-logic.js';
+
 (() => {
   const SUITS = [
-    { key: 'hearts', file: 'heart', glyph: '♥', color: 'red' },
-    { key: 'diamonds', file: 'diamond', glyph: '♦', color: 'red' },
-    { key: 'clubs', file: 'club', glyph: '♣', color: 'black' },
-    { key: 'spades', file: 'spade', glyph: '♠', color: 'black' },
+    { key: 'hearts', file: 'heart', color: 'red' },
+    { key: 'diamonds', file: 'diamond', color: 'red' },
+    { key: 'clubs', file: 'club', color: 'black' },
+    { key: 'spades', file: 'spade', color: 'black' },
   ];
   const RANK_LABELS = ['', 'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
   const RANK_FILES = ['', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'jack', 'queen', 'king'];
@@ -14,6 +24,21 @@
     return `assets/cards/${suit.file}_${RANK_FILES[card.rank]}.png`;
   }
 
+  // Animation tuning.
+  const DROP_MS = 100;
+  const ROTATE_MS = 90;
+  const MAX_ROTATE_DEG = 1.6;
+  const ROTATE_VELOCITY_PX_MS = 1.6; // pointer speed (px/ms) that reaches MAX_ROTATE_DEG
+  const FLIP_MS = 220;
+  const DEAL_STAGGER_MS = 70; // per-card delay when dealing more than one, so a 3-draw visibly cascades
+  const DRAG_THRESHOLD_PX = 4; // pointer movement below this counts as a click, not a drag
+  const CLICK_LIFT_MS = 50; // brief lift before a click-move starts gliding
+  const CLICK_MOVE_MS = 140; // click-move glide duration (+ CLICK_LIFT_MS ≈ 190ms total)
+
+  function getCascade() {
+    return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cascade'));
+  }
+
   let state = null;
   let drawCount = 1;
   let history = [];
@@ -21,6 +46,15 @@
   let startTime = null;
   let timerHandle = null;
   let won = false;
+
+  // Remembers, per tableau card/sequence, which column a click-cycle last
+  // sent it to — so the next click on the same card advances to the next
+  // legal destination instead of restarting at the leftmost. Cleared by
+  // any other state change (see resetTableauClickMemory call sites).
+  let tableauClickMemory = null;
+  function resetTableauClickMemory() {
+    tableauClickMemory = null;
+  }
 
   const boardEl = document.getElementById('board');
   const movesEl = document.getElementById('moves');
@@ -52,6 +86,9 @@
   }
 
   function newGame() {
+    cancelActiveDrag();
+    clearGhosts();
+    resetTableauClickMemory();
     const deck = shuffle(freshDeck());
     const tableau = [[], [], [], [], [], [], []];
     let idx = 0;
@@ -78,10 +115,6 @@
     render();
   }
 
-  function cloneState(s) {
-    return JSON.parse(JSON.stringify(s));
-  }
-
   function pushHistory() {
     history.push(cloneState(state));
     if (history.length > 200) history.shift();
@@ -89,6 +122,9 @@
 
   function undo() {
     if (!history.length) return;
+    cancelActiveDrag();
+    clearGhosts();
+    resetTableauClickMemory();
     state = history.pop();
     moveCount = Math.max(0, moveCount - 1);
     updateMoves();
@@ -164,8 +200,7 @@
       cardEl.style.left = `${(i - visibleStart) * 16}px`;
       cardEl.style.zIndex = i;
       if (i === n - 1) {
-        attachDrag(cardEl, card, 'waste', null);
-        cardEl.ondblclick = () => tryAutoToFoundation(card, 'waste', null);
+        attachCardInteractions(cardEl, card, 'waste', null);
       } else {
         cardEl.classList.add('not-draggable');
       }
@@ -176,12 +211,12 @@
   function renderFoundation(i) {
     const el = document.getElementById(`foundation-${i}`);
     el.innerHTML = '';
-    el.dataset.suitGlyph = SUITS[i].glyph;
+    el.dataset.placeholder = 'A'; // any Ace may start any slot — no suit is pinned to a position
     const pile = state.foundations[i];
     if (pile.length) {
       const card = pile[pile.length - 1];
       const cardEl = makeCardEl(card, true);
-      attachDrag(cardEl, card, 'foundation', i);
+      attachCardInteractions(cardEl, card, 'foundation', i);
       el.appendChild(cardEl);
     }
   }
@@ -190,16 +225,13 @@
     const el = document.getElementById(`tableau-${i}`);
     el.innerHTML = '';
     const col = state.tableau[i];
-    const cascade = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cascade'));
+    const cascade = getCascade();
     col.forEach((card, idx) => {
       const cardEl = makeCardEl(card, card.faceUp);
       cardEl.style.top = `${idx * cascade}px`;
       cardEl.style.zIndex = idx;
       if (card.faceUp) {
-        attachDrag(cardEl, card, 'tableau', i);
-        if (idx === col.length - 1) {
-          cardEl.ondblclick = () => tryAutoToFoundation(card, 'tableau', i);
-        }
+        attachCardInteractions(cardEl, card, 'tableau', i);
       } else {
         cardEl.classList.add('not-draggable');
       }
@@ -208,42 +240,91 @@
   }
 
   // ---------- game rules ----------
+  // canPlaceOnFoundation, anyFoundationFor, canPlaceOnTableau, getStackFrom,
+  // resolveClickDestination, and applyMove all live in game-logic.js so
+  // they're testable without a DOM.
 
-  function canPlaceOnFoundation(card, foundationIndex) {
-    const pile = state.foundations[foundationIndex];
-    if (SUITS[foundationIndex].key !== card.suit) return false;
-    if (!pile.length) return card.rank === 1;
-    return pile[pile.length - 1].rank === card.rank - 1;
+  function createFlipGhost(card, rect, zIndex) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'flip-ghost';
+    wrapper.style.left = `${rect.left}px`;
+    wrapper.style.top = `${rect.top}px`;
+    wrapper.style.width = `${rect.width}px`;
+    wrapper.style.height = `${rect.height}px`;
+    wrapper.style.zIndex = zIndex;
+
+    const inner = document.createElement('div');
+    inner.className = 'flip-inner';
+
+    const front = document.createElement('div');
+    front.className = 'flip-face flip-front';
+    const frontImg = document.createElement('img');
+    frontImg.src = CARD_BACK_SRC;
+    frontImg.alt = 'face-down card';
+    front.appendChild(frontImg);
+
+    const back = document.createElement('div');
+    back.className = 'flip-face flip-back';
+    const backImg = document.createElement('img');
+    backImg.src = cardImageSrc(card);
+    backImg.alt = `${RANK_LABELS[card.rank]} of ${card.suit}`;
+    back.appendChild(backImg);
+
+    inner.appendChild(front);
+    inner.appendChild(back);
+    wrapper.appendChild(inner);
+    document.getElementById('drag-layer').appendChild(wrapper);
+    return { wrapper, inner };
   }
 
-  function anyFoundationFor(card) {
-    for (let i = 0; i < 4; i++) {
-      if (canPlaceOnFoundation(card, i)) return i;
-    }
-    return -1;
-  }
+  // Deals cards from the stock rect to wherever they actually landed in the
+  // waste fan, flipping face-down to face-up in flight. Each card is
+  // staggered slightly so a 3-card draw reads as dealt, not dumped.
+  function animateDraw(cards, originRect) {
+    cards.forEach((card, i) => {
+      const el = document.querySelector(`.card[data-id="${card.id}"]`);
+      if (!el) return; // covered by a later card in the same draw; nothing to animate
+      const destRect = el.getBoundingClientRect();
+      el.style.visibility = 'hidden';
 
-  function canPlaceOnTableau(card, colIndex) {
-    const col = state.tableau[colIndex];
-    if (!col.length) return card.rank === 13;
-    const top = col[col.length - 1];
-    if (!top.faceUp) return false;
-    return top.color !== card.color && top.rank === card.rank + 1;
+      const { wrapper, inner } = createFlipGhost(card, originRect, 1000 + i);
+      const delay = i * DEAL_STAGGER_MS;
+
+      setTimeout(() => {
+        // Double rAF so the un-flipped, un-translated start state paints
+        // before the transition target changes.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          wrapper.style.translate = `${destRect.left - originRect.left}px ${destRect.top - originRect.top}px`;
+          inner.classList.add('flipped');
+        }));
+      }, delay);
+
+      setTimeout(() => {
+        wrapper.remove();
+        el.style.visibility = '';
+      }, delay + FLIP_MS + 60);
+    });
   }
 
   function onStockClick() {
     if (state.stock.length) {
+      const stockRect = document.getElementById('stock').getBoundingClientRect();
+      resetTableauClickMemory();
       pushHistory();
       const n = Math.min(drawCount, state.stock.length);
+      const drawn = [];
       for (let i = 0; i < n; i++) {
         const card = state.stock.pop();
         card.faceUp = true;
         state.waste.push(card);
+        drawn.push(card);
       }
       moveCount++;
       updateMoves();
       render();
+      animateDraw(drawn, stockRect);
     } else if (state.waste.length) {
+      resetTableauClickMemory();
       pushHistory();
       while (state.waste.length) {
         const card = state.waste.pop();
@@ -256,58 +337,85 @@
     }
   }
 
-  function flipNewTopIfNeeded(colIndex) {
-    const col = state.tableau[colIndex];
-    if (col.length && !col[col.length - 1].faceUp) {
-      col[col.length - 1].faceUp = true;
-    }
-  }
-
-  function removeFromSource(source, sourceIndex, card) {
-    if (source === 'waste') {
-      state.waste.pop();
-    } else if (source === 'foundation') {
-      state.foundations[sourceIndex].pop();
-    } else if (source === 'tableau') {
-      const col = state.tableau[sourceIndex];
-      const idx = col.findIndex(c => c.id === card.id);
-      const removed = col.splice(idx);
-      flipNewTopIfNeeded(sourceIndex);
-      return removed;
-    }
-    return [card];
-  }
-
-  function tryAutoToFoundation(card, source, sourceIndex) {
-    const fi = anyFoundationFor(card);
-    if (fi === -1) return;
+  // Mutates state + re-renders immediately, regardless of how long the
+  // matching ghost animation takes. Keeping game state synchronous means
+  // the next interaction is never blocked waiting on an in-flight
+  // animation to finish.
+  function commitMove(cards, source, sourceIndex, target, targetIndex) {
+    resetTableauClickMemory();
     pushHistory();
-    removeFromSource(source, sourceIndex, card);
-    state.foundations[fi].push(card);
+    applyMove(state, cards, source, sourceIndex, target, targetIndex);
     moveCount++;
     updateMoves();
     render();
   }
 
-  function attemptMove(cards, source, sourceIndex, target, targetIndex) {
-    const card = cards[0];
+  function isValidDropTarget(pileEl, stack, source, sourceIndex) {
+    if (!pileEl) return false;
+    const target = pileEl.dataset.pile;
+    const targetIndex = pileEl.dataset.index !== undefined ? parseInt(pileEl.dataset.index, 10) : null;
     if (target === 'foundation') {
-      if (cards.length !== 1 || !canPlaceOnFoundation(card, targetIndex)) return false;
-      pushHistory();
-      removeFromSource(source, sourceIndex, card);
-      state.foundations[targetIndex].push(card);
-    } else if (target === 'tableau') {
-      if (!canPlaceOnTableau(card, targetIndex)) return false;
-      if (source === 'tableau' && sourceIndex === targetIndex) return false;
-      pushHistory();
-      removeFromSource(source, sourceIndex, card);
-      state.tableau[targetIndex].push(...cards);
-    } else {
-      return false;
+      return stack.length === 1 && canPlaceOnFoundation(state, stack[0], targetIndex);
     }
-    moveCount++;
-    updateMoves();
-    return true;
+    if (target === 'tableau') {
+      if (source === 'tableau' && sourceIndex === targetIndex) return false;
+      return canPlaceOnTableau(state, stack[0], targetIndex);
+    }
+    return false;
+  }
+
+  function computeDestRects(target, targetIndex, count) {
+    if (target === 'foundation') {
+      return [document.getElementById(`foundation-${targetIndex}`).getBoundingClientRect()];
+    }
+    const colRect = document.getElementById(`tableau-${targetIndex}`).getBoundingClientRect();
+    const cascade = getCascade();
+    const startIndex = state.tableau[targetIndex].length;
+    const rects = [];
+    for (let i = 0; i < count; i++) {
+      rects.push({ left: colRect.left, top: colRect.top + (startIndex + i) * cascade });
+    }
+    return rects;
+  }
+
+  // Click-to-move: a single click on a movable exposed card sends it to its
+  // next legal destination (see resolveClickDestination in game-logic.js
+  // for the exact priority order). Reuses the same ghost/glide machinery as
+  // drag-and-drop so the motion reads identically either way.
+  function tryClickMove(card, source, sourceIndex) {
+    if (dragCtx) return;
+    const stack = getStackFrom(state, source, sourceIndex, card);
+    if (!stack.length) return;
+    const lead = stack[0];
+    const lastTableauDest = source === 'tableau' && tableauClickMemory && tableauClickMemory.cardId === lead.id
+      ? tableauClickMemory.destIndex
+      : null;
+    const dest = resolveClickDestination(state, lead, source, sourceIndex, stack.length, lastTableauDest);
+    if (!dest) return;
+    executeClickMove(stack, source, sourceIndex, dest.type, dest.index);
+  }
+
+  function executeClickMove(stack, source, sourceIndex, target, targetIndex) {
+    const originEls = stack.map(c => document.querySelector(`.card[data-id="${c.id}"]`)).filter(Boolean);
+    if (originEls.length !== stack.length) return; // DOM out of sync with state; bail rather than animate garbage
+    const originRects = originEls.map(el => el.getBoundingClientRect());
+    originEls.forEach(el => { el.style.visibility = 'hidden'; });
+
+    const ghosts = createGhostStack(stack, originRects);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      ghosts.visuals.forEach(v => v.classList.add('lifted'));
+    }));
+
+    const destRects = computeDestRects(target, targetIndex, stack.length);
+    commitMove(stack, source, sourceIndex, target, targetIndex); // clears tableauClickMemory — re-set below if this continues a cycle
+    if (source === 'tableau' && target === 'tableau') {
+      tableauClickMemory = { cardId: stack[0].id, destIndex: targetIndex };
+    }
+    const revealDest = hideDestElements(stack);
+
+    setTimeout(() => {
+      glideGhostsTo(ghosts, originRects, destRects, CLICK_MOVE_MS, target === 'foundation', revealDest);
+    }, CLICK_LIFT_MS);
   }
 
   function checkWin() {
@@ -324,22 +432,111 @@
 
   let dragCtx = null;
 
-  function attachDrag(cardEl, card, source, sourceIndex) {
-    cardEl.addEventListener('pointerdown', (e) => startDrag(e, card, source, sourceIndex));
+  // Click-to-move is driven entirely by the pointer lifecycle below (see
+  // onDragEnd's "not moved" branch) rather than a separate native `click`
+  // listener. A native click after a preventDefault()-ed pointerdown is
+  // reliable on desktop, but that exact sequence is a known source of
+  // cross-browser/touch inconsistency — deriving "was this a tap" from our
+  // own pointerdown/pointerup pair sidesteps it entirely and behaves
+  // identically for mouse, trackpad, and touch.
+  function attachCardInteractions(cardEl, card, source, sourceIndex) {
+    cardEl.addEventListener('pointerdown', (e) => startDrag(e, card, source, sourceIndex), { passive: false });
   }
 
-  function getStackFrom(source, sourceIndex, card) {
-    if (source === 'tableau') {
-      const col = state.tableau[sourceIndex];
-      const idx = col.findIndex(c => c.id === card.id);
-      return col.slice(idx);
-    }
-    return [card];
+  function createGhostStack(cards, rects) {
+    const dragLayer = document.getElementById('drag-layer');
+    const wrappers = [];
+    const visuals = [];
+    cards.forEach((c, i) => {
+      const rect = rects[i];
+      const wrapper = document.createElement('div');
+      wrapper.className = 'drag-ghost';
+      wrapper.style.left = `${rect.left}px`;
+      wrapper.style.top = `${rect.top}px`;
+      wrapper.style.width = `${rect.width}px`;
+      wrapper.style.height = `${rect.height}px`;
+      wrapper.style.zIndex = 1000 + i;
+      const visual = makeCardEl(c, true);
+      visual.classList.add('drag-visual');
+      wrapper.appendChild(visual);
+      dragLayer.appendChild(wrapper);
+      wrappers.push(wrapper);
+      visuals.push(visual);
+    });
+    return { wrappers, visuals };
+  }
+
+  // Glides ghosts from baseRects to destRects (position), while easing
+  // their visual lift/scale/rotate back to rest. Foundation landings use
+  // a slight overshoot easing on the visual only — never on the flight
+  // path itself, so the trajectory stays clean.
+  function glideGhostsTo(ghosts, baseRects, destRects, ms, isFoundationDrop, onDone) {
+    const { wrappers, visuals } = ghosts;
+    const settleEase = isFoundationDrop ? 'var(--ease-bounce)' : 'var(--ease-out-smooth)';
+    wrappers.forEach((wrapper, i) => {
+      wrapper.style.transition = `translate ${ms}ms var(--ease-out-smooth)`;
+      wrapper.style.translate = `${destRects[i].left - baseRects[i].left}px ${destRects[i].top - baseRects[i].top}px`;
+    });
+    visuals.forEach(visual => {
+      visual.style.transition = `translate ${ms}ms ${settleEase}, scale ${ms}ms ${settleEase}, rotate ${ROTATE_MS}ms ease-out`;
+      visual.classList.remove('lifted');
+      visual.style.rotate = '0deg';
+    });
+    setTimeout(() => {
+      wrappers.forEach(w => w.remove());
+      if (onDone) onDone();
+    }, ms + 30);
+  }
+
+  // commitMove's render() paints the real cards at their destination
+  // immediately, before the matching ghost has finished flying there —
+  // without this, both are visible at once and it reads as two cards.
+  // Hides the just-rendered destination elements; call the returned
+  // function once the ghost covering them is gone.
+  function hideDestElements(cards) {
+    const els = cards.map(c => document.querySelector(`.card[data-id="${c.id}"]`)).filter(Boolean);
+    els.forEach(el => { el.style.visibility = 'hidden'; });
+    return () => { els.forEach(el => { el.style.visibility = ''; }); };
+  }
+
+  function clearGhosts() {
+    document.getElementById('drag-layer').innerHTML = '';
+  }
+
+  function removeDragListeners() {
+    window.removeEventListener('pointermove', onDragMove);
+    window.removeEventListener('pointerup', onDragEnd);
+    window.removeEventListener('pointercancel', onDragCancel);
+  }
+
+  function cancelActiveDrag() {
+    if (!dragCtx) return;
+    removeDragListeners();
+    if (dragCtx.hoverTarget) dragCtx.hoverTarget.classList.remove('drop-target-active');
+    dragCtx = null;
+  }
+
+  // The browser fires this instead of pointerup when it takes the gesture
+  // away from us (e.g. iOS deciding — despite touch-action — that this is
+  // a system gesture) or the interaction is otherwise interrupted. Without
+  // handling it, dragCtx would stay stuck forever and, since startDrag
+  // bails out whenever dragCtx is already set, silently break every future
+  // tap and drag until a reload.
+  function onDragCancel(e) {
+    if (dragCtx && dragCtx.pointerId !== e.pointerId) return;
+    removeDragListeners();
+    if (!dragCtx) return;
+    const { ghosts, originEls, hoverTarget, moved } = dragCtx;
+    dragCtx = null;
+    if (hoverTarget) hoverTarget.classList.remove('drop-target-active');
+    ghosts.wrappers.forEach(w => w.remove());
+    if (moved) originEls.forEach(el => { el.style.visibility = ''; }); // unmoved: origin was never hidden
   }
 
   function startDrag(e, card, source, sourceIndex) {
+    if (dragCtx) return;
     if (e.button !== undefined && e.button !== 0) return;
-    const stack = getStackFrom(source, sourceIndex, card);
+    const stack = getStackFrom(state, source, sourceIndex, card);
     if (!stack.length) return;
 
     const originContainer = e.currentTarget.parentElement;
@@ -347,46 +544,82 @@
     if (!originEls.length) return;
 
     e.preventDefault();
-    const rects = originEls.map(el => el.getBoundingClientRect());
-    const dragLayer = document.getElementById('drag-layer');
+    const originRects = originEls.map(el => el.getBoundingClientRect());
 
-    const ghosts = stack.map((c, i) => {
-      const ghost = makeCardEl(c, true);
-      ghost.classList.add('dragging');
-      ghost.style.position = 'fixed';
-      ghost.style.left = `${rects[i].left}px`;
-      ghost.style.top = `${rects[i].top}px`;
-      ghost.style.width = `${rects[0].width}px`;
-      ghost.style.height = `${rects[0].height}px`;
-      ghost.style.zIndex = 1000 + i;
-      dragLayer.appendChild(ghost);
-      return ghost;
-    });
-
-    originEls.forEach(el => { el.style.visibility = 'hidden'; });
+    const ghosts = createGhostStack(stack, originRects);
 
     dragCtx = {
-      stack, source, sourceIndex, ghosts,
-      startX: e.clientX, startY: e.clientY,
-      baseLeft: rects[0].left, baseTop: rects[0].top,
-      originEls,
+      stack, source, sourceIndex, ghosts, originEls, originRects,
       pointerId: e.pointerId,
+      startX: e.clientX, startY: e.clientY,
+      latestX: e.clientX, latestY: e.clientY,
+      lastX: e.clientX, lastT: performance.now(),
+      rafPending: false,
+      hoverTarget: null,
+      moved: false,
     };
 
-    window.addEventListener('pointermove', onDragMove);
+    window.addEventListener('pointermove', onDragMove, { passive: false });
     window.addEventListener('pointerup', onDragEnd);
+    window.addEventListener('pointercancel', onDragCancel);
   }
 
   function onDragMove(e) {
+    if (!dragCtx || e.pointerId !== dragCtx.pointerId) return;
+    // Belt-and-suspenders alongside touch-action: none — keeps Safari from
+    // ever starting a page scroll/pan mid-drag.
+    e.preventDefault();
+    dragCtx.latestX = e.clientX;
+    dragCtx.latestY = e.clientY;
+    if (!dragCtx.rafPending) {
+      dragCtx.rafPending = true;
+      requestAnimationFrame(processDragFrame);
+    }
+  }
+
+  // Coalesces potentially many pointermove events into one update per
+  // display frame: position tracking, velocity-based rotation, and
+  // drop-target hover detection all happen here, together.
+  function processDragFrame() {
     if (!dragCtx) return;
-    const dx = e.clientX - dragCtx.startX;
-    const dy = e.clientY - dragCtx.startY;
-    dragCtx.ghosts.forEach((ghost, i) => {
-      ghost.style.left = `${dragCtx.baseLeft + dx}px`;
-      ghost.style.top = `${dragCtx.baseTop + dy + i * 26}px`;
-    });
-    dragCtx.lastX = e.clientX;
-    dragCtx.lastY = e.clientY;
+    dragCtx.rafPending = false;
+    const { latestX, latestY, startX, startY, ghosts, stack, source, sourceIndex } = dragCtx;
+
+    // A plain tap/click never fires pointermove, so this only runs once
+    // real dragging starts — meaning a tap never hides the original card
+    // or shows the ghost. The distance gate below additionally absorbs
+    // incidental jitter during a tap, so a near-motionless press+release
+    // still resolves as a click-move rather than a micro-drag.
+    if (!dragCtx.moved) {
+      const dist = Math.hypot(latestX - startX, latestY - startY);
+      if (dist < DRAG_THRESHOLD_PX) return;
+      dragCtx.moved = true;
+      dragCtx.originEls.forEach(el => { el.style.visibility = 'hidden'; });
+      ghosts.visuals.forEach(v => v.classList.add('lifted'));
+    }
+
+    const dx = latestX - startX;
+    const dy = latestY - startY;
+    ghosts.wrappers.forEach(w => { w.style.translate = `${dx}px ${dy}px`; });
+
+    const now = performance.now();
+    const dt = now - dragCtx.lastT;
+    if (dt > 0) {
+      const vx = (latestX - dragCtx.lastX) / dt;
+      const angle = Math.max(-MAX_ROTATE_DEG, Math.min(MAX_ROTATE_DEG, (vx / ROTATE_VELOCITY_PX_MS) * MAX_ROTATE_DEG));
+      ghosts.visuals.forEach(v => { v.style.rotate = `${angle}deg`; });
+      dragCtx.lastX = latestX;
+      dragCtx.lastT = now;
+    }
+
+    const pileEl = pileContainerAt(latestX, latestY);
+    const valid = isValidDropTarget(pileEl, stack, source, sourceIndex);
+    const newTarget = valid ? pileEl : null;
+    if (newTarget !== dragCtx.hoverTarget) {
+      if (dragCtx.hoverTarget) dragCtx.hoverTarget.classList.remove('drop-target-active');
+      if (newTarget) newTarget.classList.add('drop-target-active');
+      dragCtx.hoverTarget = newTarget;
+    }
   }
 
   function pileContainerAt(x, y) {
@@ -403,29 +636,36 @@
   }
 
   function onDragEnd(e) {
-    window.removeEventListener('pointermove', onDragMove);
-    window.removeEventListener('pointerup', onDragEnd);
+    if (dragCtx && dragCtx.pointerId !== e.pointerId) return;
+    removeDragListeners();
     if (!dragCtx) return;
-    const { stack, source, sourceIndex, ghosts, originEls } = dragCtx;
-    const x = e.clientX, y = e.clientY;
+    const { stack, source, sourceIndex, ghosts, originRects, originEls, hoverTarget, moved } = dragCtx;
+    dragCtx = null;
 
-    ghosts.forEach(g => g.remove());
-
-    const targetEl = pileContainerAt(x, y);
-    let moved = false;
-    if (targetEl) {
-      const target = targetEl.dataset.pile;
-      const targetIndex = targetEl.dataset.index !== undefined ? parseInt(targetEl.dataset.index, 10) : null;
-      if (target === 'foundation' || target === 'tableau') {
-        moved = attemptMove(stack, source, sourceIndex, target, targetIndex);
-      }
+    if (!moved) {
+      // Never crossed the drag threshold: a tap/click, not a drag. The
+      // ghost never became visible (still exactly overlapping the
+      // untouched original), so just discard it and hand off to
+      // click-to-move directly — no native click event involved.
+      ghosts.wrappers.forEach(w => w.remove());
+      tryClickMove(stack[0], source, sourceIndex);
+      return;
     }
 
-    dragCtx = null;
-    if (moved) {
-      render();
+    if (hoverTarget) hoverTarget.classList.remove('drop-target-active');
+    const pileEl = pileContainerAt(e.clientX, e.clientY);
+    const valid = isValidDropTarget(pileEl, stack, source, sourceIndex);
+
+    if (valid) {
+      const target = pileEl.dataset.pile;
+      const targetIndex = parseInt(pileEl.dataset.index, 10);
+      const destRects = computeDestRects(target, targetIndex, stack.length);
+      commitMove(stack, source, sourceIndex, target, targetIndex);
+      const revealDest = hideDestElements(stack);
+      glideGhostsTo(ghosts, originRects, destRects, DROP_MS, target === 'foundation', revealDest);
     } else {
       originEls.forEach(el => { el.style.visibility = ''; });
+      glideGhostsTo(ghosts, originRects, originRects, DROP_MS, false);
     }
   }
 

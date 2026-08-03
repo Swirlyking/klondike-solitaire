@@ -5,6 +5,8 @@
   --felt: #0b5d3b;
   --felt-dark: #084a2f;
   --gold: #d9b45c;
+  --ease-out-smooth: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 * { box-sizing: border-box; }
@@ -18,6 +20,7 @@ html, body {
   overflow-x: hidden;
   user-select: none;
   -webkit-user-select: none;
+  overscroll-behavior: none;
 }
 
 #topbar {
@@ -89,10 +92,19 @@ html, body {
   border-radius: 8px;
   border: 1.5px solid rgba(255,255,255,0.18);
   background: rgba(0,0,0,0.12);
+  scale: 1;
+  transition: filter 150ms ease-out, box-shadow 150ms ease-out, scale 150ms ease-out;
+  touch-action: none; /* the pile itself is a tap target (stock) or drop target under an active drag */
+}
+
+.pile.drop-target-active {
+  filter: brightness(1.18);
+  box-shadow: 0 0 0 2px rgba(217, 180, 92, 0.55), 0 0 22px 4px rgba(217, 180, 92, 0.32);
+  scale: 1.01;
 }
 
 .foundation::before {
-  content: attr(data-suit-glyph);
+  content: attr(data-placeholder);
   position: absolute;
   inset: 0;
   display: flex;
@@ -119,14 +131,11 @@ html, body {
   height: var(--card-h);
   border-radius: 8px;
   box-shadow: 0 2px 5px rgba(0,0,0,0.4);
-  transition: box-shadow 0.15s;
   cursor: grab;
-}
-
-.card.dragging {
-  cursor: grabbing;
-  box-shadow: 0 12px 24px rgba(0,0,0,0.55);
-  z-index: 500;
+  /* Without this, iOS Safari can claim a press-and-move as a page scroll
+     before our pointermove handler ever gets a chance to preventDefault(). */
+  touch-action: none;
+  -webkit-touch-callout: none; /* suppress the long-press save/copy menu on the card image */
 }
 
 .card img {
@@ -135,6 +144,7 @@ html, body {
   height: 100%;
   border-radius: 8px;
   pointer-events: none;
+  -webkit-user-drag: none;
 }
 
 .card.face-up {
@@ -148,6 +158,94 @@ html, body {
 }
 
 .card.not-draggable { cursor: default; }
+
+/* Drag ghost: a positioning wrapper (instant, untransitioned — tracks the
+   cursor exactly) containing a visual layer (lift/scale/rotate/shadow,
+   transitioned independently). Keeping these on separate elements is what
+   lets the card follow the pointer with zero lag while the "lifted" feel
+   still eases in and out smoothly. */
+.drag-ghost {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  cursor: grabbing;
+}
+
+.drag-visual {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  translate: 0 0;
+  scale: 1;
+  rotate: 0deg;
+  transition:
+    translate 120ms var(--ease-out-smooth),
+    scale 120ms var(--ease-out-smooth),
+    rotate 90ms ease-out;
+}
+
+.drag-visual::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 10px;
+  box-shadow: 0 22px 40px rgba(0,0,0,0.5), 0 8px 16px rgba(0,0,0,0.35);
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out-smooth);
+}
+
+.drag-visual.lifted {
+  translate: 0 -7px;
+  scale: 1.02;
+}
+
+.drag-visual.lifted::after {
+  opacity: 1;
+}
+
+/* Dealing from the stock: a wrapper that glides stock → waste position,
+   containing a 3D flip that turns the card from back to face over the
+   same flight. Two faces, each hidden when facing away, so the turn
+   reveals the real front partway through rather than swapping instantly. */
+.flip-ghost {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  perspective: 800px;
+  translate: 0 0;
+  transition: translate 220ms var(--ease-out-smooth);
+}
+
+.flip-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 220ms ease-in-out;
+}
+
+.flip-inner.flipped {
+  transform: rotateY(180deg);
+}
+
+.flip-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.4);
+}
+
+.flip-face img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.flip-face.flip-back {
+  transform: rotateY(180deg);
+}
 
 .empty-hint {
   position: absolute;
@@ -200,9 +298,6 @@ html, body {
 @media (max-width: 720px) {
   :root { --card-w: 42px; --card-h: 60px; --cascade: 16px; }
   #board { padding: 12px; }
-  .card-corner { font-size: 9px; width: 12px; }
-  .card-corner .suit { font-size: 8px; }
-  .card-center { font-size: 18px; }
   #top-row { margin-bottom: 20px; }
   .column { min-height: 260px; }
 }
