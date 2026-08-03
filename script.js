@@ -61,7 +61,7 @@ import {
   }
 
   let state = null;
-  let drawCount = 1;
+  let drawCount = 3;
   let history = [];
   let moveCount = 0;
   let startTime = null;
