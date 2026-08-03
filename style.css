@@ -1,7 +1,12 @@
 :root {
   --card-w: 84px;
   --card-h: 122px;
-  --cascade: 26px;
+  /* How much of a tableau card peeks out before the next one covers it -
+     split by the covered card's own face, since a back only needs to show
+     its top border plus a sliver of the pattern, while a face needs enough
+     to read the corner's rank + the top of its suit pip. */
+  --cascade-down: 9px;
+  --cascade-up: 24px;
   --felt: #0b5d3b;
   --felt-dark: #084a2f;
   --gold: #d9b45c;
@@ -335,7 +340,7 @@ html, body {
 }
 
 @media (max-width: 720px) {
-  :root { --card-w: 42px; --card-h: 60px; --cascade: 16px; }
+  :root { --card-w: 42px; --card-h: 60px; --cascade-down: 5px; --cascade-up: 12px; }
   #board { padding: 12px; }
   #top-row { margin-bottom: 20px; }
   .column { min-height: 260px; }

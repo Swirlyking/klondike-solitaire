@@ -56,8 +56,15 @@ import {
   const CLICK_LIFT_MS = 50; // brief lift before a click-move starts gliding
   const CLICK_MOVE_MS = 140; // click-move glide duration (+ CLICK_LIFT_MS ≈ 190ms total)
 
-  function getCascade() {
-    return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cascade'));
+  // The gap after a tableau card depends on its own face - a back only
+  // needs to show a sliver of its top border, while a face needs enough
+  // exposed to read the corner's rank and the top of its suit pip.
+  function getCascadeDown() {
+    return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cascade-down'));
+  }
+
+  function getCascadeUp() {
+    return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cascade-up'));
   }
 
   let state = null;
@@ -247,10 +254,12 @@ import {
     const el = document.getElementById(`tableau-${i}`);
     el.innerHTML = '';
     const col = state.tableau[i];
-    const cascade = getCascade();
+    const cascadeDown = getCascadeDown();
+    const cascadeUp = getCascadeUp();
+    let top = 0;
     col.forEach((card, idx) => {
       const cardEl = makeCardEl(card, card.faceUp);
-      cardEl.style.top = `${idx * cascade}px`;
+      cardEl.style.top = `${top}px`;
       cardEl.style.zIndex = idx;
       if (card.faceUp) {
         attachCardInteractions(cardEl, card, 'tableau', i);
@@ -258,6 +267,10 @@ import {
         cardEl.classList.add('not-draggable');
       }
       el.appendChild(cardEl);
+      // How much of *this* card peeks out is what determines where the next
+      // one starts - a back only needs its top-border sliver, a face needs
+      // enough to read the corner index.
+      top += card.faceUp ? cascadeUp : cascadeDown;
     });
   }
 
@@ -392,12 +405,25 @@ import {
     if (target === 'foundation') {
       return [document.getElementById(`foundation-${targetIndex}`).getBoundingClientRect()];
     }
-    const colRect = document.getElementById(`tableau-${targetIndex}`).getBoundingClientRect();
-    const cascade = getCascade();
-    const startIndex = state.tableau[targetIndex].length;
+    const colEl = document.getElementById(`tableau-${targetIndex}`);
+    const colRect = colEl.getBoundingClientRect();
+    // Every card landing here is face-up (only face-up sequences can be
+    // dropped on a tableau column), and so is whatever it's landing on top
+    // of - but cards further down that existing pile may be face-down,
+    // each with their own smaller gap (see renderTableauCol), so the
+    // existing top card's *actual* rendered position - not index * a
+    // single cascade constant - is the only reliable base to build on.
+    const cascadeUp = getCascadeUp();
+    const existingCards = colEl.children;
+    // Expressed as "one cascadeUp step above the first new card's slot" in
+    // both branches, so the loop below can add (i + 1) * cascadeUp uniformly
+    // regardless of whether the column already had cards in it.
+    const baseTop = existingCards.length
+      ? existingCards[existingCards.length - 1].getBoundingClientRect().top
+      : colRect.top - cascadeUp;
     const rects = [];
     for (let i = 0; i < count; i++) {
-      rects.push({ left: colRect.left, top: colRect.top + (startIndex + i) * cascade });
+      rects.push({ left: colRect.left, top: baseTop + cascadeUp * (i + 1) });
     }
     return rects;
   }
