@@ -24,6 +24,27 @@ import {
     return `assets/cards/${suit.file}_${RANK_FILES[card.rank]}.png`;
   }
 
+  // render() recreates every card's <img> element on every single move, even
+  // for piles that didn't change — a fresh <img> decodes asynchronously by
+  // default, so mobile browsers can paint it blank for a frame before the
+  // decoded bitmap is ready. Pre-decoding every face here means that by the
+  // time makeCardEl creates a new <img> pointing at the same URL, the decode
+  // is already done and it paints immediately instead of flashing blank.
+  function preloadCardImages() {
+    const urls = [CARD_BACK_SRC];
+    for (const suit of SUITS) {
+      for (let rank = 1; rank <= 13; rank++) {
+        urls.push(cardImageSrc({ suit: suit.key, rank }));
+      }
+    }
+    urls.forEach(src => {
+      const img = new Image();
+      img.src = src;
+      if (img.decode) img.decode().catch(() => {});
+    });
+  }
+  preloadCardImages(); // fire immediately so decoding is well underway before the first render, let alone the first move
+
   // Animation tuning.
   const DROP_MS = 100;
   const ROTATE_MS = 90;
@@ -160,6 +181,7 @@ import {
     el.dataset.id = card.id;
     const img = document.createElement('img');
     img.draggable = false;
+    img.decoding = 'sync'; // hold the paint until decoded, rather than showing blank then popping in
     if (faceUp) {
       img.src = cardImageSrc(card);
       img.alt = `${RANK_LABELS[card.rank]} of ${card.suit}`;
@@ -259,6 +281,7 @@ import {
     const front = document.createElement('div');
     front.className = 'flip-face flip-front';
     const frontImg = document.createElement('img');
+    frontImg.decoding = 'sync';
     frontImg.src = CARD_BACK_SRC;
     frontImg.alt = 'face-down card';
     front.appendChild(frontImg);
@@ -266,6 +289,7 @@ import {
     const back = document.createElement('div');
     back.className = 'flip-face flip-back';
     const backImg = document.createElement('img');
+    backImg.decoding = 'sync';
     backImg.src = cardImageSrc(card);
     backImg.alt = `${RANK_LABELS[card.rank]} of ${card.suit}`;
     back.appendChild(backImg);
@@ -682,4 +706,64 @@ import {
   timerHandle = setInterval(tick, 500);
 
   newGame();
+})();
+
+// ---------- update checking ----------
+// Independent of game state (a reload discards the current board — there's
+// no save/restore — so this deliberately never reloads on its own, only
+// on request), so it lives outside the game IIFE entirely.
+(() => {
+  const CHECK_FILES = ['index.html', 'script.js', 'style.css'];
+  const CHECK_INTERVAL_MS = 60000;
+
+  const bar = document.getElementById('update-bar');
+  const reloadBtn = document.getElementById('updateReloadBtn');
+  const dismissBtn = document.getElementById('updateDismissBtn');
+
+  let baseline = null;
+  let dismissed = false;
+
+  // A composite "fingerprint" of the deployed files. Netlify (and most
+  // static hosts/CDNs) serve content-derived ETags, so a file untouched by
+  // a deploy keeps the same tag and only genuinely changed files shift it —
+  // checking several files this way catches an update regardless of which
+  // one actually changed, without needing a hand-maintained version number.
+  async function fetchFingerprint() {
+    try {
+      const responses = await Promise.all(
+        CHECK_FILES.map(f => fetch(f, { method: 'HEAD', cache: 'no-store' }))
+      );
+      if (responses.some(r => !r.ok)) return null;
+      return responses
+        .map(r => r.headers.get('etag') || r.headers.get('last-modified') || '')
+        .join('|');
+    } catch {
+      return null; // offline, blocked, etc. — just skip this check
+    }
+  }
+
+  async function checkForUpdate() {
+    if (dismissed) return;
+    const tag = await fetchFingerprint();
+    if (!tag) return;
+    if (baseline === null) {
+      baseline = tag; // first successful check establishes the baseline
+      return;
+    }
+    if (tag !== baseline) {
+      bar.classList.remove('hidden');
+    }
+  }
+
+  reloadBtn.addEventListener('click', () => location.reload());
+  dismissBtn.addEventListener('click', () => {
+    dismissed = true;
+    bar.classList.add('hidden');
+  });
+
+  checkForUpdate();
+  setInterval(checkForUpdate, CHECK_INTERVAL_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkForUpdate();
+  });
 })();
