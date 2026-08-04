@@ -7,3 +7,20 @@
     X-Content-Type-Options = "nosniff"
     X-Frame-Options = "DENY"
     Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Card art is fetched through cache-busted URLs (?v=... in script.js's
+# ASSET_VERSION), so it's safe to cache for a year and never revalidate -
+# a future art change mints a new URL rather than relying on this cache
+# ever expiring. Scoped to just the tiered directories, not the untiered
+# original PNGs at assets/cards/*.png (those are only a fallback target
+# and aren't versioned), and not index.html/script.js/style.css, which
+# aren't versioned either and need to keep revalidating normally.
+[[headers]]
+  for = "/assets/cards/mobile/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/assets/cards/full/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
