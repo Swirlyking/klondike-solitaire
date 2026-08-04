@@ -108,7 +108,7 @@ import { shuffle } from './shuffle.js';
     {
       key: 'drawCount',
       label: 'Deal Style',
-      default: '1',
+      default: '3',
       variant: 'stack', // bigger tiles with a preview illustration + visible label, not a small color swatch
       options: [
         { id: '1', label: 'Draw 1', previewCards: 1 },
@@ -214,11 +214,15 @@ import { shuffle } from './shuffle.js';
   const ROTATE_MS = 90;
   const MAX_ROTATE_DEG = 1.6;
   const ROTATE_VELOCITY_PX_MS = 1.6; // pointer speed (px/ms) that reaches MAX_ROTATE_DEG
-  const FLIP_MS = 220;
-  const DEAL_STAGGER_MS = 70; // per-card delay when dealing more than one, so a 3-draw visibly cascades
+  const FLIP_MS = 260; // keep in sync with .flip-inner's transition duration in style.css - the whole dealt packet flips together, in place, over this long
+  const DEAL_STACK_OFFSET_PX = 3; // per-card offset while held at the stock, so a 3-card draw visibly reads as a small packet rather than a single card
+  const DEAL_TRAVEL_MS = 340; // each card's one continuous glide, straight from the stock to its real fanned slot
+  const SPREAD_STAGGER_MS = 70; // delay before each successive card's glide starts, so a multi-card draw still reads as a sequence rather than one glide
   const DRAG_THRESHOLD_PX = 4; // pointer movement below this counts as a click, not a drag
-  const CLICK_LIFT_MS = 50; // brief lift before a click-move starts gliding
-  const CLICK_MOVE_MS = 140; // click-move glide duration (+ CLICK_LIFT_MS ≈ 190ms total)
+  const CLICK_LIFT_MS = 60; // brief lift before a click-move starts gliding
+  const CLICK_MOVE_MS = 190; // click-move glide duration (+ CLICK_LIFT_MS ≈ 250ms total) - slow enough for the ease-out to actually read as a glide, not a snap
+  const TABLEAU_FLIP_PAUSE_MS = 170; // beat of stillness after a move exposes a new tableau card, before it turns - reads as a natural pause rather than an instant swap
+  const TABLEAU_FLIP_MS = 410; // this reveal's own flip duration - deliberately separate from the deal's FLIP_MS so the two can be tuned independently
 
   // getComputedStyle().getPropertyValue() on a *custom* property (--foo)
   // returns its raw, var()-substituted token text - never a resolved
@@ -522,30 +526,96 @@ import { shuffle } from './shuffle.js';
   // Deals cards from the stock rect to wherever they actually landed in the
   // waste fan, flipping face-down to face-up in flight. Each card is
   // staggered slightly so a 3-card draw reads as dealt, not dumped.
+  // A CSS transition retargeted mid-flight is NOT velocity-continuous -
+  // the moment a new target/duration is set, the browser starts that new
+  // easing curve's own velocity profile from scratch (ease-out-smooth
+  // starts fast), regardless of how slow the old transition had already
+  // decelerated to by then. Chaining two transitions (a landing, then a
+  // separate spread) always produces a kick at the handoff no matter how
+  // the timing is tuned - the only way to guarantee a truly smooth glide
+  // is a single, uninterrupted transition per card. That's what this
+  // does: one continuous glide straight from the stock to each card's
+  // real fanned slot, while the flip happens as a separate, synchronized
+  // motion on top - "unit" comes from the flip firing at the same
+  // instant for every card, not from an intermediate stop along the way.
   function animateDraw(cards, originRect) {
-    cards.forEach((card, i) => {
+    const ghosts = cards.map((card, i) => {
       const el = document.querySelector(`.card[data-id="${card.id}"]`);
-      if (!el) return; // covered by a later card in the same draw; nothing to animate
+      if (!el) return null; // covered by a later card in the same draw; nothing to animate
       const destRect = el.getBoundingClientRect();
       el.style.visibility = 'hidden';
 
-      const { wrapper, inner } = createFlipGhost(card, originRect, 1000 + i);
-      const delay = i * DEAL_STAGGER_MS;
+      // A small held-stack offset per card, independent of the real fan
+      // spacing - just enough that a 3-card draw visibly reads as a
+      // packet of cards, not a single card, at the moment it's dealt.
+      const stackOrigin = {
+        left: originRect.left + i * DEAL_STACK_OFFSET_PX,
+        top: originRect.top - i * DEAL_STACK_OFFSET_PX,
+        width: originRect.width,
+        height: originRect.height,
+      };
+      const { wrapper, inner } = createFlipGhost(card, stackOrigin, 1000 + i);
+      return { el, wrapper, inner, stackOrigin, destRect };
+    }).filter(Boolean);
+
+    if (!ghosts.length) return;
+
+    // The flip: every card turns face-up together, at the exact same
+    // instant, regardless of where each one currently is along its glide.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      ghosts.forEach(g => g.inner.classList.add('flipped'));
+    }));
+
+    // The glide: each card's one and only translate transition, straight
+    // to its real destination - started a beat after the last so a
+    // multi-card draw still reads as a dealt sequence, not one glide.
+    ghosts.forEach((g, i) => {
+      const startDelay = i * SPREAD_STAGGER_MS;
+      setTimeout(() => {
+        g.wrapper.style.transition = `translate ${DEAL_TRAVEL_MS}ms var(--ease-out-smooth)`;
+        g.wrapper.style.translate = `${g.destRect.left - g.stackOrigin.left}px ${g.destRect.top - g.stackOrigin.top}px`;
+      }, startDelay);
 
       setTimeout(() => {
-        // Double rAF so the un-flipped, un-translated start state paints
-        // before the transition target changes.
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-          wrapper.style.translate = `${destRect.left - originRect.left}px ${destRect.top - originRect.top}px`;
-          inner.classList.add('flipped');
-        }));
-      }, delay);
-
-      setTimeout(() => {
-        wrapper.remove();
-        el.style.visibility = '';
-      }, delay + FLIP_MS + 60);
+        g.wrapper.remove();
+        g.el.style.visibility = '';
+      }, startDelay + DEAL_TRAVEL_MS + 30);
     });
+  }
+
+  // Which tableau card, if any, is about to be exposed by moving `stack`
+  // off of `sourceIndex` - read-only, mirrors flipNewTopIfNeeded's own
+  // logic (game-logic.js) without mutating anything, so it can be called
+  // *before* applyMove to know what to hold face-down for the reveal.
+  function peekCardToFlip(source, sourceIndex, stack) {
+    if (source !== 'tableau') return null;
+    const col = state.tableau[sourceIndex];
+    const idx = col.findIndex(c => c.id === stack[0].id);
+    const newTop = col[idx - 1];
+    return (newTop && !newTop.faceUp) ? newTop : null;
+  }
+
+  // Holds a newly-exposed tableau card face-down for a beat, then turns
+  // it with the same 3D flip used for dealing from the stock - reused
+  // as-is, just with no travel (the wrapper never gets a translate, so
+  // it stays put at the real card's own position).
+  function animateTableauFlip(card) {
+    const el = document.querySelector(`.card[data-id="${card.id}"]`);
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    el.style.visibility = 'hidden';
+
+    const { wrapper, inner } = createFlipGhost(card, rect, 900);
+    inner.style.transition = `transform ${TABLEAU_FLIP_MS}ms var(--ease-in-out-smooth)`; // overrides .flip-inner's default duration (shared with the deal animation) for just this reveal
+
+    setTimeout(() => {
+      inner.classList.add('flipped');
+    }, TABLEAU_FLIP_PAUSE_MS);
+
+    setTimeout(() => {
+      wrapper.remove();
+      el.style.visibility = '';
+    }, TABLEAU_FLIP_PAUSE_MS + TABLEAU_FLIP_MS + 30);
   }
 
   function onStockClick() {
@@ -586,10 +656,12 @@ import { shuffle } from './shuffle.js';
   function commitMove(cards, source, sourceIndex, target, targetIndex) {
     resetTableauClickMemory();
     pushHistory();
+    const cardToFlip = peekCardToFlip(source, sourceIndex, cards);
     applyMove(state, cards, source, sourceIndex, target, targetIndex);
     moveCount++;
     updateMoves();
     render();
+    if (cardToFlip) animateTableauFlip(cardToFlip);
   }
 
   function isValidDropTarget(pileEl, stack, source, sourceIndex) {

@@ -19,6 +19,10 @@
   --gold: #d9b45c;
   --ease-out-smooth: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+  /* For transforms that start and end at rest (the card-flip rotation),
+     unlike ease-out-smooth which is for travel that lands somewhere -
+     eases into the turn instead of starting it at full speed. */
+  --ease-in-out-smooth: cubic-bezier(0.45, 0, 0.15, 1);
 }
 
 * { box-sizing: border-box; }
@@ -266,17 +270,19 @@ html, body {
   opacity: 1;
 }
 
-/* Dealing from the stock: a wrapper that glides stock → waste position,
-   containing a 3D flip that turns the card from back to face over the
-   same flight. Two faces, each hidden when facing away, so the turn
-   reveals the real front partway through rather than swapping instantly. */
+/* Dealing from the stock: a whole dealt packet flips face-up together
+   while held at the stock (see animateDraw's Phase 1), then each card
+   glides out to its fanned waste slot (Phase 2). The wrapper's translate
+   transition is set inline per-card for Phase 2, since its duration
+   differs from the flip's - no default transition here. Two faces on
+   the inner flip, each hidden when facing away, so the turn reveals the
+   real front partway through rather than swapping instantly. */
 .flip-ghost {
   position: fixed;
   z-index: 1000;
   pointer-events: none;
   perspective: 800px;
   translate: 0 0;
-  transition: translate 220ms var(--ease-out-smooth);
 }
 
 .flip-inner {
@@ -284,7 +290,7 @@ html, body {
   width: 100%;
   height: 100%;
   transform-style: preserve-3d;
-  transition: transform 220ms ease-in-out;
+  transition: transform 260ms var(--ease-in-out-smooth);
 }
 
 .flip-inner.flipped {

@@ -178,6 +178,47 @@ test('empty tableau columns only accept a King (or a sequence starting with one)
   assert.ok(canPlaceOnTableau(s, card('hearts', 13), 0)); // king
 });
 
+test('a King relocating between tableau columns only ever targets an empty column to its right, never its left', () => {
+  const s = emptyState();
+  const king = card('spades', 13);
+  s.tableau[3] = [king]; // King's own column
+  s.tableau[0] = [card('hearts', 5)]; // occupied
+  s.tableau[2] = [card('hearts', 5)]; // occupied
+  s.tableau[4] = [card('hearts', 5)]; // occupied
+  s.tableau[6] = [card('hearts', 5)]; // occupied
+  // column 1 is empty and to the LEFT - must never be offered by click
+  // column 5 is empty and to the RIGHT - the only legal click destination
+  const dest = resolveClickDestination(s, king, 'tableau', 3, 1, null);
+  assert.deepEqual(dest, { type: 'tableau', index: 5 });
+});
+
+test('a King with no empty column to its right has no click destination, even with one to its left', () => {
+  const s = emptyState();
+  const king = card('hearts', 13);
+  s.tableau[5] = [king]; // King's own column
+  s.tableau[0] = [card('clubs', 5)];
+  s.tableau[2] = [card('clubs', 5)];
+  s.tableau[3] = [card('clubs', 5)];
+  s.tableau[4] = [card('clubs', 5)];
+  s.tableau[6] = [card('clubs', 5)];
+  // column 1 is empty but to the LEFT of column 5 - not a legal click target
+  const dest = resolveClickDestination(s, king, 'tableau', 5, 1, null);
+  assert.equal(dest, null);
+});
+
+test('a King cycles through multiple empty columns to its right, in order', () => {
+  const s = emptyState();
+  const king = card('diamonds', 13);
+  s.tableau[0] = [king]; // King's own column
+  s.tableau[1] = [card('clubs', 5)]; // occupied
+  s.tableau[3] = [card('clubs', 5)]; // occupied
+  // columns 2, 4, 5, 6 are empty and to the right
+  const dest1 = resolveClickDestination(s, king, 'tableau', 0, 1, null);
+  assert.deepEqual(dest1, { type: 'tableau', index: 2 });
+  const dest2 = resolveClickDestination(s, king, 'tableau', 0, 1, 2);
+  assert.deepEqual(dest2, { type: 'tableau', index: 4 });
+});
+
 test('empty tableau columns participate in normal left-to-right priority', () => {
   const s = emptyState();
   const king = card('clubs', 13);

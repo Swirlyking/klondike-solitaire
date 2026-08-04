@@ -84,7 +84,11 @@ export function nextCycleIndex(legalIndices, lastUsed) {
 //  - tableau source (non-Ace): every legal tableau column, left to right,
 //    cycling forward from lastTableauDest each time the same card/sequence
 //    is clicked again (see nextCycleIndex); else a legal foundation (single
-//    cards only — a multi-card sequence never targets a foundation).
+//    cards only — a multi-card sequence never targets a foundation). A King
+//    (or a sequence led by one) relocating between tableau columns only
+//    ever targets an empty column to its *right* — an empty column to its
+//    left is reachable only by drag, never by click, so clicking a King
+//    never sends it backward across the board.
 //  - no legal destination: null, meaning "do nothing".
 export function resolveClickDestination(state, card, source, sourceIndex, stackLength, lastTableauDest = null) {
   const isSequence = stackLength > 1;
@@ -96,7 +100,11 @@ export function resolveClickDestination(state, card, source, sourceIndex, stackL
   }
 
   if (source === 'tableau') {
-    const legal = findAllLegalTableau(state, card, sourceIndex);
+    let legal = findAllLegalTableau(state, card, sourceIndex);
+    // A King can only ever legally target an empty column (see
+    // canPlaceOnTableau — nothing outranks it), so this scopes those
+    // candidates to the right of its current column, never the left.
+    if (card.rank === 13) legal = legal.filter(i => i > sourceIndex);
     const ti = nextCycleIndex(legal, lastTableauDest);
     if (ti !== -1) return { type: 'tableau', index: ti };
     if (!isSequence) {
