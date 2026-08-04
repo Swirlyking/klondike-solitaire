@@ -496,8 +496,21 @@ html, body {
 }
 
 @media (max-width: 720px) {
-  :root { --card-w: 42px; --card-h: 60px; --cascade-down: 5px; --cascade-up: 12px; }
-  #board { padding: 12px; }
+  :root {
+    --board-pad: 8px;
+    --pile-gap: 6px;
+    /* Fill the screen edge-to-edge (minus the board padding and the 6
+       inter-column gaps) rather than a fixed px size, so cards read as
+       large and tightly packed - like a native mobile solitaire app -
+       on every phone width instead of just the one they were tuned for.
+       Height keeps the card art's native 84:122 aspect ratio so it's
+       never stretched. */
+    --card-w: calc((100vw - 2 * var(--board-pad) - 6 * var(--pile-gap)) / 7);
+    --card-h: calc(var(--card-w) * 122 / 84);
+    --cascade-down: calc(var(--card-w) * 0.119);
+    --cascade-up: calc(var(--card-w) * 0.286);
+  }
+  #board { padding: var(--board-pad); }
   #top-row { margin-bottom: 20px; }
   .column { min-height: 260px; }
 }
