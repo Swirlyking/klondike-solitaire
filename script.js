@@ -20,6 +20,72 @@ import { shuffle } from './shuffle.js';
   const RANK_LABELS = ['', 'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
   const RANK_FILES = ['', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'jack', 'queen', 'king'];
 
+  // Two pre-rendered art tiers ship on disk (assets/cards/mobile at
+  // ~175x250, assets/cards/full at the original 350x500, both WebP) so a
+  // phone never has to download or decode pixels many times larger than
+  // it can actually show. Decided once, here, from whatever the viewport
+  // happens to be at load - and never recomputed - so an in-progress
+  // game can't have cards change resolution out from under it on
+  // rotation/resize. Keys off the same 720px breakpoint style.css uses
+  // for its own mobile layout (so --card-w already reflects it), then
+  // double-checks the actual physical pixel need against the mobile
+  // tier's native resolution - this is what keeps a landscape-rotated
+  // phone (viewport width > 720 despite being a phone) safely on the
+  // full tier instead of upscaling a too-small mobile asset.
+  // --card-w is itself a calc()-with-100vw expression on mobile (see
+  // resolveCssLength below, defined later in this file but hoisted -
+  // function declarations are available to code above them in the same
+  // scope), so it's resolved through a real element rather than parsed
+  // as text.
+  const ASSET_TIER = (() => {
+    const cardWpx = resolveCssLength('var(--card-w)') || 84;
+    const neededPhysicalPx = cardWpx * (window.devicePixelRatio || 1);
+    const MOBILE_TIER_NATIVE_PX = 175;
+    return (window.innerWidth <= 720 && neededPhysicalPx <= MOBILE_TIER_NATIVE_PX) ? 'mobile' : 'full';
+  })();
+
+  // Cache-buster on every card image URL, not a build/deploy version -
+  // bump this by hand whenever the card art itself changes. It's what
+  // lets Netlify give assets/cards/{mobile,full}/* a year-long immutable
+  // Cache-Control (see netlify.toml) without a stale deck getting stuck
+  // in a returning player's cache: a version bump mints new URLs, which
+  // are cache misses by construction, while every URL that didn't change
+  // keeps serving instantly from cache forever.
+  const ASSET_VERSION = 'v1';
+
+  function cardImageSrc(card) {
+    const suit = SUITS.find(s => s.key === card.suit);
+    return `assets/cards/${ASSET_TIER}/${suit.file}_${RANK_FILES[card.rank]}.webp?v=${ASSET_VERSION}`;
+  }
+
+  function backImageSrc(colorId) {
+    return `assets/cards/${ASSET_TIER}/back-${colorId}.webp?v=${ASSET_VERSION}`;
+  }
+
+  // The original full-resolution PNGs stay on disk as a graceful
+  // fallback target - untiered and unversioned, so they're guaranteed to
+  // exist regardless of ASSET_TIER or a WebP request failing/being
+  // unsupported. See attachImageFallback for where these get wired up.
+  function cardPngFallbackSrc(card) {
+    const suit = SUITS.find(s => s.key === card.suit);
+    return `assets/cards/${suit.file}_${RANK_FILES[card.rank]}.png`;
+  }
+
+  function backPngFallbackSrc(colorId) {
+    return `assets/cards/back-${colorId}.png`;
+  }
+
+  // Falls back exactly once per <img> - the dataset flag stops a failing
+  // fallback from looping - so a broken or unsupported WebP request
+  // degrades to a real image instead of leaving a permanently blank card.
+  function attachImageFallback(img, fallbackSrc) {
+    img.addEventListener('error', () => {
+      if (img.dataset.fallenBack) return;
+      img.dataset.fallenBack = '1';
+      img.src = fallbackSrc;
+    });
+  }
+
   // Every user-choosable preference, driving both the Settings panel's UI
   // (built generically from this array - see renderSettingsPanel) and how
   // the board itself reads the choice back (see getCardBackSrc). Adding a
@@ -33,10 +99,10 @@ import { shuffle } from './shuffle.js';
       label: 'Card Back',
       default: 'red',
       options: [
-        { id: 'red', label: 'Red', previewSrc: 'assets/cards/back-red.png' },
-        { id: 'blue', label: 'Blue', previewSrc: 'assets/cards/back-blue.png' },
-        { id: 'green', label: 'Green', previewSrc: 'assets/cards/back-green.png' },
-        { id: 'purple', label: 'Purple', previewSrc: 'assets/cards/back-purple.png' },
+        { id: 'red', label: 'Red', previewSrc: () => backImageSrc('red') },
+        { id: 'blue', label: 'Blue', previewSrc: () => backImageSrc('blue') },
+        { id: 'green', label: 'Green', previewSrc: () => backImageSrc('green') },
+        { id: 'purple', label: 'Purple', previewSrc: () => backImageSrc('purple') },
       ],
     },
     {
@@ -63,8 +129,12 @@ import { shuffle } from './shuffle.js';
     return section.options.find(o => o.id === chosenId) ?? section.options[0];
   }
 
+  function getCardBackColorId() {
+    return currentPreferenceOption(findPreferenceSection('cardBack')).id;
+  }
+
   function getCardBackSrc() {
-    return currentPreferenceOption(findPreferenceSection('cardBack')).previewSrc;
+    return backImageSrc(getCardBackColorId());
   }
 
   // Read live from the preference on every draw rather than cached in a
@@ -75,38 +145,69 @@ import { shuffle } from './shuffle.js';
     return parseInt(currentPreferenceOption(findPreferenceSection('drawCount')).id, 10);
   }
 
-  function cardImageSrc(card) {
-    const suit = SUITS.find(s => s.key === card.suit);
-    return `assets/cards/${suit.file}_${RANK_FILES[card.rank]}.png`;
+  // ---------- background image warming ----------
+
+  // Every URL this has already kicked off a fetch+decode for - guards
+  // both against the background queue ever revisiting a card twice and
+  // against re-requesting something already on screen (backgroundPreload-
+  // Remaining only queues face-down cards; the visible ones got their
+  // fetch from render() itself and are already showing).
+  const preloadedUrls = new Set();
+
+  function preloadImageUrl(url) {
+    if (preloadedUrls.has(url)) return;
+    preloadedUrls.add(url);
+    const img = new Image();
+    img.src = url;
+    if (img.decode) img.decode().catch(() => {});
   }
 
-  // render() recreates every card's <img> element on every single move, even
-  // for piles that didn't change — a fresh <img> decodes asynchronously by
-  // default, so mobile browsers can paint it blank for a frame before the
-  // decoded bitmap is ready. Pre-decoding every face here means that by the
-  // time makeCardEl creates a new <img> pointing at the same URL, the decode
-  // is already done and it paints immediately instead of flashing blank.
-  // Every card-back color gets preloaded too (not just the active one) so
-  // switching in Settings mid-game never flashes either.
-  function preloadCardImages() {
-    const urls = [];
-    for (const suit of SUITS) {
-      for (let rank = 1; rank <= 13; rank++) {
-        urls.push(cardImageSrc({ suit: suit.key, rank }));
+  let backgroundPreloadStarted = false;
+
+  // Warms the browser's fetch+decode cache for every card the current
+  // deal doesn't need yet, so that by the time a real draw or tableau
+  // flip reaches one, it's already sitting in memory instead of racing a
+  // fresh network request - this is what keeps flips and newly revealed
+  // cards appearing instantly during normal play even though startup no
+  // longer preloads the whole deck up front. Runs exactly once per app
+  // load (not per newGame/restart): after the first pass the entire
+  // 52-card deck is warm regardless of how it gets reshuffled afterwards.
+  // Deliberately only queues faces, never the other 3 unselected card
+  // backs - those only get fetched if the player actually opens Settings
+  // (renderSettingsPanel's own <img> tags do that for free) or switches
+  // to one.
+  function backgroundPreloadRemaining() {
+    if (backgroundPreloadStarted) return;
+    backgroundPreloadStarted = true;
+
+    // Stock first, in draw order (onStockClick pops from the end - see
+    // there), since those are the cards a real move is soonest to need;
+    // covered tableau cards follow, least-likely-soonest last.
+    const queue = [];
+    for (let i = state.stock.length - 1; i >= 0; i--) {
+      queue.push(cardImageSrc(state.stock[i]));
+    }
+    for (const col of state.tableau) {
+      for (const card of col) {
+        if (!card.faceUp) queue.push(cardImageSrc(card));
       }
     }
-    for (const section of PREFERENCE_SECTIONS) {
-      for (const option of section.options) {
-        if (option.previewSrc) urls.push(option.previewSrc);
+    if (!queue.length) return;
+
+    const BATCH_SIZE = 4;
+    function runBatch() {
+      queue.splice(0, BATCH_SIZE).forEach(preloadImageUrl);
+      if (queue.length) scheduleNext();
+    }
+    function scheduleNext() {
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(runBatch, { timeout: 1000 });
+      } else {
+        setTimeout(runBatch, 120); // Safari-without-requestIdleCallback fallback: small timed batches instead of one big blocking pass
       }
     }
-    urls.forEach(src => {
-      const img = new Image();
-      img.src = src;
-      if (img.decode) img.decode().catch(() => {});
-    });
+    scheduleNext();
   }
-  preloadCardImages(); // fire immediately so decoding is well underway before the first render, let alone the first move
 
   // Animation tuning.
   const DROP_MS = 100;
@@ -119,15 +220,33 @@ import { shuffle } from './shuffle.js';
   const CLICK_LIFT_MS = 50; // brief lift before a click-move starts gliding
   const CLICK_MOVE_MS = 140; // click-move glide duration (+ CLICK_LIFT_MS ≈ 190ms total)
 
+  // getComputedStyle().getPropertyValue() on a *custom* property (--foo)
+  // returns its raw, var()-substituted token text - never a resolved
+  // number - because custom properties have no "used value" the way a
+  // real layout property does. That's harmless for a plain literal like
+  // `9px`, but --cascade-down/up and --card-w became calc()-with-100vw
+  // expressions when mobile card sizing went fully responsive, and
+  // parseFloat("calc(...)") is NaN. The only reliable way to resolve a
+  // custom property to real px, calc()/vw and all, is to hand it to an
+  // actual layout property and measure the result.
+  function resolveCssLength(cssLengthExpr) {
+    const probe = document.createElement('div');
+    probe.style.cssText = `position:absolute; visibility:hidden; height:0; width:${cssLengthExpr};`;
+    document.body.appendChild(probe);
+    const px = probe.getBoundingClientRect().width;
+    probe.remove();
+    return px;
+  }
+
   // The gap after a tableau card depends on its own face - a back only
   // needs to show a sliver of its top border, while a face needs enough
   // exposed to read the corner's rank and the top of its suit pip.
   function getCascadeDown() {
-    return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cascade-down'));
+    return resolveCssLength('var(--cascade-down)');
   }
 
   function getCascadeUp() {
-    return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cascade-up'));
+    return resolveCssLength('var(--cascade-up)');
   }
 
   let state = null;
@@ -274,9 +393,11 @@ import { shuffle } from './shuffle.js';
     if (faceUp) {
       img.src = cardImageSrc(card);
       img.alt = `${RANK_LABELS[card.rank]} of ${card.suit}`;
+      attachImageFallback(img, cardPngFallbackSrc(card));
     } else {
       img.src = getCardBackSrc();
       img.alt = 'face-down card';
+      attachImageFallback(img, backPngFallbackSrc(getCardBackColorId()));
     }
     el.appendChild(img);
     return el;
@@ -379,6 +500,7 @@ import { shuffle } from './shuffle.js';
     frontImg.decoding = 'sync';
     frontImg.src = getCardBackSrc();
     frontImg.alt = 'face-down card';
+    attachImageFallback(frontImg, backPngFallbackSrc(getCardBackColorId()));
     front.appendChild(frontImg);
 
     const back = document.createElement('div');
@@ -387,6 +509,7 @@ import { shuffle } from './shuffle.js';
     backImg.decoding = 'sync';
     backImg.src = cardImageSrc(card);
     backImg.alt = `${RANK_LABELS[card.rank]} of ${card.suit}`;
+    attachImageFallback(backImg, cardPngFallbackSrc(card));
     back.appendChild(backImg);
 
     inner.appendChild(front);
@@ -809,9 +932,14 @@ import { shuffle } from './shuffle.js';
     // non-image preference (table surface color?) can supply
     // previewColor instead and get a flat swatch - renderSettingsPanel
     // itself never needs to know which kind a given section uses.
+    // previewSrc is a function rather than a plain string so it's read
+    // lazily here (when the panel actually renders) rather than at
+    // PREFERENCE_SECTIONS definition time - this is also the only place
+    // in the app that fetches the three unselected card-back colors, and
+    // only because the player opened Settings.
     if (option.previewSrc) {
       const img = document.createElement('img');
-      img.src = option.previewSrc;
+      img.src = option.previewSrc();
       img.alt = option.label;
       img.draggable = false;
       return img;
@@ -906,6 +1034,7 @@ import { shuffle } from './shuffle.js';
   timerHandle = setInterval(tick, 500);
 
   newGame();
+  backgroundPreloadRemaining(); // only schedules idle-time work - the board above is already rendered and interactive
 })();
 
 // ---------- update checking ----------
