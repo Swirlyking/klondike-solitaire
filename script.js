@@ -8,6 +8,7 @@ import {
   cloneState,
 } from './game-logic.js';
 import { getPreference, setPreference } from './preferences.js';
+import { shuffle } from './shuffle.js';
 
 (() => {
   const SUITS = [
@@ -38,6 +39,16 @@ import { getPreference, setPreference } from './preferences.js';
         { id: 'purple', label: 'Purple', previewSrc: 'assets/cards/back-purple.png' },
       ],
     },
+    {
+      key: 'drawCount',
+      label: 'Deal Style',
+      default: '1',
+      variant: 'stack', // bigger tiles with a preview illustration + visible label, not a small color swatch
+      options: [
+        { id: '1', label: 'Draw 1', previewCards: 1 },
+        { id: '3', label: 'Draw 3', previewCards: 3 },
+      ],
+    },
   ];
 
   function findPreferenceSection(key) {
@@ -54,6 +65,14 @@ import { getPreference, setPreference } from './preferences.js';
 
   function getCardBackSrc() {
     return currentPreferenceOption(findPreferenceSection('cardBack')).previewSrc;
+  }
+
+  // Read live from the preference on every draw rather than cached in a
+  // local variable - single source of truth, same pattern as
+  // getCardBackSrc, so a Settings change takes effect on the very next
+  // stock click with nothing to keep in sync.
+  function getDrawCount() {
+    return parseInt(currentPreferenceOption(findPreferenceSection('drawCount')).id, 10);
   }
 
   function cardImageSrc(card) {
@@ -112,7 +131,10 @@ import { getPreference, setPreference } from './preferences.js';
   }
 
   let state = null;
-  let drawCount = 3;
+  // Snapshot of the very first deal from the current newGame() call, kept
+  // around (untouched by any subsequent move) so restart() can jump back
+  // to the exact same hand without reshuffling.
+  let initialDeal = null;
   let history = [];
   let moveCount = 0;
   let startTime = null;
@@ -132,8 +154,8 @@ import { getPreference, setPreference } from './preferences.js';
   const movesEl = document.getElementById('moves');
   const timerEl = document.getElementById('timer');
   const undoBtn = document.getElementById('undoBtn');
-  const drawModeBtn = document.getElementById('drawModeBtn');
   const newGameBtn = document.getElementById('newGameBtn');
+  const restartBtn = document.getElementById('restartBtn');
   const winOverlay = document.getElementById('win-overlay');
   const winStats = document.getElementById('win-stats');
   const winNewGameBtn = document.getElementById('winNewGameBtn');
@@ -151,14 +173,6 @@ import { getPreference, setPreference } from './preferences.js';
       }
     }
     return deck;
-  }
-
-  function shuffle(arr) {
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
   }
 
   function newGame() {
@@ -182,6 +196,26 @@ import { getPreference, setPreference } from './preferences.js';
       foundations: [[], [], [], []],
       tableau,
     };
+    initialDeal = cloneState(state);
+    history = [];
+    moveCount = 0;
+    won = false;
+    winOverlay.classList.add('hidden');
+    startTime = Date.now();
+    updateMoves();
+    render();
+  }
+
+  // Replays the exact same deal as the current newGame() call, for when
+  // the player wants another attempt at an identical hand rather than a
+  // fresh shuffle. Mirrors newGame()'s reset logic but restores the saved
+  // initialDeal snapshot instead of drawing a new one.
+  function restart() {
+    if (!initialDeal) return;
+    cancelActiveDrag();
+    clearGhosts();
+    resetTableauClickMemory();
+    state = cloneState(initialDeal);
     history = [];
     moveCount = 0;
     won = false;
@@ -396,7 +430,7 @@ import { getPreference, setPreference } from './preferences.js';
       const stockRect = document.getElementById('stock').getBoundingClientRect();
       resetTableauClickMemory();
       pushHistory();
-      const n = Math.min(drawCount, state.stock.length);
+      const n = Math.min(getDrawCount(), state.stock.length);
       const drawn = [];
       for (let i = 0; i < n; i++) {
         const card = state.stock.pop();
@@ -782,6 +816,25 @@ import { getPreference, setPreference } from './preferences.js';
       img.draggable = false;
       return img;
     }
+    // Deal Style's preview: a small fan of N card backs (reusing whichever
+    // back color the player has already chosen, so the two preferences
+    // stay visually consistent with each other).
+    if (option.previewCards) {
+      const fan = document.createElement('div');
+      fan.className = 'settings-option-fan';
+      for (let i = 0; i < option.previewCards; i++) {
+        const img = document.createElement('img');
+        img.src = getCardBackSrc();
+        img.alt = '';
+        img.draggable = false;
+        img.className = 'settings-option-fan-card';
+        // Offset from center rather than raw index, so a single card (Draw
+        // 1) lands upright and centered instead of picking up a stray tilt.
+        img.style.setProperty('--offset', i - (option.previewCards - 1) / 2);
+        fan.appendChild(img);
+      }
+      return fan;
+    }
     const swatch = document.createElement('div');
     swatch.className = 'settings-option-swatch';
     swatch.style.background = option.previewColor;
@@ -811,9 +864,16 @@ import { getPreference, setPreference } from './preferences.js';
         const optionBtn = document.createElement('button');
         optionBtn.type = 'button';
         optionBtn.className = 'settings-option';
+        optionBtn.classList.toggle('settings-option--stack', section.variant === 'stack');
         optionBtn.classList.toggle('selected', option.id === current.id);
         optionBtn.setAttribute('aria-label', option.label);
         optionBtn.appendChild(renderPreferenceOptionPreview(option));
+        if (section.variant === 'stack') {
+          const label = document.createElement('span');
+          label.className = 'settings-option-label';
+          label.textContent = option.label;
+          optionBtn.appendChild(label);
+        }
         optionBtn.addEventListener('click', () => {
           if (option.id === current.id) return;
           setPreference(section.key, option.id);
@@ -838,12 +898,9 @@ import { getPreference, setPreference } from './preferences.js';
 
   // ---------- controls ----------
 
-  drawModeBtn.addEventListener('click', () => {
-    drawCount = drawCount === 1 ? 3 : 1;
-    drawModeBtn.textContent = drawCount === 1 ? 'Draw 3' : 'Draw 1';
-  });
   undoBtn.addEventListener('click', undo);
   newGameBtn.addEventListener('click', newGame);
+  restartBtn.addEventListener('click', restart);
   winNewGameBtn.addEventListener('click', newGame);
 
   timerHandle = setInterval(tick, 500);
