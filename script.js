@@ -7,6 +7,7 @@ import {
   applyMove,
   cloneState,
 } from './game-logic.js';
+import { getPreference, setPreference } from './preferences.js';
 
 (() => {
   const SUITS = [
@@ -17,7 +18,43 @@ import {
   ];
   const RANK_LABELS = ['', 'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
   const RANK_FILES = ['', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'jack', 'queen', 'king'];
-  const CARD_BACK_SRC = 'assets/cards/back.png';
+
+  // Every user-choosable preference, driving both the Settings panel's UI
+  // (built generically from this array - see renderSettingsPanel) and how
+  // the board itself reads the choice back (see getCardBackSrc). Adding a
+  // future preference (table surface, card face style, ...) should only
+  // ever mean adding another entry here, an appearance-reading helper
+  // like getCardBackSrc, and the render-time call sites that use it -
+  // never new settings-panel plumbing.
+  const PREFERENCE_SECTIONS = [
+    {
+      key: 'cardBack',
+      label: 'Card Back',
+      default: 'red',
+      options: [
+        { id: 'red', label: 'Red', previewSrc: 'assets/cards/back-red.png' },
+        { id: 'blue', label: 'Blue', previewSrc: 'assets/cards/back-blue.png' },
+        { id: 'green', label: 'Green', previewSrc: 'assets/cards/back-green.png' },
+        { id: 'purple', label: 'Purple', previewSrc: 'assets/cards/back-purple.png' },
+      ],
+    },
+  ];
+
+  function findPreferenceSection(key) {
+    return PREFERENCE_SECTIONS.find(s => s.key === key);
+  }
+
+  // Falls back to the section's first option if a stored value doesn't
+  // match any current option (e.g. an option was renamed/removed in a
+  // later update) - never lets a stale preference break rendering.
+  function currentPreferenceOption(section) {
+    const chosenId = getPreference(section.key, section.default);
+    return section.options.find(o => o.id === chosenId) ?? section.options[0];
+  }
+
+  function getCardBackSrc() {
+    return currentPreferenceOption(findPreferenceSection('cardBack')).previewSrc;
+  }
 
   function cardImageSrc(card) {
     const suit = SUITS.find(s => s.key === card.suit);
@@ -30,11 +67,18 @@ import {
   // decoded bitmap is ready. Pre-decoding every face here means that by the
   // time makeCardEl creates a new <img> pointing at the same URL, the decode
   // is already done and it paints immediately instead of flashing blank.
+  // Every card-back color gets preloaded too (not just the active one) so
+  // switching in Settings mid-game never flashes either.
   function preloadCardImages() {
-    const urls = [CARD_BACK_SRC];
+    const urls = [];
     for (const suit of SUITS) {
       for (let rank = 1; rank <= 13; rank++) {
         urls.push(cardImageSrc({ suit: suit.key, rank }));
+      }
+    }
+    for (const section of PREFERENCE_SECTIONS) {
+      for (const option of section.options) {
+        if (option.previewSrc) urls.push(option.previewSrc);
       }
     }
     urls.forEach(src => {
@@ -93,6 +137,10 @@ import {
   const winOverlay = document.getElementById('win-overlay');
   const winStats = document.getElementById('win-stats');
   const winNewGameBtn = document.getElementById('winNewGameBtn');
+  const settingsBtn = document.getElementById('settingsBtn');
+  const settingsOverlay = document.getElementById('settings-overlay');
+  const settingsCloseBtn = document.getElementById('settingsCloseBtn');
+  const settingsSections = document.getElementById('settings-sections');
 
   function freshDeck() {
     const deck = [];
@@ -193,7 +241,7 @@ import {
       img.src = cardImageSrc(card);
       img.alt = `${RANK_LABELS[card.rank]} of ${card.suit}`;
     } else {
-      img.src = CARD_BACK_SRC;
+      img.src = getCardBackSrc();
       img.alt = 'face-down card';
     }
     el.appendChild(img);
@@ -295,7 +343,7 @@ import {
     front.className = 'flip-face flip-front';
     const frontImg = document.createElement('img');
     frontImg.decoding = 'sync';
-    frontImg.src = CARD_BACK_SRC;
+    frontImg.src = getCardBackSrc();
     frontImg.alt = 'face-down card';
     front.appendChild(frontImg);
 
@@ -718,6 +766,75 @@ import {
       glideGhostsTo(ghosts, originRects, originRects, DROP_MS, false);
     }
   }
+
+  // ---------- settings panel ----------
+
+  function renderPreferenceOptionPreview(option) {
+    // Image-backed options (card back, and presumably card face style
+    // later) show the actual asset, scaled down by CSS; a future
+    // non-image preference (table surface color?) can supply
+    // previewColor instead and get a flat swatch - renderSettingsPanel
+    // itself never needs to know which kind a given section uses.
+    if (option.previewSrc) {
+      const img = document.createElement('img');
+      img.src = option.previewSrc;
+      img.alt = option.label;
+      img.draggable = false;
+      return img;
+    }
+    const swatch = document.createElement('div');
+    swatch.className = 'settings-option-swatch';
+    swatch.style.background = option.previewColor;
+    return swatch;
+  }
+
+  // Rebuilds the whole panel from PREFERENCE_SECTIONS every time it's
+  // opened or a choice changes - cheap (a handful of small buttons), and
+  // means a newly added section just appears with no other code to
+  // update, matching how the rest of this file re-renders on any change.
+  function renderSettingsPanel() {
+    settingsSections.innerHTML = '';
+    for (const section of PREFERENCE_SECTIONS) {
+      const current = currentPreferenceOption(section);
+
+      const sectionEl = document.createElement('div');
+      sectionEl.className = 'settings-section';
+
+      const heading = document.createElement('h3');
+      heading.className = 'settings-section-label';
+      heading.textContent = section.label;
+      sectionEl.appendChild(heading);
+
+      const optionsRow = document.createElement('div');
+      optionsRow.className = 'settings-options';
+      for (const option of section.options) {
+        const optionBtn = document.createElement('button');
+        optionBtn.type = 'button';
+        optionBtn.className = 'settings-option';
+        optionBtn.classList.toggle('selected', option.id === current.id);
+        optionBtn.setAttribute('aria-label', option.label);
+        optionBtn.appendChild(renderPreferenceOptionPreview(option));
+        optionBtn.addEventListener('click', () => {
+          if (option.id === current.id) return;
+          setPreference(section.key, option.id);
+          renderSettingsPanel(); // move the selected-highlight
+          render(); // apply immediately - e.g. face-down cards pick up the new back right away
+        });
+        optionsRow.appendChild(optionBtn);
+      }
+      sectionEl.appendChild(optionsRow);
+      settingsSections.appendChild(sectionEl);
+    }
+  }
+
+  settingsBtn.addEventListener('click', () => {
+    renderSettingsPanel();
+    settingsOverlay.classList.remove('hidden');
+  });
+  settingsCloseBtn.addEventListener('click', () => settingsOverlay.classList.add('hidden'));
+  settingsOverlay.addEventListener('click', e => {
+    if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
+  });
 
   // ---------- controls ----------
 

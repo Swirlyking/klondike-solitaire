@@ -23,6 +23,7 @@
       <button id="drawModeBtn">Draw 1</button>
       <button id="undoBtn">Undo</button>
       <button id="newGameBtn">New Game</button>
+      <button id="settingsBtn" class="icon-button" aria-label="Settings">&#9881;</button>
     </div>
   </header>
 
@@ -50,6 +51,16 @@
       <div class="pile column" id="tableau-6" data-pile="tableau" data-index="6"></div>
     </div>
   </main>
+
+  <div id="settings-overlay" class="hidden">
+    <div id="settings-card">
+      <div id="settings-header">
+        <h2>Settings</h2>
+        <button id="settingsCloseBtn" aria-label="Close">&times;</button>
+      </div>
+      <div id="settings-sections"></div>
+    </div>
+  </div>
 
   <div id="win-overlay" class="hidden">
     <div id="win-card">
