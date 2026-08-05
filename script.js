@@ -7,16 +7,19 @@ import {
   applyMove,
   cloneState,
   needsAbandonConfirmation,
+  getLegalMoves,
+  classifyMove,
+  MoveCategory,
 } from './game-logic.js';
 import { getPreference, setPreference } from './preferences.js';
 import { shuffle } from './shuffle.js';
 
 (() => {
   const SUITS = [
-    { key: 'hearts', file: 'heart', color: 'red' },
-    { key: 'diamonds', file: 'diamond', color: 'red' },
-    { key: 'clubs', file: 'club', color: 'black' },
-    { key: 'spades', file: 'spade', color: 'black' },
+    { key: 'hearts', file: 'heart', color: 'red', symbol: '♥' },
+    { key: 'diamonds', file: 'diamond', color: 'red', symbol: '♦' },
+    { key: 'clubs', file: 'club', color: 'black', symbol: '♣' },
+    { key: 'spades', file: 'spade', color: 'black', symbol: '♠' },
   ];
   const RANK_LABELS = ['', 'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
   const RANK_FILES = ['', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'jack', 'queen', 'king'];
@@ -218,7 +221,9 @@ import { shuffle } from './shuffle.js';
   const FLIP_MS = 260; // keep in sync with .flip-inner's transition duration in style.css - the whole dealt packet flips together, in place, over this long
   const DEAL_STACK_OFFSET_PX = 3; // per-card offset while held at the stock, so a 3-card draw visibly reads as a small packet rather than a single card
   const DEAL_TRAVEL_MS = 340; // each card's one continuous glide, straight from the stock to its real fanned slot
-  const SPREAD_STAGGER_MS = 70; // delay before each successive card's glide starts, so a multi-card draw still reads as a sequence rather than one glide
+  const SPREAD_STAGGER_MS = 50; // delay before each successive card's glide starts, so a multi-card draw still reads as a sequence rather than one glide
+  const GATHER_MS = 120; // waste-pile draw transition: already-visible cards squaring up into the pile before the next batch deals
+  const SURVIVOR_SETTLE_MS = 180; // waste-pile draw transition: a still-visible card's short hop from the gathered pile out to its new fanned slot
   const DRAG_THRESHOLD_PX = 4; // pointer movement below this counts as a click, not a drag
   const CLICK_LIFT_MS = 60; // brief lift before a click-move starts gliding
   const CLICK_MOVE_MS = 190; // click-move glide duration (+ CLICK_LIFT_MS ≈ 250ms total) - slow enough for the ease-out to actually read as a glide, not a snap
@@ -278,6 +283,8 @@ import { shuffle } from './shuffle.js';
   const movesEl = document.getElementById('moves');
   const timerEl = document.getElementById('timer');
   const undoBtn = document.getElementById('undoBtn');
+  const hintBtn = document.getElementById('hintBtn');
+  const hintMessage = document.getElementById('hint-message');
   const newGameBtn = document.getElementById('newGameBtn');
   const restartBtn = document.getElementById('restartBtn');
   const winOverlay = document.getElementById('win-overlay');
@@ -308,6 +315,7 @@ import { shuffle } from './shuffle.js';
     cancelActiveDrag();
     clearGhosts();
     resetTableauClickMemory();
+    clearHint();
     const deck = shuffle(freshDeck());
     const tableau = [[], [], [], [], [], [], []];
     let idx = 0;
@@ -344,6 +352,7 @@ import { shuffle } from './shuffle.js';
     cancelActiveDrag();
     clearGhosts();
     resetTableauClickMemory();
+    clearHint();
     state = cloneState(initialDeal);
     history = [];
     moveCount = 0;
@@ -357,7 +366,14 @@ import { shuffle } from './shuffle.js';
   // ---------- abandon-game confirmation ----------
 
   const ABANDON_COPY = {
-    newGame: { title: 'Give up this game?', message: 'There are still moves available. A new deal will replace this one.' },
+    newGame: {
+      title: 'Give up this game?',
+      // Which of these two shows depends on classifyMove (game-logic.js) -
+      // see guardAbandon below. Visibility of the dialog itself is a
+      // separate, unrelated question (needsAbandonConfirmation).
+      meaningfulMessage: 'There are still moves available. A new deal will replace this one.',
+      stuckMessage: 'Only non-progressing moves remain. A new deal will replace this one.',
+    },
     restart: { title: 'Restart this deal?', message: 'Your moves will be undone, but the same cards will be dealt again.' },
   };
 
@@ -430,8 +446,97 @@ import { shuffle } from './shuffle.js';
       action();
       return;
     }
+    if (actionKey === 'newGame') {
+      const { title, meaningfulMessage, stuckMessage } = ABANDON_COPY.newGame;
+      const meaningful = getLegalMoves(state).some(m => classifyMove(state, m).status === 'meaningful');
+      showConfirm({ title, message: meaningful ? meaningfulMessage : stuckMessage, onConfirm: action });
+      return;
+    }
     showConfirm({ ...ABANDON_COPY[actionKey], onConfirm: action });
   }
+
+  // ---------- hint ----------
+  //
+  // Browses every entry in getLegalMoves(state) - the same shared
+  // enumeration click-to-move and the abandon dialog read from - in
+  // whatever order it comes back in. Deliberately unfiltered/unranked: v1
+  // shows "what can I do," not "what's best," per design. The one place it
+  // touches classifyMove is purely for copy (noting when a move reveals a
+  // hidden card), never to filter or reorder the list.
+
+  let hintMoves = null; // cached getLegalMoves() result while a hint session is active; null = no active session
+  let hintIndex = 0;
+
+  function cardLabel(card) {
+    return `${RANK_LABELS[card.rank]}${SUITS.find(s => s.key === card.suit).symbol}`;
+  }
+
+  function cardElFor(card) {
+    return card ? document.querySelector(`.card[data-id="${card.id}"]`) : null;
+  }
+
+  function pileElFor(type, index) {
+    if (type === 'tableau') return document.getElementById(`tableau-${index}`);
+    if (type === 'foundation') return document.getElementById(`foundation-${index}`);
+    if (type === 'waste') return document.getElementById('waste');
+    if (type === 'stock') return document.getElementById('stock');
+    return null;
+  }
+
+  function hintMoveText(move) {
+    if (move.category === MoveCategory.DRAW_STOCK) return 'Draw from the stock.';
+    if (move.category === MoveCategory.RECYCLE_STOCK) return 'Recycle the waste into the stock.';
+
+    const subject = move.stackLength > 1 ? `${cardLabel(move.card)} sequence` : cardLabel(move.card);
+    if (move.target === 'foundation') return `Move the ${subject} to the foundation.`;
+
+    const destCol = state.tableau[move.targetIndex];
+    const destTop = destCol.length ? destCol[destCol.length - 1] : null;
+    let text = destTop ? `Move the ${subject} onto the ${cardLabel(destTop)}.` : `Move the ${subject} to the empty column.`;
+    if (classifyMove(state, move).reason === 'reveals_card') text += ' This reveals a hidden card.';
+    return text;
+  }
+
+  function clearHint() {
+    document.querySelectorAll('.hint-highlight').forEach(el => el.classList.remove('hint-highlight'));
+    hintMoves = null;
+    hintIndex = 0;
+    hintMessage.classList.add('hidden');
+    hintMessage.textContent = '';
+  }
+
+  function showHintMove(move) {
+    document.querySelectorAll('.hint-highlight').forEach(el => el.classList.remove('hint-highlight'));
+    if (move.category === MoveCategory.DRAW_STOCK || move.category === MoveCategory.RECYCLE_STOCK) {
+      pileElFor('stock')?.classList.add('hint-highlight');
+    } else {
+      cardElFor(move.card)?.classList.add('hint-highlight');
+      pileElFor(move.target, move.targetIndex)?.classList.add('hint-highlight');
+    }
+    hintMessage.textContent = hintMoveText(move);
+    hintMessage.classList.remove('hidden');
+  }
+
+  // First press generates and shows the first move; each press after that
+  // advances to the next one, wrapping back to the first past the end - a
+  // browse, not a "here's the best move" recommendation.
+  function showHint() {
+    if (!hintMoves) {
+      const moves = getLegalMoves(state);
+      if (!moves.length) {
+        hintMessage.textContent = 'No obvious move is available.';
+        hintMessage.classList.remove('hidden');
+        return;
+      }
+      hintMoves = moves;
+      hintIndex = 0;
+    } else {
+      hintIndex = (hintIndex + 1) % hintMoves.length;
+    }
+    showHintMove(hintMoves[hintIndex]);
+  }
+
+  hintBtn.addEventListener('click', showHint);
 
   function pushHistory() {
     history.push(cloneState(state));
@@ -703,10 +808,143 @@ import { shuffle } from './shuffle.js';
     }, TABLEAU_FLIP_PAUSE_MS + TABLEAU_FLIP_MS + 30);
   }
 
+  function findWasteCard(id) {
+    return state.waste.find(c => String(c.id) === id);
+  }
+
+  function createGatherGhost(imgSrc, rect, zIndex, fallbackSrc) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'gather-ghost';
+    wrapper.style.left = `${rect.left}px`;
+    wrapper.style.top = `${rect.top}px`;
+    wrapper.style.width = `${rect.width}px`;
+    wrapper.style.height = `${rect.height}px`;
+    wrapper.style.zIndex = zIndex;
+    const img = document.createElement('img');
+    img.src = imgSrc;
+    img.draggable = false;
+    if (fallbackSrc) attachImageFallback(img, fallbackSrc);
+    wrapper.appendChild(img);
+    document.getElementById('drag-layer').appendChild(wrapper);
+    return wrapper;
+  }
+
+  // Fixes the flash where already-visible waste cards would instantly snap
+  // to their new fanned position - or vanish outright, if they fall out of
+  // renderWaste's "last 3 cards" window - the moment render() rebuilds the
+  // waste pile's DOM. Every waste card at the moment of a draw is exactly
+  // one of three things: departing (visible before, not after - tucked
+  // under the pile), surviving (visible before *and* after, just at a new
+  // fan offset - e.g. Draw 1 continuations), or arriving (newly drawn this
+  // turn). All three get identified in one pass right after the normal
+  // synchronous render() call - state truth never changes, this is a
+  // purely cosmetic overlay using the same ghost/hide-the-real-element
+  // pattern already used everywhere else in this file. Phase A gathers
+  // whatever was already visible into the pile's own squared base
+  // position; Phase B lets survivors continue on to their real slot while
+  // arrivals get the existing, unmodified animateDraw (flip + one
+  // continuous glide from the stock).
+  function animateWasteDraw(drawn, stockRect, oldRectsById, onDone) {
+    const arrivalMs = (drawn.length - 1) * SPREAD_STAGGER_MS + DEAL_TRAVEL_MS + 30;
+
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      // render() already left the correct final state on screen - nothing
+      // was hidden, so there's nothing to animate or clean up.
+      onDone();
+      return;
+    }
+
+    const wasteBaseRect = document.getElementById('waste').getBoundingClientRect();
+    const newWasteEls = Array.from(document.querySelectorAll('#waste .card'));
+    const drawnIds = new Set(drawn.map(c => String(c.id)));
+
+    const survivors = newWasteEls
+      .filter(el => !drawnIds.has(el.dataset.id) && oldRectsById.has(el.dataset.id))
+      .map(el => ({
+        el,
+        imgSrc: el.querySelector('img').src,
+        oldRect: oldRectsById.get(el.dataset.id),
+        newRect: el.getBoundingClientRect(),
+      }));
+    const survivorIds = new Set(survivors.map(s => s.el.dataset.id));
+
+    const departures = [];
+    oldRectsById.forEach((oldRect, id) => {
+      if (drawnIds.has(id) || survivorIds.has(id)) return;
+      const card = findWasteCard(id);
+      if (card) departures.push({ card, oldRect });
+    });
+
+    if (!survivors.length && !departures.length) {
+      // Nothing was visible before this draw (e.g. the very first draw of
+      // a fresh deal) - no gather phase needed, this is just a normal deal.
+      animateDraw(drawn, stockRect);
+      setTimeout(onDone, arrivalMs);
+      return;
+    }
+
+    survivors.forEach(s => { s.el.style.visibility = 'hidden'; });
+
+    const survivorGhosts = survivors.map((s, i) => createGatherGhost(s.imgSrc, s.oldRect, 500 + i));
+    const departureGhosts = departures.map((d, i) =>
+      createGatherGhost(cardImageSrc(d.card), d.oldRect, 400 + i, cardPngFallbackSrc(d.card))
+    );
+
+    // Phase A: gather - everything already visible glides to the pile's
+    // own squared position at once. Arrivals don't exist yet at this
+    // point - they're still conceptually at the stock.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      survivorGhosts.forEach((wrapper, i) => {
+        const s = survivors[i];
+        wrapper.style.transition = `translate ${GATHER_MS}ms var(--ease-out-smooth)`;
+        wrapper.style.translate = `${wasteBaseRect.left - s.oldRect.left}px ${wasteBaseRect.top - s.oldRect.top}px`;
+      });
+      departureGhosts.forEach((wrapper, i) => {
+        const d = departures[i];
+        wrapper.style.transition = `translate ${GATHER_MS}ms var(--ease-out-smooth)`;
+        wrapper.style.translate = `${wasteBaseRect.left - d.oldRect.left}px ${wasteBaseRect.top - d.oldRect.top}px`;
+      });
+    }));
+
+    setTimeout(() => {
+      // Departures are tucked under the pile now - nothing more to do.
+      departureGhosts.forEach(w => w.remove());
+
+      // Survivors continue on to their real final fanned position, as one
+      // group - they were already sitting together a moment ago, no need
+      // for a per-card stagger on this short hop.
+      survivorGhosts.forEach((wrapper, i) => {
+        const s = survivors[i];
+        wrapper.style.transition = `translate ${SURVIVOR_SETTLE_MS}ms var(--ease-out-smooth)`;
+        wrapper.style.translate = `${s.newRect.left - s.oldRect.left}px ${s.newRect.top - s.oldRect.top}px`;
+      });
+      setTimeout(() => {
+        survivorGhosts.forEach((wrapper, i) => {
+          wrapper.remove();
+          survivors[i].el.style.visibility = '';
+        });
+      }, SURVIVOR_SETTLE_MS + 30);
+
+      // Arrivals: the existing, unmodified deal animation.
+      animateDraw(drawn, stockRect);
+
+      const settleMs = SURVIVOR_SETTLE_MS + 30;
+      setTimeout(onDone, Math.max(arrivalMs, settleMs));
+    }, GATHER_MS);
+  }
+
+  let isDrawing = false; // guards against a rapid repeated stock tap interrupting or duplicating an in-flight draw transition
+
   function onStockClick() {
+    if (isDrawing) return;
     if (state.stock.length) {
+      isDrawing = true;
       const stockRect = document.getElementById('stock').getBoundingClientRect();
+      const oldRectsById = new Map(
+        Array.from(document.querySelectorAll('#waste .card')).map(el => [el.dataset.id, el.getBoundingClientRect()])
+      );
       resetTableauClickMemory();
+      clearHint();
       pushHistory();
       const n = Math.min(getDrawCount(), state.stock.length);
       const drawn = [];
@@ -719,9 +957,10 @@ import { shuffle } from './shuffle.js';
       moveCount++;
       updateMoves();
       render();
-      animateDraw(drawn, stockRect);
+      animateWasteDraw(drawn, stockRect, oldRectsById, () => { isDrawing = false; });
     } else if (state.waste.length) {
       resetTableauClickMemory();
+      clearHint();
       pushHistory();
       while (state.waste.length) {
         const card = state.waste.pop();
@@ -740,6 +979,7 @@ import { shuffle } from './shuffle.js';
   // animation to finish.
   function commitMove(cards, source, sourceIndex, target, targetIndex) {
     resetTableauClickMemory();
+    clearHint();
     pushHistory();
     const cardToFlip = peekCardToFlip(source, sourceIndex, cards);
     applyMove(state, cards, source, sourceIndex, target, targetIndex);

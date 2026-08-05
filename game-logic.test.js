@@ -12,8 +12,10 @@ import {
   flipNewTopIfNeeded,
   applyMove,
   cloneState,
-  hasAnyLegalMove,
   needsAbandonConfirmation,
+  getLegalMoves,
+  classifyMove,
+  MoveCategory,
 } from './game-logic.js';
 
 let nextId = 0;
@@ -117,6 +119,74 @@ test('4. foundation is not preferred over an available tableau move', () => {
   s.foundations[1] = [card('hearts', 1)]; // a foundation move IS also legal here
   const dest = resolveClickDestination(s, two, 'waste', null, 1);
   assert.deepEqual(dest, { type: 'tableau', index: 3 });
+});
+
+test('a waste card with no legal tableau destination falls back to the foundation', () => {
+  const s = emptyState();
+  const two = card('hearts', 2);
+  s.waste = [two];
+  s.foundations[1] = [card('hearts', 1)]; // ready for the 2
+  // no black 3 exposed anywhere - no legal tableau destination
+  const dest = resolveClickDestination(s, two, 'waste', null, 1);
+  assert.deepEqual(dest, { type: 'foundation', index: 1 });
+});
+
+// ---------- tableau click priority: foundation first, tableau as fallback ----------
+
+test('a single tableau card legal for both foundation and tableau goes to the foundation', () => {
+  const s = emptyState();
+  const two = card('hearts', 2);
+  s.tableau[0] = [two];
+  s.tableau[3] = [card('clubs', 3)]; // black 3 would also legally accept this red 2
+  s.foundations[1] = [card('hearts', 1)]; // hearts foundation ready for the 2
+  const dest = resolveClickDestination(s, two, 'tableau', 0, 1, null);
+  assert.deepEqual(dest, { type: 'foundation', index: 1 });
+});
+
+test('a single tableau card with no legal foundation move falls back to a legal tableau column', () => {
+  const s = emptyState();
+  const two = card('hearts', 2);
+  s.tableau[0] = [two];
+  s.tableau[3] = [card('clubs', 3)]; // black 3 accepts the red 2
+  s.foundations[1] = [card('clubs', 1)]; // present, but the wrong suit for this red 2 - not a legal foundation move
+  const dest = resolveClickDestination(s, two, 'tableau', 0, 1, null);
+  assert.deepEqual(dest, { type: 'tableau', index: 3 });
+});
+
+test('a multi-card cascade with a foundation-eligible lead card still only considers the tableau', () => {
+  const s = emptyState();
+  const black8 = card('spades', 8);
+  const redSeven = card('hearts', 7);
+  s.tableau[0] = [black8, redSeven]; // built sequence: 8♠, 7♥
+  s.tableau[3] = [card('diamonds', 9)]; // red 9 accepts the whole sequence
+  s.foundations[2] = [card('spades', 7)]; // spades foundation ready for the black 8 alone - must be ignored
+  const stack = getStackFrom(s, 'tableau', 0, black8);
+  const dest = resolveClickDestination(s, stack[0], 'tableau', 0, stack.length);
+  assert.deepEqual(dest, { type: 'tableau', index: 3 });
+});
+
+test('a tableau click with no legal destination anywhere does nothing', () => {
+  const s = emptyState();
+  const seven = card('hearts', 7);
+  s.tableau[0] = [seven];
+  s.foundations[1] = [card('clubs', 1)]; // present, but wrong suit - no legal foundation move
+  // no black 8 exposed anywhere - no legal tableau move either
+  const dest = resolveClickDestination(s, seven, 'tableau', 0, 1);
+  assert.equal(dest, null);
+});
+
+test('a foundation-bound tableau click round-trips cleanly through cloneState + applyMove (the undo pattern)', () => {
+  const s = emptyState();
+  const two = card('hearts', 2);
+  s.tableau[0] = [two];
+  s.foundations[1] = [card('hearts', 1)];
+  const before = cloneState(s);
+  applyMove(s, [two], 'tableau', 0, 'foundation', 1);
+  assert.notDeepEqual(s, before);
+  const restored = cloneState(before);
+  assert.deepEqual(restored, before);
+  assert.deepEqual(restored.tableau[0], [two]); // the 2 is back in the tableau
+  assert.equal(restored.foundations[1].length, 1); // the foundation is back to just the ace
 });
 
 test('5a. a tableau sequence moves together when its first card is clicked', () => {
@@ -353,6 +423,168 @@ test('a foundation-sourced card only ever considers tableau destinations', () =>
   assert.deepEqual(dest2, { type: 'tableau', index: 4 });
 });
 
+// ---------- getLegalMoves: the shared, objective enumeration ----------
+
+test('getLegalMoves enumerates tableau, waste, foundation, and stock moves with correct categories', () => {
+  const s = emptyState();
+  const redFive = card('hearts', 5);
+  s.tableau[0] = [card('spades', 6), redFive]; // black6, red5 on top
+  s.tableau[2] = [card('clubs', 6)]; // black6 - a second legal destination for the red5
+  const wasteAce = card('spades', 1);
+  s.waste = [wasteAce]; // ace -> empty foundation
+  s.stock = [card('diamonds', 9)];
+
+  const moves = getLegalMoves(s);
+
+  assert.ok(moves.some(m =>
+    m.category === MoveCategory.TABLEAU_MOVE && m.source === 'tableau' && m.sourceIndex === 0 &&
+    m.card.id === redFive.id && m.target === 'tableau' && m.targetIndex === 2
+  ));
+  assert.ok(moves.some(m =>
+    m.category === MoveCategory.FOUNDATION_MOVE && m.source === 'waste' &&
+    m.card.id === wasteAce.id && m.target === 'foundation' && m.targetIndex === 0
+  ));
+  assert.ok(moves.some(m => m.category === MoveCategory.DRAW_STOCK));
+  assert.ok(!moves.some(m => m.category === MoveCategory.RECYCLE_STOCK));
+});
+
+test('getLegalMoves lists tableau-sourced moves in left-to-right column order', () => {
+  const s = emptyState();
+  s.tableau[1] = [card('diamonds', 5)]; // red5 -> needs a black6
+  s.tableau[4] = [card('hearts', 5)];   // red5 -> needs a black6
+  s.tableau[0] = [card('clubs', 6)];
+  s.tableau[6] = [card('spades', 6)];
+  const sourceOrder = getLegalMoves(s)
+    .filter(m => m.category === MoveCategory.TABLEAU_MOVE && m.source === 'tableau')
+    .map(m => m.sourceIndex);
+  assert.ok(sourceOrder.indexOf(1) < sourceOrder.indexOf(4));
+});
+
+test('getLegalMoves includes a stock draw only when the stock has cards, and a recycle only when it is empty with waste remaining', () => {
+  const s = emptyState();
+  s.stock = [card('hearts', 2)];
+  assert.ok(getLegalMoves(s).some(m => m.category === MoveCategory.DRAW_STOCK));
+  assert.ok(!getLegalMoves(s).some(m => m.category === MoveCategory.RECYCLE_STOCK));
+
+  s.stock = [];
+  s.waste = [card('hearts', 2)];
+  assert.ok(!getLegalMoves(s).some(m => m.category === MoveCategory.DRAW_STOCK));
+  assert.ok(getLegalMoves(s).some(m => m.category === MoveCategory.RECYCLE_STOCK));
+
+  s.waste = [];
+  assert.ok(!getLegalMoves(s).some(m =>
+    m.category === MoveCategory.DRAW_STOCK || m.category === MoveCategory.RECYCLE_STOCK
+  ));
+});
+
+test('getLegalMoves is deterministic - repeated calls on an unchanged state return the same order (what Hint cycles through)', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('hearts', 5)];
+  s.tableau[2] = [card('clubs', 6)];
+  s.waste = [card('spades', 1)];
+  s.stock = [card('diamonds', 9)];
+  const key = m => `${m.category}|${m.source}|${m.sourceIndex}|${m.card ? m.card.id : ''}|${m.target}|${m.targetIndex}`;
+  assert.deepEqual(getLegalMoves(s).map(key), getLegalMoves(s).map(key));
+});
+
+test('getLegalMoves includes a foundation card moving back to the tableau when legal', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1), card('hearts', 2)]; // red 2 on top
+  s.tableau[0] = [card('clubs', 3)]; // black 3 accepts a red 2
+  assert.ok(getLegalMoves(s).some(m => m.source === 'foundation' && m.target === 'tableau'));
+});
+
+test('getLegalMoves and classifyMove never mutate the state passed in', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('clubs', 10), card('hearts', 5)];
+  s.tableau[2] = [card('clubs', 6)];
+  s.stock = [card('diamonds', 9)];
+  const before = cloneState(s);
+  const moves = getLegalMoves(s);
+  moves.forEach(m => classifyMove(s, m));
+  assert.deepEqual(s, before);
+});
+
+// ---------- classifyMove: meaningful vs. trivial reversible shuffle ----------
+
+test('classifyMove: a tableau move that reveals a face-down card is meaningful', () => {
+  const s = emptyState();
+  const buried = card('clubs', 9, false); // face-down
+  const mover = card('hearts', 8); // red 8
+  s.tableau[0] = [buried, mover];
+  s.tableau[1] = [card('spades', 9)]; // black9 accepts red8
+  const move = { category: MoveCategory.TABLEAU_MOVE, source: 'tableau', sourceIndex: 0, card: mover, stackLength: 1, target: 'tableau', targetIndex: 1 };
+  assert.deepEqual(classifyMove(s, move), { status: 'meaningful', reason: 'reveals_card' });
+});
+
+test('classifyMove: a King moving to an empty column when another empty column already exists is a trivial reversible shuffle', () => {
+  const s = emptyState();
+  const king = card('spades', 13);
+  s.tableau[0] = [king]; // every other column is empty (emptyState default)
+  const move = { category: MoveCategory.TABLEAU_MOVE, source: 'tableau', sourceIndex: 0, card: king, stackLength: 1, target: 'tableau', targetIndex: 1 };
+  assert.deepEqual(classifyMove(s, move), { status: 'trivial', reason: 'reversible_shuffle' });
+});
+
+test('classifyMove: moving a card straight back to where it just came from is a trivial reversible shuffle', () => {
+  const s = emptyState();
+  const five = card('hearts', 5);
+  s.tableau[0] = [card('spades', 6)]; // where the 5 would return to
+  s.tableau[2] = [card('clubs', 10), five]; // the 5's current resting spot
+  const move = { category: MoveCategory.TABLEAU_MOVE, source: 'tableau', sourceIndex: 2, card: five, stackLength: 1, target: 'tableau', targetIndex: 0 };
+  assert.deepEqual(classifyMove(s, move), { status: 'trivial', reason: 'reversible_shuffle' });
+});
+
+test('classifyMove: cycling a card between two equivalent tableau destinations that unlock nothing is trivial either way', () => {
+  const s = emptyState();
+  const black10 = card('clubs', 10); // already face-up beneath the moving card - exposing it changes nothing else here
+  const five = card('hearts', 5);
+  s.tableau[0] = [black10, five];
+  s.tableau[2] = [card('clubs', 6)];
+  s.tableau[5] = [card('spades', 6)];
+  const moveToCol2 = { category: MoveCategory.TABLEAU_MOVE, source: 'tableau', sourceIndex: 0, card: five, stackLength: 1, target: 'tableau', targetIndex: 2 };
+  const moveToCol5 = { category: MoveCategory.TABLEAU_MOVE, source: 'tableau', sourceIndex: 0, card: five, stackLength: 1, target: 'tableau', targetIndex: 5 };
+  assert.deepEqual(classifyMove(s, moveToCol2), { status: 'trivial', reason: 'reversible_shuffle' });
+  assert.deepEqual(classifyMove(s, moveToCol5), { status: 'trivial', reason: 'reversible_shuffle' });
+});
+
+test('classifyMove: a tableau move that reveals nothing but changes what else is possible is meaningful (the exposed-new-top case)', () => {
+  const s = emptyState();
+  const black4 = card('clubs', 4); // already face-up, buried under an unrelated moving sequence
+  const nine = card('spades', 9);
+  const eight = card('hearts', 8);
+  const seven = card('spades', 7);
+  s.tableau[0] = [black4, nine, eight, seven];
+  s.tableau[3] = [card('hearts', 10)]; // red 10 accepts the 9-8-7 sequence
+  s.waste = [card('diamonds', 3)]; // red 3 has nowhere to go until black4 becomes a top
+  const move = { category: MoveCategory.TABLEAU_MOVE, source: 'tableau', sourceIndex: 0, card: nine, stackLength: 3, target: 'tableau', targetIndex: 3 };
+  assert.deepEqual(classifyMove(s, move), { status: 'meaningful', reason: 'changes_available_moves' });
+});
+
+test('classifyMove: a non-King move that empties its column is meaningful when it creates a landing spot for a King', () => {
+  const s = emptyState();
+  const lone7 = card('hearts', 7); // the column's only card - moving it away empties the column
+  s.tableau[0] = [lone7];
+  s.tableau[1] = [card('clubs', 8)]; // black8 accepts the red7
+  s.tableau[3] = [card('spades', 13)]; // a King elsewhere that gains a new empty-column option
+  const move = { category: MoveCategory.TABLEAU_MOVE, source: 'tableau', sourceIndex: 0, card: lone7, stackLength: 1, target: 'tableau', targetIndex: 1 };
+  assert.deepEqual(classifyMove(s, move), { status: 'meaningful', reason: 'changes_available_moves' });
+});
+
+test('classifyMove: foundation moves, waste moves, and stock draw/recycle are always meaningful, independent of the tableau-shuffle check', () => {
+  const s = emptyState();
+  const foundationMove = { category: MoveCategory.FOUNDATION_MOVE, source: 'waste', sourceIndex: null, card: card('spades', 1), stackLength: 1, target: 'foundation', targetIndex: 0 };
+  assert.equal(classifyMove(s, foundationMove).status, 'meaningful');
+
+  const wasteMove = { category: MoveCategory.TABLEAU_MOVE, source: 'waste', sourceIndex: null, card: card('hearts', 5), stackLength: 1, target: 'tableau', targetIndex: 2 };
+  assert.equal(classifyMove(s, wasteMove).status, 'meaningful');
+
+  const drawMove = { category: MoveCategory.DRAW_STOCK, source: 'stock', sourceIndex: null, card: null, stackLength: 0, target: 'waste', targetIndex: null };
+  assert.equal(classifyMove(s, drawMove).status, 'meaningful');
+
+  const recycleMove = { category: MoveCategory.RECYCLE_STOCK, source: 'waste', sourceIndex: null, card: null, stackLength: 0, target: 'stock', targetIndex: null };
+  assert.equal(classifyMove(s, recycleMove).status, 'meaningful');
+});
+
 // ---------- abandon-confirmation ----------
 
 test('an untouched game never needs confirmation, regardless of moves or won state', () => {
@@ -383,20 +615,20 @@ test('a dead game (no cards left to draw, nothing exposed can move) never needs 
   s.tableau[1] = [card('clubs', 6)];
   s.tableau[2] = [card('spades', 5)];
   s.foundations[0] = [card('hearts', 1)]; // a lone Ace: nothing in the tableau is a black 2, and no tableau column accepts an Ace back down
-  assert.equal(hasAnyLegalMove(s), false);
+  assert.equal(getLegalMoves(s).length, 0);
   assert.equal(needsAbandonConfirmation(s, 5, false), false);
 });
 
-test('hasAnyLegalMove is true whenever the stock or waste still has cards, even with a fully locked tableau', () => {
+test('a board where only a trivial King shuffle remains still needs confirmation, but every legal move classifies as trivial', () => {
+  // This is the bug being fixed: visibility (a legal move genuinely exists)
+  // and wording (is any of them worth anything) are separate questions -
+  // the dialog must still show here, just with "only non-progressing moves
+  // remain" instead of falsely claiming real moves are available.
   const s = emptyState();
-  s.tableau[0] = [card('clubs', 7)]; // nothing else exposed, nothing lines up
-  s.stock = [card('hearts', 2)];
-  assert.equal(hasAnyLegalMove(s), true);
-});
-
-test('hasAnyLegalMove is true when a foundation card could legally move back to the tableau', () => {
-  const s = emptyState();
-  s.foundations[0] = [card('hearts', 1), card('hearts', 2)]; // red 2 on top
-  s.tableau[0] = [card('clubs', 3)]; // black 3 accepts a red 2
-  assert.equal(hasAnyLegalMove(s), true);
+  const king = card('spades', 13);
+  s.tableau[0] = [king]; // only legal moves: the King to any of the other 6 empty columns
+  assert.equal(needsAbandonConfirmation(s, 5, false), true);
+  const moves = getLegalMoves(s);
+  assert.ok(moves.length > 0);
+  assert.ok(moves.every(m => classifyMove(s, m).status === 'trivial'));
 });

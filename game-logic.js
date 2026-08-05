@@ -57,6 +57,134 @@ export function findAllLegalTableau(state, card, excludeIndex) {
   return result;
 }
 
+export const MoveCategory = {
+  FOUNDATION_MOVE: 'FOUNDATION_MOVE', // any source -> a foundation
+  TABLEAU_MOVE: 'TABLEAU_MOVE',       // any source -> a tableau column
+  DRAW_STOCK: 'DRAW_STOCK',
+  RECYCLE_STOCK: 'RECYCLE_STOCK',
+};
+
+// Every currently legal move on the board: objective and unfiltered, with no
+// opinion about which ones are worth doing (see classifyMove for that - a
+// deliberately separate layer). Each entry:
+// { category, source: 'tableau'|'waste'|'foundation'|'stock', sourceIndex,
+//   card, stackLength, target: 'tableau'|'foundation'|'waste'|'stock',
+//   targetIndex }
+// card is null and stackLength is 0 for a stock draw/recycle, which acts on
+// a pile rather than a specific card.
+export function getLegalMoves(state) {
+  const moves = [];
+
+  for (let col = 0; col < state.tableau.length; col++) {
+    const column = state.tableau[col];
+    for (let i = column.length - 1; i >= 0; i--) {
+      const card = column[i];
+      if (!card.faceUp) break; // nothing face-up sits above a face-down card
+      const stackLength = column.length - i;
+      findAllLegalTableau(state, card, col).forEach(targetIndex => {
+        moves.push({ category: MoveCategory.TABLEAU_MOVE, source: 'tableau', sourceIndex: col, card, stackLength, target: 'tableau', targetIndex });
+      });
+      if (stackLength === 1) {
+        const fi = anyFoundationFor(state, card);
+        if (fi !== -1) moves.push({ category: MoveCategory.FOUNDATION_MOVE, source: 'tableau', sourceIndex: col, card, stackLength: 1, target: 'foundation', targetIndex: fi });
+      }
+    }
+  }
+
+  if (state.waste.length) {
+    const card = state.waste[state.waste.length - 1];
+    // sourceIndex: null matches the convention script.js already uses for
+    // waste-sourced cards (attachCardInteractions passes null, not an
+    // index) - resolveClickDestination matches candidates against exactly
+    // what the caller passes in.
+    findAllLegalTableau(state, card, -1).forEach(targetIndex => {
+      moves.push({ category: MoveCategory.TABLEAU_MOVE, source: 'waste', sourceIndex: null, card, stackLength: 1, target: 'tableau', targetIndex });
+    });
+    const fi = anyFoundationFor(state, card);
+    if (fi !== -1) moves.push({ category: MoveCategory.FOUNDATION_MOVE, source: 'waste', sourceIndex: null, card, stackLength: 1, target: 'foundation', targetIndex: fi });
+  }
+
+  for (let i = 0; i < state.foundations.length; i++) {
+    const pile = state.foundations[i];
+    if (!pile.length) continue;
+    const card = pile[pile.length - 1];
+    findAllLegalTableau(state, card, -1).forEach(targetIndex => {
+      moves.push({ category: MoveCategory.TABLEAU_MOVE, source: 'foundation', sourceIndex: i, card, stackLength: 1, target: 'tableau', targetIndex });
+    });
+  }
+
+  if (state.stock.length > 0) {
+    moves.push({ category: MoveCategory.DRAW_STOCK, source: 'stock', sourceIndex: null, card: null, stackLength: 0, target: 'waste', targetIndex: null });
+  } else if (state.waste.length > 0) {
+    moves.push({ category: MoveCategory.RECYCLE_STOCK, source: 'waste', sourceIndex: null, card: null, stackLength: 0, target: 'stock', targetIndex: null });
+  }
+
+  return moves;
+}
+
+function moveKey(m) {
+  return `${m.category}|${m.source}|${m.sourceIndex}|${m.card ? m.card.id : ''}|${m.target}|${m.targetIndex}`;
+}
+
+function nonShuffleReason(move) {
+  if (move.target === 'foundation') return 'foundation_progress';
+  if (move.category === MoveCategory.DRAW_STOCK) return 'draws_stock';
+  if (move.category === MoveCategory.RECYCLE_STOCK) return 'recycles_waste';
+  if (move.source === 'waste') return 'clears_waste';
+  return 'returns_card'; // source === 'foundation' -> tableau
+}
+
+// Is this move genuinely progressive, or a reversible shuffle that leaves
+// the board effectively unchanged? Only tableau->tableau moves are
+// ambiguous enough to need resolving - every other category is always real
+// progress by definition (sending a card home, unsticking the waste,
+// drawing/recycling the stock), so those short-circuit immediately.
+//
+// For a tableau->tableau move: simulate it (cloneState + applyMove, the
+// same pair the undo system already uses) and diff getLegalMoves before and
+// after, excluding every move belonging to the card/stack actually being
+// moved (not just this one destination - the moved card's own set of
+// possible next moves is expected to look different after it relocates,
+// e.g. its sourceIndex changes, regardless of whether anything meaningful
+// happened; comparing the *rest* of the board is what actually answers the
+// question). If nothing else differs, the move could be undone for free
+// right now - a reversible shuffle. If the diff shows any other change (a
+// new destination opened, a previously-legal move gone), something real
+// happened, whatever it is - the diff finds it without this function having
+// to understand *why*.
+//
+// One fact is checked directly rather than left to the diff: whether a
+// face-down card becomes face-up. A freshly-revealed card only appears in
+// getLegalMoves if it already has somewhere to go; if it doesn't yet, the
+// diff alone would see no change and call the reveal "trivial," which isn't
+// true - a reveal is real, irreversible progress regardless of whether it
+// immediately unlocks another move.
+export function classifyMove(state, move) {
+  if (move.category !== MoveCategory.TABLEAU_MOVE || move.source !== 'tableau') {
+    return { status: 'meaningful', reason: nonShuffleReason(move) };
+  }
+
+  const col = state.tableau[move.sourceIndex];
+  const remaining = col.length - move.stackLength;
+  const revealsCard = remaining > 0 && !col[remaining - 1].faceUp;
+
+  const belongsToMovedCard = m => m.card && m.card.id === move.card.id;
+  const beforeKeys = new Set(getLegalMoves(state).filter(m => !belongsToMovedCard(m)).map(moveKey));
+
+  const after = cloneState(state);
+  const afterStack = getStackFrom(after, move.source, move.sourceIndex, move.card);
+  applyMove(after, afterStack, move.source, move.sourceIndex, move.target, move.targetIndex);
+
+  const afterKeys = new Set(getLegalMoves(after).filter(m => !belongsToMovedCard(m)).map(moveKey));
+
+  const graphChanged = beforeKeys.size !== afterKeys.size || [...beforeKeys].some(k => !afterKeys.has(k));
+
+  if (revealsCard) return { status: 'meaningful', reason: 'reveals_card' };
+  return graphChanged
+    ? { status: 'meaningful', reason: 'changes_available_moves' }
+    : { status: 'trivial', reason: 'reversible_shuffle' };
+}
+
 // Given the current legal destinations (ascending) and the column this card
 // was sent to last time it was cycled, returns the next one: the smallest
 // legal index greater than lastUsed, or the leftmost again if lastUsed was
@@ -81,29 +209,41 @@ export function nextCycleIndex(legalIndices, lastUsed) {
 //  - waste/foundation source (non-Ace): leftmost legal tableau column
 //    anywhere, else leftmost legal foundation (foundation skipped entirely
 //    for foundation-sourced cards).
-//  - tableau source (non-Ace): every legal tableau column, left to right,
-//    cycling forward from lastTableauDest each time the same card/sequence
-//    is clicked again (see nextCycleIndex); else a legal foundation (single
-//    cards only — a multi-card sequence never targets a foundation). A King
-//    (or a sequence led by one) relocating between tableau columns is
-//    deterministic: the first click targets the first legal empty column to
-//    its *right*; repeated clicks keep advancing rightward through every
-//    remaining legal column in order; once none remain to the right, the
-//    next click wraps to the leftmost legal column overall (which may be to
-//    its left) and the cycle continues from there. It never re-targets its
-//    own current column.
+//  - tableau source, single card (non-Ace): a legal foundation first, if
+//    one exists; only when none does, every legal tableau column, left to
+//    right, cycling forward from lastTableauDest each time the same card is
+//    clicked again (see nextCycleIndex). A King (or a sequence led by one)
+//    relocating between tableau columns is deterministic: the first click
+//    targets the first legal empty column to its *right*; repeated clicks
+//    keep advancing rightward through every remaining legal column in
+//    order; once none remain to the right, the next click wraps to the
+//    leftmost legal column overall (which may be to its left) and the
+//    cycle continues from there. It never re-targets its own column.
+//  - tableau source, multi-card sequence: never a foundation - straight to
+//    every legal tableau column, same left-to-right/cycling rule as above.
 //  - no legal destination: null, meaning "do nothing".
+//
+// Sourced from getLegalMoves(state) rather than calling the rule predicates
+// directly - this is the same shared enumeration Hint and the abandon
+// dialog read from, just filtered down to the one clicked card and reduced
+// via the priority/cycling rules above. It deliberately never consults
+// classifyMove: a manual click is an intentional action, even when the same
+// move wouldn't be worth a Hint or count as "progress."
 export function resolveClickDestination(state, card, source, sourceIndex, stackLength, lastTableauDest = null) {
   const isSequence = stackLength > 1;
+  const candidates = getLegalMoves(state).filter(
+    m => m.source === source && m.sourceIndex === sourceIndex && m.card && m.card.id === card.id
+  );
+  const foundationMove = candidates.find(m => m.target === 'foundation');
+  const tableauTargets = candidates.filter(m => m.target === 'tableau').map(m => m.targetIndex).sort((a, b) => a - b);
 
   if (card.rank === 1) {
     if (source === 'foundation') return null;
-    const fi = anyFoundationFor(state, card);
-    return fi !== -1 ? { type: 'foundation', index: fi } : null;
+    return foundationMove ? { type: 'foundation', index: foundationMove.targetIndex } : null;
   }
 
   if (source === 'tableau') {
-    const legal = findAllLegalTableau(state, card, sourceIndex);
+    if (!isSequence && foundationMove) return { type: 'foundation', index: foundationMove.targetIndex };
     // A King's only legal tableau targets are empty columns (see
     // canPlaceOnTableau). With no cycle memory yet, seed the search from
     // the King's own column instead of the board's leftmost legal column
@@ -111,59 +251,25 @@ export function resolveClickDestination(state, card, source, sourceIndex, stackL
     // King's very first click prefer rightward-from-here rather than
     // jumping to whichever empty column happens to be leftmost overall.
     const threshold = (card.rank === 13 && lastTableauDest == null) ? sourceIndex : lastTableauDest;
-    const ti = nextCycleIndex(legal, threshold);
+    const ti = nextCycleIndex(tableauTargets, threshold);
     if (ti !== -1) return { type: 'tableau', index: ti };
-    if (!isSequence) {
-      const fi = anyFoundationFor(state, card);
-      if (fi !== -1) return { type: 'foundation', index: fi };
-    }
     return null;
   }
 
-  const ti = findAnyLegalTableau(state, card);
-  if (ti !== -1) return { type: 'tableau', index: ti };
-  if (source !== 'foundation') {
-    const fi = anyFoundationFor(state, card);
-    if (fi !== -1) return { type: 'foundation', index: fi };
-  }
+  if (tableauTargets.length) return { type: 'tableau', index: tableauTargets[0] };
+  if (source !== 'foundation' && foundationMove) return { type: 'foundation', index: foundationMove.targetIndex };
   return null;
-}
-
-// True only when this can be stated with certainty: stock and waste are
-// both empty (no more cycling through the stock is possible, ever) AND no
-// currently-exposed card (every tableau column's top, every foundation's
-// top) has anywhere legal to go. This deliberately does *not* attempt to
-// prove a deal is unwinnable while stock/waste still has cards in it -
-// drawing could still reveal a move that isn't visible yet, and answering
-// that fully would need a real solver, not a rules check. When it can't be
-// sure, this returns true (a move might still exist) rather than falsely
-// claiming the game is stuck.
-export function hasAnyLegalMove(state) {
-  if (state.stock.length > 0 || state.waste.length > 0) return true;
-  for (let i = 0; i < state.tableau.length; i++) {
-    const col = state.tableau[i];
-    if (!col.length) continue;
-    const top = col[col.length - 1];
-    if (anyFoundationFor(state, top) !== -1) return true;
-    if (findAllLegalTableau(state, top, i).length > 0) return true;
-  }
-  for (let i = 0; i < state.foundations.length; i++) {
-    const pile = state.foundations[i];
-    if (!pile.length) continue;
-    // Moving a foundation card back down to the tableau is legal, if
-    // unusual - still worth counting as "a move exists".
-    if (findAnyLegalTableau(state, pile[pile.length - 1]) !== -1) return true;
-  }
-  return false;
 }
 
 // The single place every destructive action (New Game, Restart, ...)
 // consults before discarding the current deal. historyLength and won are
-// caller-tracked (script.js), not part of `state` itself.
+// caller-tracked (script.js), not part of `state` itself. Visibility only -
+// script.js separately consults classifyMove to choose the dialog's
+// wording ("still available" vs "only non-progressing moves remain").
 export function needsAbandonConfirmation(state, historyLength, won) {
   if (historyLength === 0) return false; // nothing played yet - nothing to lose
   if (won) return false;
-  return hasAnyLegalMove(state);
+  return getLegalMoves(state).length > 0;
 }
 
 export function flipNewTopIfNeeded(state, colIndex) {
