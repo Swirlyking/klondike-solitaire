@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Mike's Solitaire</title>
 <link rel="stylesheet" href="style.css">
 
@@ -13,7 +13,7 @@
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0b5d3b">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Mike's Solitaire">
 </head>
 <body>
@@ -77,6 +77,17 @@
       <h2>You win!</h2>
       <p id="win-stats"></p>
       <button id="winNewGameBtn">Play again</button>
+    </div>
+  </div>
+
+  <div id="confirm-overlay" class="hidden">
+    <div id="confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-message"></p>
+      <div id="confirm-actions">
+        <button id="confirmKeepBtn">Keep Playing</button>
+        <button id="confirmGiveUpBtn">Give Up</button>
+      </div>
     </div>
   </div>
 

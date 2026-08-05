@@ -39,6 +39,18 @@ html, body {
   overscroll-behavior: none;
 }
 
+/* Standalone iOS home-screen mode (viewport-fit=cover in index.html) lets
+   the page draw into the notch/status-bar/home-indicator area instead of
+   iOS letterboxing it in white - html's own full-bleed background now
+   shows through there instead. This pushes the real, interactive content
+   back in from the physical edges by exactly the safe-area amount so
+   nothing sits under the notch or rounded corners. Falls back to 0 on
+   any browser without safe-area support (env() with no fallback would be
+   invalid, not just ignored). */
+body {
+  padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0);
+}
+
 #update-bar {
   display: flex;
   align-items: center;
@@ -501,6 +513,95 @@ html, body {
   cursor: pointer;
 }
 
+#confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2100; /* above settings/win overlays, in case one is open behind it */
+  padding: 20px;
+}
+#confirm-overlay.hidden { display: none; }
+
+#confirm-card {
+  background: #133;
+  border: 1px solid var(--gold);
+  border-radius: 12px;
+  padding: 28px 32px;
+  width: min(90vw, 400px);
+  text-align: center;
+}
+#confirm-card h2 {
+  color: var(--gold);
+  margin: 0 0 10px;
+  font-size: 19px;
+}
+#confirm-card p {
+  color: #dce7e0; /* cream-tinted body text, readable against the dark teal card */
+  margin: 0 0 22px;
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+
+#confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+#confirm-actions button {
+  flex: 1;
+  padding: 10px 18px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+#confirm-actions button:hover { filter: brightness(1.1); }
+#confirm-actions button:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* Keep Playing: the primary/default action - same gold-fill treatment as
+   the win card's button, so it's unmistakably the "safe" choice. */
+#confirmKeepBtn {
+  background: var(--gold);
+  border: none;
+  color: #222;
+}
+
+/* Give Up: destructive, deliberately de-emphasized so it never reads as
+   the default - an outline rather than a fill, in a muted warm red that
+   still sits comfortably in the felt/gold palette. */
+#confirmGiveUpBtn {
+  background: transparent;
+  border: 1px solid rgba(224, 120, 96, 0.6);
+  color: #e07860;
+}
+#confirmGiveUpBtn:hover { background: rgba(224, 120, 96, 0.12); }
+
+/* Above the mobile breakpoint, --card-w was a flat 84px regardless of how
+   wide the viewport actually was - fine for a modest browser window, but
+   on a genuinely wide screen (a landscape iPad, a large monitor) it left
+   the whole board stranded small and centered with huge unused felt on
+   either side. This scales card size up with the viewport - same "fill
+   the available width" approach the mobile tier already uses - capped so
+   it doesn't grow unreasonably large on an oversized display. */
+@media (min-width: 721px) {
+  :root {
+    --pile-gap: 16px;
+    --card-w: clamp(84px, calc((100vw - 120px - 6 * var(--pile-gap)) / 7), 170px);
+    --card-h: calc(var(--card-w) * 122 / 84);
+    /* Same peek-amount ratios as the original fixed 84px card (9px/24px). */
+    --cascade-down: calc(var(--card-w) * 9 / 84);
+    --cascade-up: calc(var(--card-w) * 24 / 84);
+  }
+  #board { padding: 24px 40px 60px; max-width: 1500px; }
+}
+
 @media (max-width: 720px) {
   :root {
     --board-pad: 8px;
@@ -519,4 +620,9 @@ html, body {
   #board { padding: var(--board-pad); }
   #top-row { margin-bottom: 20px; }
   .column { min-height: 260px; }
+
+  /* Large, stacked, easy-to-tap targets rather than the desktop's
+     side-by-side pair - a 44px+ tap height on each. */
+  #confirm-actions { flex-direction: column-reverse; }
+  #confirm-actions button { padding: 14px 18px; font-size: 15px; }
 }

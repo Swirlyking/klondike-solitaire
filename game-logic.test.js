@@ -12,6 +12,8 @@ import {
   flipNewTopIfNeeded,
   applyMove,
   cloneState,
+  hasAnyLegalMove,
+  needsAbandonConfirmation,
 } from './game-logic.js';
 
 let nextId = 0;
@@ -178,7 +180,7 @@ test('empty tableau columns only accept a King (or a sequence starting with one)
   assert.ok(canPlaceOnTableau(s, card('hearts', 13), 0)); // king
 });
 
-test('a King relocating between tableau columns only ever targets an empty column to its right, never its left', () => {
+test('a King\'s first click prefers an empty column to its right over one to its left', () => {
   const s = emptyState();
   const king = card('spades', 13);
   s.tableau[3] = [king]; // King's own column
@@ -186,27 +188,13 @@ test('a King relocating between tableau columns only ever targets an empty colum
   s.tableau[2] = [card('hearts', 5)]; // occupied
   s.tableau[4] = [card('hearts', 5)]; // occupied
   s.tableau[6] = [card('hearts', 5)]; // occupied
-  // column 1 is empty and to the LEFT - must never be offered by click
-  // column 5 is empty and to the RIGHT - the only legal click destination
+  // column 1 is empty and to the LEFT - available, but not preferred
+  // column 5 is empty and to the RIGHT - preferred first
   const dest = resolveClickDestination(s, king, 'tableau', 3, 1, null);
   assert.deepEqual(dest, { type: 'tableau', index: 5 });
 });
 
-test('a King with no empty column to its right has no click destination, even with one to its left', () => {
-  const s = emptyState();
-  const king = card('hearts', 13);
-  s.tableau[5] = [king]; // King's own column
-  s.tableau[0] = [card('clubs', 5)];
-  s.tableau[2] = [card('clubs', 5)];
-  s.tableau[3] = [card('clubs', 5)];
-  s.tableau[4] = [card('clubs', 5)];
-  s.tableau[6] = [card('clubs', 5)];
-  // column 1 is empty but to the LEFT of column 5 - not a legal click target
-  const dest = resolveClickDestination(s, king, 'tableau', 5, 1, null);
-  assert.equal(dest, null);
-});
-
-test('a King cycles through multiple empty columns to its right, in order', () => {
+test('a King cycles rightward through multiple empty columns, in order', () => {
   const s = emptyState();
   const king = card('diamonds', 13);
   s.tableau[0] = [king]; // King's own column
@@ -217,6 +205,63 @@ test('a King cycles through multiple empty columns to its right, in order', () =
   assert.deepEqual(dest1, { type: 'tableau', index: 2 });
   const dest2 = resolveClickDestination(s, king, 'tableau', 0, 1, 2);
   assert.deepEqual(dest2, { type: 'tableau', index: 4 });
+});
+
+test('a King wraps from the rightmost legal destination back to the leftmost, even if that\'s to its left', () => {
+  const s = emptyState();
+  const king = card('clubs', 13);
+  s.tableau[3] = [king]; // King's own column
+  s.tableau[0] = [card('hearts', 5)]; // occupied
+  s.tableau[2] = [card('hearts', 5)]; // occupied
+  s.tableau[4] = [card('hearts', 5)]; // occupied
+  s.tableau[6] = [card('hearts', 5)]; // occupied
+  // column 1 is empty and to the LEFT; column 5 is empty and to the RIGHT -
+  // the only two legal destinations. Already cycled to column 5 (the only
+  // right-side option) - the next click has nowhere further right to go,
+  // so it wraps all the way around to column 1.
+  const dest = resolveClickDestination(s, king, 'tableau', 3, 1, 5);
+  assert.deepEqual(dest, { type: 'tableau', index: 1 });
+});
+
+test('a King has no click destination when no other legal column exists at all', () => {
+  const s = emptyState();
+  const king = card('hearts', 13);
+  s.tableau[5] = [king]; // King's own column
+  // every other column occupied - genuinely nowhere legal to go
+  s.tableau[0] = [card('clubs', 5)];
+  s.tableau[1] = [card('clubs', 5)];
+  s.tableau[2] = [card('clubs', 5)];
+  s.tableau[3] = [card('clubs', 5)];
+  s.tableau[4] = [card('clubs', 5)];
+  s.tableau[6] = [card('clubs', 5)];
+  const dest = resolveClickDestination(s, king, 'tableau', 5, 1, null);
+  assert.equal(dest, null);
+});
+
+test('a King-to-empty-column move round-trips cleanly through cloneState + applyMove (the undo pattern)', () => {
+  const s = emptyState();
+  const king = card('spades', 13);
+  s.tableau[0] = [king];
+  const before = cloneState(s);
+  applyMove(s, [king], 'tableau', 0, 'tableau', 3);
+  assert.notDeepEqual(s, before); // the move actually changed something
+  const restored = cloneState(before); // exactly what undo() does: hand back the pre-move snapshot
+  assert.deepEqual(restored, before);
+  assert.deepEqual(restored.tableau[0], [king]); // King is back in its original column
+  assert.deepEqual(restored.tableau[3], []); // the destination column is empty again
+});
+
+test('a King-cycling click never affects tableau placement legality, so dragging still reaches columns on either side', () => {
+  const s = emptyState();
+  const king = card('diamonds', 13);
+  s.tableau[3] = [king];
+  // canPlaceOnTableau is what drag-and-drop's drop-target check uses
+  // directly (script.js's isValidDropTarget) - resolveClickDestination's
+  // King-specific ordering never touches it, so both a left-side and a
+  // right-side empty column must still be legal *drop* targets regardless
+  // of what click-cycling would currently prefer.
+  assert.ok(canPlaceOnTableau(s, king, 0)); // left of the King
+  assert.ok(canPlaceOnTableau(s, king, 5)); // right of the King
 });
 
 test('empty tableau columns participate in normal left-to-right priority', () => {
@@ -306,4 +351,52 @@ test('a foundation-sourced card only ever considers tableau destinations', () =>
   s.tableau[4] = [card('clubs', 3)]; // now a legal tableau destination exists
   const dest2 = resolveClickDestination(s, two, 'foundation', 0, 1);
   assert.deepEqual(dest2, { type: 'tableau', index: 4 });
+});
+
+// ---------- abandon-confirmation ----------
+
+test('an untouched game never needs confirmation, regardless of moves or won state', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('hearts', 5)]; // a move would technically be available
+  assert.equal(needsAbandonConfirmation(s, 0, false), false);
+  assert.equal(needsAbandonConfirmation(s, 0, true), false); // won + untouched is a contradiction, but still: no history, no confirmation
+});
+
+test('an active game with legal moves needs confirmation', () => {
+  const s = emptyState();
+  s.stock = [card('clubs', 4)]; // stock alone is enough to count as "a move might exist"
+  assert.equal(needsAbandonConfirmation(s, 3, false), true);
+});
+
+test('a won game never needs confirmation, even with moves still technically available', () => {
+  const s = emptyState();
+  s.stock = [card('clubs', 4)];
+  assert.equal(needsAbandonConfirmation(s, 10, true), false);
+});
+
+test('a dead game (no cards left to draw, nothing exposed can move) never needs confirmation', () => {
+  const s = emptyState();
+  // stock and waste both empty; every tableau top and foundation top is
+  // stuck (nothing legally accepts it, and none of them are Kings sitting
+  // on an empty column since every column is occupied).
+  s.tableau[0] = [card('clubs', 7)];
+  s.tableau[1] = [card('clubs', 6)];
+  s.tableau[2] = [card('spades', 5)];
+  s.foundations[0] = [card('hearts', 1)]; // a lone Ace: nothing in the tableau is a black 2, and no tableau column accepts an Ace back down
+  assert.equal(hasAnyLegalMove(s), false);
+  assert.equal(needsAbandonConfirmation(s, 5, false), false);
+});
+
+test('hasAnyLegalMove is true whenever the stock or waste still has cards, even with a fully locked tableau', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('clubs', 7)]; // nothing else exposed, nothing lines up
+  s.stock = [card('hearts', 2)];
+  assert.equal(hasAnyLegalMove(s), true);
+});
+
+test('hasAnyLegalMove is true when a foundation card could legally move back to the tableau', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1), card('hearts', 2)]; // red 2 on top
+  s.tableau[0] = [card('clubs', 3)]; // black 3 accepts a red 2
+  assert.equal(hasAnyLegalMove(s), true);
 });

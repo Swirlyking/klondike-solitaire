@@ -85,10 +85,13 @@ export function nextCycleIndex(legalIndices, lastUsed) {
 //    cycling forward from lastTableauDest each time the same card/sequence
 //    is clicked again (see nextCycleIndex); else a legal foundation (single
 //    cards only — a multi-card sequence never targets a foundation). A King
-//    (or a sequence led by one) relocating between tableau columns only
-//    ever targets an empty column to its *right* — an empty column to its
-//    left is reachable only by drag, never by click, so clicking a King
-//    never sends it backward across the board.
+//    (or a sequence led by one) relocating between tableau columns is
+//    deterministic: the first click targets the first legal empty column to
+//    its *right*; repeated clicks keep advancing rightward through every
+//    remaining legal column in order; once none remain to the right, the
+//    next click wraps to the leftmost legal column overall (which may be to
+//    its left) and the cycle continues from there. It never re-targets its
+//    own current column.
 //  - no legal destination: null, meaning "do nothing".
 export function resolveClickDestination(state, card, source, sourceIndex, stackLength, lastTableauDest = null) {
   const isSequence = stackLength > 1;
@@ -100,12 +103,15 @@ export function resolveClickDestination(state, card, source, sourceIndex, stackL
   }
 
   if (source === 'tableau') {
-    let legal = findAllLegalTableau(state, card, sourceIndex);
-    // A King can only ever legally target an empty column (see
-    // canPlaceOnTableau — nothing outranks it), so this scopes those
-    // candidates to the right of its current column, never the left.
-    if (card.rank === 13) legal = legal.filter(i => i > sourceIndex);
-    const ti = nextCycleIndex(legal, lastTableauDest);
+    const legal = findAllLegalTableau(state, card, sourceIndex);
+    // A King's only legal tableau targets are empty columns (see
+    // canPlaceOnTableau). With no cycle memory yet, seed the search from
+    // the King's own column instead of the board's leftmost legal column
+    // (the latter is what every other card uses) - that's what makes a
+    // King's very first click prefer rightward-from-here rather than
+    // jumping to whichever empty column happens to be leftmost overall.
+    const threshold = (card.rank === 13 && lastTableauDest == null) ? sourceIndex : lastTableauDest;
+    const ti = nextCycleIndex(legal, threshold);
     if (ti !== -1) return { type: 'tableau', index: ti };
     if (!isSequence) {
       const fi = anyFoundationFor(state, card);
@@ -121,6 +127,43 @@ export function resolveClickDestination(state, card, source, sourceIndex, stackL
     if (fi !== -1) return { type: 'foundation', index: fi };
   }
   return null;
+}
+
+// True only when this can be stated with certainty: stock and waste are
+// both empty (no more cycling through the stock is possible, ever) AND no
+// currently-exposed card (every tableau column's top, every foundation's
+// top) has anywhere legal to go. This deliberately does *not* attempt to
+// prove a deal is unwinnable while stock/waste still has cards in it -
+// drawing could still reveal a move that isn't visible yet, and answering
+// that fully would need a real solver, not a rules check. When it can't be
+// sure, this returns true (a move might still exist) rather than falsely
+// claiming the game is stuck.
+export function hasAnyLegalMove(state) {
+  if (state.stock.length > 0 || state.waste.length > 0) return true;
+  for (let i = 0; i < state.tableau.length; i++) {
+    const col = state.tableau[i];
+    if (!col.length) continue;
+    const top = col[col.length - 1];
+    if (anyFoundationFor(state, top) !== -1) return true;
+    if (findAllLegalTableau(state, top, i).length > 0) return true;
+  }
+  for (let i = 0; i < state.foundations.length; i++) {
+    const pile = state.foundations[i];
+    if (!pile.length) continue;
+    // Moving a foundation card back down to the tableau is legal, if
+    // unusual - still worth counting as "a move exists".
+    if (findAnyLegalTableau(state, pile[pile.length - 1]) !== -1) return true;
+  }
+  return false;
+}
+
+// The single place every destructive action (New Game, Restart, ...)
+// consults before discarding the current deal. historyLength and won are
+// caller-tracked (script.js), not part of `state` itself.
+export function needsAbandonConfirmation(state, historyLength, won) {
+  if (historyLength === 0) return false; // nothing played yet - nothing to lose
+  if (won) return false;
+  return hasAnyLegalMove(state);
 }
 
 export function flipNewTopIfNeeded(state, colIndex) {

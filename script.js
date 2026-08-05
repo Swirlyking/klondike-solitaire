@@ -6,6 +6,7 @@ import {
   resolveClickDestination,
   applyMove,
   cloneState,
+  needsAbandonConfirmation,
 } from './game-logic.js';
 import { getPreference, setPreference } from './preferences.js';
 import { shuffle } from './shuffle.js';
@@ -286,6 +287,11 @@ import { shuffle } from './shuffle.js';
   const settingsOverlay = document.getElementById('settings-overlay');
   const settingsCloseBtn = document.getElementById('settingsCloseBtn');
   const settingsSections = document.getElementById('settings-sections');
+  const confirmOverlay = document.getElementById('confirm-overlay');
+  const confirmTitle = document.getElementById('confirm-title');
+  const confirmMessage = document.getElementById('confirm-message');
+  const confirmKeepBtn = document.getElementById('confirmKeepBtn');
+  const confirmGiveUpBtn = document.getElementById('confirmGiveUpBtn');
 
   function freshDeck() {
     const deck = [];
@@ -346,6 +352,85 @@ import { shuffle } from './shuffle.js';
     startTime = Date.now();
     updateMoves();
     render();
+  }
+
+  // ---------- abandon-game confirmation ----------
+
+  const ABANDON_COPY = {
+    newGame: { title: 'Give up this game?', message: 'There are still moves available. A new deal will replace this one.' },
+    restart: { title: 'Restart this deal?', message: 'Your moves will be undone, but the same cards will be dealt again.' },
+  };
+
+  let confirmOpen = false;
+  let confirmResolving = false; // guards a rapid double-tap on either button from double-firing or leaving the modal half-closed
+  let confirmOnConfirm = null;
+  let confirmTriggerEl = null; // whatever had focus before the modal opened, restored on close
+
+  function onConfirmKeydown(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeConfirm();
+      return;
+    }
+    if (e.key === 'Tab') {
+      // Only two focusable elements ever exist inside this modal - trap
+      // Tab/Shift+Tab between them instead of letting focus escape to the
+      // page underneath the overlay.
+      e.preventDefault();
+      (document.activeElement === confirmKeepBtn ? confirmGiveUpBtn : confirmKeepBtn).focus();
+    }
+  }
+
+  function closeConfirm() {
+    if (!confirmOpen) return;
+    confirmOpen = false;
+    confirmOverlay.classList.add('hidden');
+    document.removeEventListener('keydown', onConfirmKeydown, true);
+    confirmOnConfirm = null;
+    if (confirmTriggerEl) confirmTriggerEl.focus();
+    confirmTriggerEl = null;
+  }
+
+  function showConfirm({ title, message, onConfirm }) {
+    if (confirmOpen) return; // only one modal at a time
+    confirmOpen = true;
+    confirmResolving = false;
+    confirmOnConfirm = onConfirm;
+    confirmTriggerEl = document.activeElement;
+    confirmTitle.textContent = title;
+    confirmMessage.textContent = message;
+    confirmOverlay.classList.remove('hidden');
+    document.addEventListener('keydown', onConfirmKeydown, true);
+    confirmKeepBtn.focus();
+  }
+
+  confirmKeepBtn.addEventListener('click', () => {
+    if (confirmResolving) return;
+    confirmResolving = true;
+    closeConfirm();
+  });
+  confirmGiveUpBtn.addEventListener('click', () => {
+    if (confirmResolving) return;
+    confirmResolving = true;
+    const action = confirmOnConfirm;
+    closeConfirm();
+    if (action) action();
+  });
+  confirmOverlay.addEventListener('click', e => {
+    if (e.target === confirmOverlay) closeConfirm();
+  });
+
+  // The one place every destructive action consults before discarding the
+  // current deal (see needsAbandonConfirmation in game-logic.js) - runs
+  // `action` immediately when nothing would actually be lost, otherwise
+  // shows the modal with action-specific wording and only runs it if the
+  // player picks "Give Up".
+  function guardAbandon(actionKey, action) {
+    if (!needsAbandonConfirmation(state, history.length, won)) {
+      action();
+      return;
+    }
+    showConfirm({ ...ABANDON_COPY[actionKey], onConfirm: action });
   }
 
   function pushHistory() {
@@ -1099,9 +1184,9 @@ import { shuffle } from './shuffle.js';
   // ---------- controls ----------
 
   undoBtn.addEventListener('click', undo);
-  newGameBtn.addEventListener('click', newGame);
-  restartBtn.addEventListener('click', restart);
-  winNewGameBtn.addEventListener('click', newGame);
+  newGameBtn.addEventListener('click', () => guardAbandon('newGame', newGame));
+  restartBtn.addEventListener('click', () => guardAbandon('restart', restart));
+  winNewGameBtn.addEventListener('click', newGame); // starting again from the win screen is never gated
 
   timerHandle = setInterval(tick, 500);
 
