@@ -10,6 +10,7 @@ import {
   getLegalMoves,
   classifyMove,
   MoveCategory,
+  autoFinishAvailable,
 } from './game-logic.js';
 import { getPreference, setPreference } from './preferences.js';
 import { shuffle } from './shuffle.js';
@@ -285,6 +286,7 @@ import { shuffle } from './shuffle.js';
   const undoBtn = document.getElementById('undoBtn');
   const hintBtn = document.getElementById('hintBtn');
   const hintMessage = document.getElementById('hint-message');
+  const autoFinishBtn = document.getElementById('autoFinishBtn');
   const newGameBtn = document.getElementById('newGameBtn');
   const restartBtn = document.getElementById('restartBtn');
   const winOverlay = document.getElementById('win-overlay');
@@ -467,8 +469,15 @@ import { shuffle } from './shuffle.js';
   let hintMoves = null; // cached getLegalMoves() result while a hint session is active; null = no active session
   let hintIndex = 0;
 
-  function cardLabel(card) {
-    return `${RANK_LABELS[card.rank]}${SUITS.find(s => s.key === card.suit).symbol}`;
+  // Appends a card's label as real DOM: the rank as plain text (inherits
+  // the hint bar's gold), the suit symbol in its own span colored to match
+  // the card's actual color (see .suit-red/.suit-black in style.css).
+  function appendCardLabel(container, card) {
+    container.appendChild(document.createTextNode(RANK_LABELS[card.rank]));
+    const suitEl = document.createElement('span');
+    suitEl.className = card.color === 'red' ? 'suit-red' : 'suit-black';
+    suitEl.textContent = SUITS.find(s => s.key === card.suit).symbol;
+    container.appendChild(suitEl);
   }
 
   function cardElFor(card) {
@@ -483,26 +492,47 @@ import { shuffle } from './shuffle.js';
     return null;
   }
 
-  function hintMoveText(move) {
-    if (move.category === MoveCategory.DRAW_STOCK) return 'Draw from the stock.';
-    if (move.category === MoveCategory.RECYCLE_STOCK) return 'Recycle the waste into the stock.';
+  // Builds the hint sentence as a sequence of pieces rather than one string,
+  // so the renderer (renderHintMessage) can color just the suit symbols:
+  // plain strings render as-is, card objects render as rank + colored suit.
+  function hintMoveSegments(move) {
+    if (move.category === MoveCategory.DRAW_STOCK) return ['Draw from the stock.'];
+    if (move.category === MoveCategory.RECYCLE_STOCK) return ['Recycle the waste into the stock.'];
 
-    const subject = move.stackLength > 1 ? `${cardLabel(move.card)} sequence` : cardLabel(move.card);
-    if (move.target === 'foundation') return `Move the ${subject} to the foundation.`;
+    const suffix = move.stackLength > 1 ? ' sequence' : '';
+    if (move.target === 'foundation') return ['Move the ', move.card, suffix, ' to the foundation.'];
 
     const destCol = state.tableau[move.targetIndex];
     const destTop = destCol.length ? destCol[destCol.length - 1] : null;
-    let text = destTop ? `Move the ${subject} onto the ${cardLabel(destTop)}.` : `Move the ${subject} to the empty column.`;
-    if (classifyMove(state, move).reason === 'reveals_card') text += ' This reveals a hidden card.';
-    return text;
+    const segments = destTop
+      ? ['Move the ', move.card, suffix, ' onto the ', destTop, '.']
+      : ['Move the ', move.card, suffix, ' to the empty column.'];
+    if (classifyMove(state, move).reason === 'reveals_card') segments.push(' This reveals a hidden card.');
+    return segments;
+  }
+
+  function renderHintMessage(segments) {
+    hintMessage.innerHTML = '';
+    segments.forEach(segment => {
+      if (typeof segment === 'string') {
+        hintMessage.appendChild(document.createTextNode(segment));
+      } else {
+        appendCardLabel(hintMessage, segment);
+      }
+    });
   }
 
   function clearHint() {
     document.querySelectorAll('.hint-highlight').forEach(el => el.classList.remove('hint-highlight'));
     hintMoves = null;
     hintIndex = 0;
-    hintMessage.classList.add('hidden');
-    hintMessage.textContent = '';
+    // commitMove calls this on every move, including each Auto Finish step -
+    // while a run is in progress the status bar is showing "Auto
+    // Finishing…", owned by startAutoFinish/stopAutoFinish, not the hint.
+    if (!autoFinishRunning) {
+      hintMessage.classList.add('hidden');
+      hintMessage.textContent = '';
+    }
   }
 
   function showHintMove(move) {
@@ -513,7 +543,7 @@ import { shuffle } from './shuffle.js';
       cardElFor(move.card)?.classList.add('hint-highlight');
       pileElFor(move.target, move.targetIndex)?.classList.add('hint-highlight');
     }
-    hintMessage.textContent = hintMoveText(move);
+    renderHintMessage(hintMoveSegments(move));
     hintMessage.classList.remove('hidden');
   }
 
@@ -538,8 +568,102 @@ import { shuffle } from './shuffle.js';
 
   hintBtn.addEventListener('click', showHint);
 
+  // ---------- auto finish ----------
+  //
+  // Repeatedly sends whatever's currently exposed and foundation-eligible
+  // home, one card at a time, reusing getLegalMoves (the same shared engine
+  // Hint and the abandon dialog read from) and executeClickMove (the same
+  // function a manual click already uses) - not a second rules or animation
+  // implementation. autoFinishAvailable lives in game-logic.js since it's a
+  // pure function of state - see it there for the exact rule.
+
+  let autoFinishRunning = false;
+  let autoFinishStopRequested = false;
+  // Eases in over the first few cards, then settles - a purely cosmetic
+  // pacing curve; CLICK_LIFT_MS/CLICK_MOVE_MS (the glide itself, reused
+  // unchanged from click-to-move) aren't touched. executeClickMove doesn't
+  // return a Promise/take a completion callback today, so this is a fixed
+  // delay rather than awaiting the actual animation.
+  const AUTO_FINISH_STEP_MS = [260, 220, 190];
+  const AUTO_FINISH_STEP_MS_FLOOR = 175;
+  function autoFinishStepDelay(i) { return AUTO_FINISH_STEP_MS[i] ?? AUTO_FINISH_STEP_MS_FLOOR; }
+  function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+  function setAutoFinishControlsDisabled(disabled) {
+    undoBtn.disabled = disabled; // re-derived correctly by updateMoves() in stopAutoFinish when re-enabling
+    newGameBtn.disabled = disabled;
+    restartBtn.disabled = disabled;
+    hintBtn.disabled = disabled;
+  }
+
+  function onAutoFinishKeydown(e) {
+    if (e.key === 'Escape') { e.preventDefault(); autoFinishStopRequested = true; }
+  }
+
+  async function runAutoFinish() {
+    let i = 0;
+    while (!autoFinishStopRequested) {
+      const move = getLegalMoves(state).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+      if (!move) break;
+      const stack = getStackFrom(state, move.source, move.sourceIndex, move.card);
+      executeClickMove(stack, move.source, move.sourceIndex, 'foundation', move.targetIndex, { recordHistory: false });
+      await sleep(autoFinishStepDelay(i++));
+    }
+    stopAutoFinish();
+  }
+
+  function startAutoFinish() {
+    if (autoFinishRunning || !autoFinishAvailable(state)) return;
+    cancelActiveDrag();
+    clearGhosts();
+    resetTableauClickMemory();
+    clearHint();
+    pushHistory(); // the one grouped snapshot for the whole run
+    autoFinishRunning = true;
+    autoFinishStopRequested = false;
+    autoFinishBtn.textContent = 'Stop';
+    autoFinishBtn.classList.add('flash'); // brief one-shot pulse so starting reads as intentional, not sudden
+    setAutoFinishControlsDisabled(true);
+    document.addEventListener('keydown', onAutoFinishKeydown, true);
+    hintMessage.textContent = 'Auto Finishing…';
+    hintMessage.classList.remove('hidden');
+    runAutoFinish();
+  }
+
+  // No end-of-run message in any case: not on a win (the overlay is the
+  // payoff), not on a manual stop (return to play quietly), and not on
+  // running out of moves either - the board itself shows why it stopped,
+  // and staying silent avoids any risk of reading as "stuck."
+  function stopAutoFinish() {
+    autoFinishRunning = false;
+    autoFinishStopRequested = false;
+    autoFinishBtn.textContent = 'Auto Finish';
+    autoFinishBtn.classList.remove('flash'); // so the next start re-triggers the animation rather than being a no-op class toggle
+    document.removeEventListener('keydown', onAutoFinishKeydown, true);
+    setAutoFinishControlsDisabled(false);
+    updateMoves(); // re-derives undoBtn.disabled and autoFinishBtn's own disabled state
+    hintMessage.classList.add('hidden');
+    hintMessage.textContent = '';
+  }
+
+  autoFinishBtn.addEventListener('click', () => {
+    if (autoFinishRunning) autoFinishStopRequested = true;
+    else startAutoFinish();
+  });
+  document.querySelectorAll('.pile.foundation').forEach(el => {
+    // The common solitaire double-click-a-foundation convention; no-op via
+    // the same guards when unavailable or already running.
+    el.addEventListener('dblclick', startAutoFinish);
+  });
+
+  // Each entry pairs the state snapshot with moveCount at that instant,
+  // rather than just the state - undo() restores both directly instead of
+  // assuming every entry represents exactly one move. That assumption holds
+  // for a single click/drag move, but not for a grouped multi-move entry
+  // (see commitMove's recordHistory option, used by Auto Finish to push one
+  // entry for an entire run).
   function pushHistory() {
-    history.push(cloneState(state));
+    history.push({ state: cloneState(state), moveCount });
     if (history.length > 200) history.shift();
   }
 
@@ -548,15 +672,33 @@ import { shuffle } from './shuffle.js';
     cancelActiveDrag();
     clearGhosts();
     resetTableauClickMemory();
-    state = history.pop();
-    moveCount = Math.max(0, moveCount - 1);
+    const entry = history.pop();
+    state = entry.state;
+    moveCount = entry.moveCount;
+    // Pre-existing gap, not previously reachable often enough to notice:
+    // undo() never reset the win state, so undoing back across a win left
+    // the "You win!" overlay showing over a board that was, once again,
+    // still in play. Grouped Auto Finish undo makes "win, then undo the
+    // whole run" a routine path rather than an edge case, so it needs to
+    // behave the same as newGame()/restart() here - always reset, since
+    // hiding an already-hidden overlay is a harmless no-op when the game
+    // wasn't won to begin with.
+    won = false;
+    winOverlay.classList.add('hidden');
     updateMoves();
     render();
   }
 
   function updateMoves() {
     movesEl.textContent = `Moves: ${moveCount}`;
-    undoBtn.disabled = history.length === 0;
+    // While a run is in progress, undoBtn/autoFinishBtn's disabled state is
+    // owned by startAutoFinish/stopAutoFinish instead - this runs on every
+    // single commitMove, including each individual Auto Finish step, so
+    // without this guard it would silently re-enable Undo mid-run.
+    if (!autoFinishRunning) {
+      undoBtn.disabled = history.length === 0;
+      autoFinishBtn.disabled = !autoFinishAvailable(state);
+    }
   }
 
   function tick() {
@@ -936,7 +1078,7 @@ import { shuffle } from './shuffle.js';
   let isDrawing = false; // guards against a rapid repeated stock tap interrupting or duplicating an in-flight draw transition
 
   function onStockClick() {
-    if (isDrawing) return;
+    if (isDrawing || autoFinishRunning) return;
     if (state.stock.length) {
       isDrawing = true;
       const stockRect = document.getElementById('stock').getBoundingClientRect();
@@ -977,10 +1119,15 @@ import { shuffle } from './shuffle.js';
   // matching ghost animation takes. Keeping game state synchronous means
   // the next interaction is never blocked waiting on an in-flight
   // animation to finish.
-  function commitMove(cards, source, sourceIndex, target, targetIndex) {
+  //
+  // recordHistory defaults to true for every normal move. Auto Finish passes
+  // false for each card in a run after pushing one history entry itself up
+  // front, so the whole run undoes as a single grouped action instead of one
+  // entry per card - see startAutoFinish/runAutoFinish.
+  function commitMove(cards, source, sourceIndex, target, targetIndex, { recordHistory = true } = {}) {
     resetTableauClickMemory();
     clearHint();
-    pushHistory();
+    if (recordHistory) pushHistory();
     const cardToFlip = peekCardToFlip(source, sourceIndex, cards);
     applyMove(state, cards, source, sourceIndex, target, targetIndex);
     moveCount++;
@@ -1047,7 +1194,7 @@ import { shuffle } from './shuffle.js';
     executeClickMove(stack, source, sourceIndex, dest.type, dest.index);
   }
 
-  function executeClickMove(stack, source, sourceIndex, target, targetIndex) {
+  function executeClickMove(stack, source, sourceIndex, target, targetIndex, options) {
     const originEls = stack.map(c => document.querySelector(`.card[data-id="${c.id}"]`)).filter(Boolean);
     if (originEls.length !== stack.length) return; // DOM out of sync with state; bail rather than animate garbage
     const originRects = originEls.map(el => el.getBoundingClientRect());
@@ -1059,7 +1206,7 @@ import { shuffle } from './shuffle.js';
     }));
 
     const destRects = computeDestRects(target, targetIndex, stack.length);
-    commitMove(stack, source, sourceIndex, target, targetIndex); // clears tableauClickMemory — re-set below if this continues a cycle
+    commitMove(stack, source, sourceIndex, target, targetIndex, options); // clears tableauClickMemory — re-set below if this continues a cycle
     if (source === 'tableau' && target === 'tableau') {
       tableauClickMemory = { cardId: stack[0].id, destIndex: targetIndex };
     }
@@ -1186,7 +1333,7 @@ import { shuffle } from './shuffle.js';
   }
 
   function startDrag(e, card, source, sourceIndex) {
-    if (dragCtx) return;
+    if (dragCtx || autoFinishRunning) return;
     if (e.button !== undefined && e.button !== 0) return;
     const stack = getStackFrom(state, source, sourceIndex, card);
     if (!stack.length) return;

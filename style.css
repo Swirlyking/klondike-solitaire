@@ -135,10 +135,31 @@ body {
 .controls button:hover { background: rgba(255,255,255,0.18); }
 .controls button:disabled { opacity: 0.4; cursor: default; }
 
+/* Auto Finish's one-shot start flash - gold, gone in a single pass rather
+   than looping, unlike .hint-highlight's continuous pulse below. */
+@keyframes auto-finish-flash {
+  from { background: rgba(217, 180, 92, 0.55); }
+  to { background: rgba(255, 255, 255, 0.08); }
+}
+#autoFinishBtn.flash {
+  animation: auto-finish-flash 260ms ease-out;
+}
+
 .controls button.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 6px 10px;
   font-size: 16px;
   line-height: 1;
+}
+
+/* Undo/Hint's SVG icons - text-glyph icon-buttons (Settings' gear) are
+   sized via font-size above and don't match this selector. */
+.controls button.icon-button svg {
+  display: block;
+  width: 18px;
+  height: 18px;
 }
 
 #hint-message {
@@ -155,6 +176,15 @@ body {
   text-align: center;
 }
 #hint-message.hidden { display: none; }
+
+/* Suit symbols within a hint's card labels - only the symbol itself is
+   colored (rank text stays the surrounding gold), matching how a real card
+   reads: red for hearts/diamonds, "black" for spades/clubs. True black
+   would vanish against this bar's dark background, so black suits use the
+   app's existing light body-text color instead; red reuses the same warm
+   red already established for a destructive action (#confirmGiveUpBtn). */
+#hint-message .suit-red { color: #e07860; }
+#hint-message .suit-black { color: #eee; }
 
 #board {
   padding: 24px 28px 60px;

@@ -27,9 +27,14 @@ export function canPlaceOnTableau(state, card, colIndex) {
   return top.color !== card.color && top.rank === card.rank + 1;
 }
 
-// The face-up run starting at `card` through the end of its column — always
-// a well-formed descending/alternating sequence by construction, since that
-// is the only way cards can be placed on a tableau column in the first place.
+// Everything from `card` through the end of its column, tableau-sourced.
+// Does not itself verify this is a well-formed descending/alternating run -
+// a face-up card can rest directly above an unrelated face-up card (it's
+// the run's own base, or was dealt face-up) without the two forming a legal
+// build. Callers that need "is this actually one movable unit" should check
+// getLegalMoves' entries, which do validate that before offering a
+// multi-card TABLEAU_MOVE (see getLegalMoves) - this function just extracts
+// whatever's physically there once a target card/id is already known-good.
 export function getStackFrom(state, source, sourceIndex, card) {
   if (source === 'tableau') {
     const col = state.tableau[sourceIndex];
@@ -77,13 +82,28 @@ export function getLegalMoves(state) {
 
   for (let col = 0; col < state.tableau.length; col++) {
     const column = state.tableau[col];
+    // Whether column[i..end] is currently a well-formed, alternating,
+    // descending run - i.e. actually pickupable as one unit. This is *not*
+    // guaranteed just because every card in it is face-up: a face-up card
+    // can sit directly above an unrelated face-up card (e.g. it was dealt
+    // face-up originally, or is the run's own base sitting on top of
+    // whatever was there before) without the two forming a legal build.
+    // Starts true for the top card itself - a lone card is trivially its
+    // own valid one-card run, with no pairing left to check.
+    let validRun = true;
     for (let i = column.length - 1; i >= 0; i--) {
       const card = column[i];
       if (!card.faceUp) break; // nothing face-up sits above a face-down card
       const stackLength = column.length - i;
-      findAllLegalTableau(state, card, col).forEach(targetIndex => {
-        moves.push({ category: MoveCategory.TABLEAU_MOVE, source: 'tableau', sourceIndex: col, card, stackLength, target: 'tableau', targetIndex });
-      });
+      if (i < column.length - 1) {
+        const above = column[i + 1]; // the card resting on top of `card`
+        validRun = validRun && above.color !== card.color && above.rank === card.rank - 1;
+      }
+      if (validRun) {
+        findAllLegalTableau(state, card, col).forEach(targetIndex => {
+          moves.push({ category: MoveCategory.TABLEAU_MOVE, source: 'tableau', sourceIndex: col, card, stackLength, target: 'tableau', targetIndex });
+        });
+      }
       if (stackLength === 1) {
         const fi = anyFoundationFor(state, card);
         if (fi !== -1) moves.push({ category: MoveCategory.FOUNDATION_MOVE, source: 'tableau', sourceIndex: col, card, stackLength: 1, target: 'foundation', targetIndex: fi });
@@ -120,6 +140,18 @@ export function getLegalMoves(state) {
   }
 
   return moves;
+}
+
+// Is Auto Finish available? Deliberately looser than "no other move is
+// legal": tolerates a harmless tableau shuffle still being technically
+// possible, matching how an experienced player judges a deal to be
+// effectively won - once nothing is hidden and nothing is left to draw,
+// they already know it's over, regardless of whether some card could still
+// be nudged sideways.
+export function autoFinishAvailable(state) {
+  if (state.stock.length > 0) return false;
+  if (!state.tableau.every(col => col.every(c => c.faceUp))) return false;
+  return getLegalMoves(state).some(m => m.category === MoveCategory.FOUNDATION_MOVE);
 }
 
 function moveKey(m) {

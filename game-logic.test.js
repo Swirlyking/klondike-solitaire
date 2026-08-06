@@ -16,6 +16,7 @@ import {
   getLegalMoves,
   classifyMove,
   MoveCategory,
+  autoFinishAvailable,
 } from './game-logic.js';
 
 let nextId = 0;
@@ -460,6 +461,42 @@ test('getLegalMoves lists tableau-sourced moves in left-to-right column order', 
   assert.ok(sourceOrder.indexOf(1) < sourceOrder.indexOf(4));
 });
 
+// Regression: Hint once suggested moving a "sequence" that wasn't actually
+// a legal, well-formed run - a face-up card can rest directly above an
+// unrelated face-up card (its own run's base, or a card dealt face-up)
+// without the two forming a legal build, so getLegalMoves must not assume
+// "face-up all the way to the top" means "one movable unit."
+test('getLegalMoves: a buried card whose run is broken by a non-continuing card above it is never offered as a move (regression for the buried-sequence hint bug)', () => {
+  const s = emptyState();
+  const eight = card('spades', 8);
+  const four = card('diamonds', 4); // rests directly on the 8♠ but does NOT continue it (needs a red 7, not a red 4)
+  s.tableau[0] = [eight, four];
+  s.tableau[1] = [card('hearts', 9)]; // would legally accept an 8♠-led sequence, if one were (wrongly) offered
+  s.foundations[1] = [card('diamonds', 3)]; // ready for the 4♦, so its own top-card moves are provably still evaluated
+
+  const moves = getLegalMoves(s);
+
+  // The broken "8♠ + 4♦" pairing must never be offered as a 2-card sequence.
+  assert.ok(!moves.some(m => m.category === MoveCategory.TABLEAU_MOVE && m.card && m.card.id === eight.id && m.stackLength === 2));
+  // 8♠ isn't the column's actual top, so it has no legal move of its own either - genuinely buried, not just excluded as a sequence base.
+  assert.ok(!moves.some(m => m.card && m.card.id === eight.id));
+  // The real top card (4♦) is unaffected - still finds its own foundation move.
+  assert.ok(moves.some(m => m.category === MoveCategory.FOUNDATION_MOVE && m.card.id === four.id));
+});
+
+test('getLegalMoves: a genuinely well-formed multi-card run is still offered as one unit (the broken-run check does not over-trigger)', () => {
+  const s = emptyState();
+  const black8 = card('spades', 8);
+  const redSeven = card('hearts', 7);
+  const black6 = card('clubs', 6);
+  s.tableau[0] = [black8, redSeven, black6]; // a genuinely valid alternating run
+  s.tableau[1] = [card('diamonds', 9)]; // accepts the whole 3-card sequence
+  const moves = getLegalMoves(s);
+  assert.ok(moves.some(m =>
+    m.category === MoveCategory.TABLEAU_MOVE && m.card.id === black8.id && m.stackLength === 3 && m.targetIndex === 1
+  ));
+});
+
 test('getLegalMoves includes a stock draw only when the stock has cards, and a recycle only when it is empty with waste remaining', () => {
   const s = emptyState();
   s.stock = [card('hearts', 2)];
@@ -631,4 +668,175 @@ test('a board where only a trivial King shuffle remains still needs confirmation
   const moves = getLegalMoves(s);
   assert.ok(moves.length > 0);
   assert.ok(moves.every(m => classifyMove(s, m).status === 'trivial'));
+});
+
+// ---------- Auto Finish ----------
+//
+// The run loop itself lives in script.js (not importable/unit-testable,
+// same limitation as Hint and the abandon dialog's live wording) - these
+// tests target the pieces that actually decide its behavior: getLegalMoves'
+// FOUNDATION_MOVE filtering/ordering (exactly what the loop consumes each
+// tick) and autoFinishAvailable (the button's enabled state), both pure
+// functions of state.
+
+test('Auto Finish: a single exposed tableau card with a legal foundation move is found', () => {
+  const s = emptyState();
+  const ace = card('hearts', 1);
+  s.tableau[0] = [ace];
+  const move = getLegalMoves(s).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.ok(move);
+  assert.equal(move.source, 'tableau');
+  assert.equal(move.sourceIndex, 0);
+  assert.equal(move.card.id, ace.id);
+  assert.equal(move.targetIndex, 0);
+});
+
+test('Auto Finish: when multiple tableau columns have a foundation-ready card, the leftmost is found first', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)];
+  s.foundations[1] = [card('diamonds', 1)];
+  const heartsTwo = card('hearts', 2);
+  const diamondsTwo = card('diamonds', 2);
+  s.tableau[4] = [heartsTwo];
+  s.tableau[1] = [diamondsTwo];
+  const move = getLegalMoves(s).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.equal(move.sourceIndex, 1);
+  assert.equal(move.card.id, diamondsTwo.id);
+});
+
+test('Auto Finish: re-evaluating after a move surfaces the next eligible card, without a stale list', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)];
+  const heartsTwo = card('hearts', 2);
+  const heartsThree = card('hearts', 3);
+  s.tableau[0] = [heartsThree, heartsTwo]; // heartsThree isn't foundation-eligible yet (needs rank 2 down first)
+
+  let move = getLegalMoves(s).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.equal(move.card.id, heartsTwo.id);
+  const stack = getStackFrom(s, move.source, move.sourceIndex, move.card);
+  applyMove(s, stack, move.source, move.sourceIndex, move.target, move.targetIndex);
+
+  move = getLegalMoves(s).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.ok(move); // heartsThree is now eligible, only after the first move actually landed
+  assert.equal(move.card.id, heartsThree.id);
+});
+
+test('Auto Finish: a waste-top foundation move is found, but a tableau one takes priority when both exist', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)];
+  s.foundations[1] = [card('spades', 1)];
+  const heartsTwo = card('hearts', 2);
+  const spadesTwo = card('spades', 2);
+  s.tableau[3] = [heartsTwo];
+  s.waste = [spadesTwo];
+  let move = getLegalMoves(s).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.equal(move.source, 'tableau');
+  assert.equal(move.card.id, heartsTwo.id);
+
+  s.tableau[3] = [];
+  move = getLegalMoves(s).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.equal(move.source, 'waste');
+  assert.equal(move.card.id, spadesTwo.id);
+});
+
+test('Auto Finish: a legal stock draw coexists with a foundation move without being selected by the FOUNDATION_MOVE filter', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)];
+  const heartsTwo = card('hearts', 2);
+  s.tableau[0] = [heartsTwo];
+  s.stock = [card('clubs', 9)];
+  const moves = getLegalMoves(s);
+  assert.ok(moves.some(m => m.category === MoveCategory.DRAW_STOCK));
+  const found = moves.find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.equal(found.card.id, heartsTwo.id);
+});
+
+test('Auto Finish: a legal recycle coexists with a foundation move without being selected by the FOUNDATION_MOVE filter', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)];
+  const heartsTwo = card('hearts', 2);
+  s.tableau[0] = [heartsTwo];
+  s.stock = [];
+  s.waste = [card('clubs', 9)];
+  const moves = getLegalMoves(s);
+  assert.ok(moves.some(m => m.category === MoveCategory.RECYCLE_STOCK));
+  const found = moves.find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.equal(found.card.id, heartsTwo.id);
+});
+
+test('Auto Finish: FOUNDATION_MOVE entries are never tableau-targeted', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)];
+  s.tableau[0] = [card('hearts', 2)];
+  s.tableau[2] = [card('spades', 6)]; // an unrelated tableau destination elsewhere, irrelevant to this card
+  const moves = getLegalMoves(s).filter(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.ok(moves.length > 0);
+  assert.ok(moves.every(m => m.target === 'foundation'));
+});
+
+test('Auto Finish: when nothing has a legal foundation move, the loop\'s stop condition is undefined', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('clubs', 7)];
+  s.tableau[1] = [card('spades', 9)];
+  s.waste = [card('hearts', 5)];
+  const move = getLegalMoves(s).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.equal(move, undefined);
+});
+
+test('autoFinishAvailable: stock non-empty blocks availability even with a ready foundation move', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)];
+  s.tableau[0] = [card('hearts', 2)];
+  s.stock = [card('clubs', 9)];
+  assert.equal(autoFinishAvailable(s), false);
+});
+
+test('autoFinishAvailable: a face-down tableau card blocks availability even with a ready foundation move', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)];
+  s.tableau[0] = [card('hearts', 2)];
+  s.tableau[1] = [card('clubs', 9, false)]; // face-down
+  assert.equal(autoFinishAvailable(s), false);
+});
+
+test('autoFinishAvailable: available once stock is empty and everything is face-up, even with a harmless tableau shuffle also legal', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)];
+  s.tableau[0] = [card('hearts', 2)];
+  s.tableau[2] = [card('clubs', 6)]; // a black 6 - would also legally accept a red 5
+  s.tableau[3] = [card('diamonds', 5)]; // a harmless shuffle destination that must not block availability
+  assert.equal(autoFinishAvailable(s), true);
+});
+
+test('autoFinishAvailable: not available when stock is empty and everything is face-up but no foundation move exists anywhere', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('clubs', 7)];
+  s.tableau[1] = [card('spades', 9)];
+  assert.equal(autoFinishAvailable(s), false);
+});
+
+test('Auto Finish: the found foundation move is identical regardless of draw count, since only the resulting waste/tableau position matters', () => {
+  const s1 = emptyState();
+  s1.foundations[0] = [card('hearts', 1)];
+  s1.waste = [card('hearts', 2)]; // as if reached via a draw-1 game
+
+  const s2 = emptyState();
+  s2.foundations[0] = [card('hearts', 1)];
+  s2.waste = [card('clubs', 8), card('spades', 4), card('hearts', 2)]; // as if reached via a draw-3 game, same top card
+
+  const move1 = getLegalMoves(s1).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  const move2 = getLegalMoves(s2).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.equal(move1.card.rank, move2.card.rank);
+  assert.equal(move1.card.suit, move2.card.suit);
+  assert.equal(move1.targetIndex, move2.targetIndex);
+});
+
+test('Auto Finish: an Ace targets the correct leftmost open foundation slot regardless of fill order', () => {
+  const s = emptyState();
+  s.foundations[1] = [card('hearts', 1)]; // slot 1 already taken
+  const aceSpades = card('spades', 1);
+  s.tableau[0] = [aceSpades];
+  const move = getLegalMoves(s).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  assert.equal(move.card.id, aceSpades.id);
+  assert.equal(move.targetIndex, 0); // slot 0 is the leftmost still-empty slot
 });
