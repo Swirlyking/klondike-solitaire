@@ -158,8 +158,7 @@ function nonShuffleReason(move) {
   if (move.target === 'foundation') return 'foundation_progress';
   if (move.category === MoveCategory.DRAW_STOCK) return 'draws_stock';
   if (move.category === MoveCategory.RECYCLE_STOCK) return 'recycles_waste';
-  if (move.source === 'waste') return 'clears_waste';
-  return 'returns_card'; // source === 'foundation' -> tableau
+  return 'clears_waste'; // only remaining case: source === 'waste' -> tableau (foundation-sourced moves are handled before this is ever called)
 }
 
 // For every card NOT in `excludeIds`: can it currently reach a foundation,
@@ -183,6 +182,13 @@ function opportunityMap(state, excludeIds) {
 // ambiguous enough to need resolving - every other category is always real
 // progress by definition (sending a card home, unsticking the waste,
 // drawing/recycling the stock), so those short-circuit immediately.
+//
+// One category is excluded outright rather than judged: a foundation-
+// sourced move (taking a card back out to free it up for a tableau build)
+// is legal Klondike and stays fully legal here - getLegalMoves is
+// untouched - but it is a step backward, not forward, regardless of
+// whether it happens to unlock something else down the line. V1 policy:
+// never try to weigh that tradeoff, just never call it progress.
 //
 // Two things are checked directly, before any simulation:
 // - revealsCard: a face-down card becomes face-up. This can't be inferred
@@ -216,6 +222,10 @@ function opportunityMap(state, excludeIds) {
 // sourceIndex always travels with the run - comparing those would always
 // look like something changed, even when the run just relocated in whole.
 export function classifyMove(state, move) {
+  if (move.source === 'foundation') {
+    return { status: 'trivial', reason: 'foundation_return' };
+  }
+
   if (move.category !== MoveCategory.TABLEAU_MOVE || move.source !== 'tableau') {
     return { status: 'meaningful', reason: nonShuffleReason(move) };
   }

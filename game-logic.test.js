@@ -633,6 +633,75 @@ test('classifyMove: foundation moves, waste moves, and stock draw/recycle are al
   assert.equal(classifyMove(s, recycleMove).status, 'meaningful');
 });
 
+// Regression for the reported bug: Hint suggested "move the 2D onto the 3C"
+// - legal (foundation-to-tableau is allowed Klondike), but a step backward,
+// not progress. classifyMove must reject it outright, without running the
+// tableau-shuffle reachability analysis at all (source === 'foundation' is
+// checked before that logic even runs).
+test('classifyMove: a foundation-to-tableau move is always trivial ("foundation_return"), never analyzed as a shuffle', () => {
+  const s = emptyState();
+  const twoDiamonds = card('diamonds', 2);
+  s.foundations[1] = [card('diamonds', 1), twoDiamonds]; // 2D sitting on the foundation
+  s.tableau[0] = [card('clubs', 3)]; // exposed 3C - legal, but wrong-direction, destination
+
+  const moves = getLegalMoves(s);
+  const move = moves.find(m => m.source === 'foundation' && m.card.suit === 'diamonds' && m.card.rank === 2);
+
+  assert.ok(move, 'getLegalMoves must still contain the move - foundation-to-tableau is legal Klondike');
+  assert.deepEqual(classifyMove(s, move), { status: 'trivial', reason: 'foundation_return' });
+
+  const progressing = getProgressingMoves(s);
+  assert.ok(!progressing.some(m => sameMove(m, move)));
+  assert.equal(progressing.length, 0); // it's the only legal move on this board
+});
+
+test('classifyMove: an Ace moved from the foundation back to the tableau is trivial', () => {
+  const s = emptyState();
+  const aceSpades = card('spades', 1);
+  s.foundations[0] = [aceSpades];
+  s.tableau[0] = [card('hearts', 2)]; // red2 legally accepts the black Ace
+  const move = getLegalMoves(s).find(m => m.source === 'foundation' && m.card.rank === 1);
+  assert.ok(move);
+  assert.equal(classifyMove(s, move).status, 'trivial');
+  assert.ok(!getProgressingMoves(s).some(m => sameMove(m, move)));
+});
+
+test('classifyMove: a high-rank card moved from the foundation back to the tableau is trivial', () => {
+  const s = emptyState();
+  const sevenClubs = card('clubs', 7);
+  s.foundations[3] = [sevenClubs]; // only the top card matters here, same convention as the other lone-foundation-card tests above
+  s.tableau[0] = [card('hearts', 8)]; // red8 legally accepts the black 7
+  const move = getLegalMoves(s).find(m => m.source === 'foundation' && m.card.rank === 7);
+  assert.ok(move);
+  assert.equal(classifyMove(s, move).status, 'trivial');
+  assert.ok(!getProgressingMoves(s).some(m => sameMove(m, move)));
+});
+
+test('getProgressingMoves: excludes every foundation-to-tableau move when several are simultaneously legal', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('spades', 5)];
+  s.tableau[0] = [card('diamonds', 6)]; // red6 accepts the black 5
+  s.foundations[1] = [card('hearts', 9)];
+  s.tableau[1] = [card('clubs', 10)]; // black10 accepts the red9
+
+  const moves = getLegalMoves(s);
+  const foundationMoves = moves.filter(m => m.source === 'foundation');
+  assert.equal(foundationMoves.length, 2); // both are legal
+
+  const progressing = getProgressingMoves(s);
+  assert.equal(progressing.length, 0); // neither counts as progress
+});
+
+test('the abandon dialog does not count a foundation-to-tableau move as evidence that meaningful moves remain', () => {
+  const s = emptyState();
+  s.foundations[1] = [card('diamonds', 1), card('diamonds', 2)];
+  s.tableau[0] = [card('clubs', 3)];
+
+  assert.equal(needsAbandonConfirmation(s, 5, false), true); // the move is still legal, so the dialog itself must show
+  assert.ok(getLegalMoves(s).length > 0);
+  assert.equal(getProgressingMoves(s).length, 0); // but it must not say "there are still moves available"
+});
+
 // Regression for the reported bug: Hint suggested "move the 5S sequence
 // onto the 6D" when the only other effect was that a 5C elsewhere could now
 // reach the freshly-exposed 6H instead of the 6D it could already reach -
