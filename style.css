@@ -178,7 +178,7 @@ body {
 #hint-message.hidden { display: none; }
 
 /* A hint's card labels render as a small chip - light background matching
-   the actual card-face cream (#fbf7ee, same as .card.face-up), rank and
+   the actual card-face color (#ded9ca, same as .card.face-up), rank and
    suit set tight against each other with no gap, so it reads like a
    miniature card rather than plain sentence text. The chip's own dark text
    color is what makes true black (#231f20, the exact ink color requested)
@@ -187,7 +187,7 @@ body {
 .hint-card {
   display: inline-flex;
   align-items: center;
-  background: #fbf7ee;
+  background: #ded9ca;
   color: #231f20;
   border-radius: 4px;
   padding: 1px 6px;
@@ -303,7 +303,14 @@ body {
 }
 
 .card.face-up {
-  background: #fbf7ee;
+  /* Matches the card PNGs' own background exactly - these assets already
+     have a rounded corner baked in with transparency outside it, at a
+     radius that doesn't line up pixel-for-pixel with this element's own
+     8px CSS border-radius. Rather than chase an exact radius match, this
+     fills the gap between the two curves with the same color the art
+     itself uses, so any seam is invisible instead of reading as a mismatched
+     white corner. */
+  background: #ded9ca;
   border: 1px solid rgba(0,0,0,0.15);
 }
 
