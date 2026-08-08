@@ -18,12 +18,22 @@ import {
   MoveCategory,
   autoFinishAvailable,
   rankMoves,
+  getProgressingMoves,
 } from './game-logic.js';
 
 let nextId = 0;
 function card(suit, rank, faceUp = true) {
   const color = suit === 'hearts' || suit === 'diamonds' ? 'red' : 'black';
   return { id: nextId++, suit, color, rank, faceUp };
+}
+
+// getProgressingMoves calls getLegalMoves internally, producing fresh move
+// objects each time - never the same references a test's own getLegalMoves
+// call returns. Compare by content, not by identity.
+function sameMove(a, b) {
+  return a.category === b.category && a.source === b.source && a.sourceIndex === b.sourceIndex
+    && (a.card ? a.card.id : null) === (b.card ? b.card.id : null)
+    && a.target === b.target && a.targetIndex === b.targetIndex;
 }
 
 // Empty 7-column, empty-foundation state; tests fill in only what they need.
@@ -598,14 +608,14 @@ test('classifyMove: a tableau move that reveals nothing but changes what else is
   assert.deepEqual(classifyMove(s, move), { status: 'meaningful', reason: 'changes_available_moves' });
 });
 
-test('classifyMove: a non-King move that empties its column is meaningful when it creates a landing spot for a King', () => {
+test('classifyMove: a non-King move that empties its column is meaningful (net increase in empty columns), independent of whether anything currently benefits', () => {
   const s = emptyState();
   const lone7 = card('hearts', 7); // the column's only card - moving it away empties the column
   s.tableau[0] = [lone7];
   s.tableau[1] = [card('clubs', 8)]; // black8 accepts the red7
-  s.tableau[3] = [card('spades', 13)]; // a King elsewhere that gains a new empty-column option
+  s.tableau[3] = [card('spades', 13)]; // a King elsewhere - not required for this to count, just present here too
   const move = { category: MoveCategory.TABLEAU_MOVE, source: 'tableau', sourceIndex: 0, card: lone7, stackLength: 1, target: 'tableau', targetIndex: 1 };
-  assert.deepEqual(classifyMove(s, move), { status: 'meaningful', reason: 'changes_available_moves' });
+  assert.deepEqual(classifyMove(s, move), { status: 'meaningful', reason: 'empties_column' });
 });
 
 test('classifyMove: foundation moves, waste moves, and stock draw/recycle are always meaningful, independent of the tableau-shuffle check', () => {
@@ -621,6 +631,64 @@ test('classifyMove: foundation moves, waste moves, and stock draw/recycle are al
 
   const recycleMove = { category: MoveCategory.RECYCLE_STOCK, source: 'waste', sourceIndex: null, card: null, stackLength: 0, target: 'stock', targetIndex: null };
   assert.equal(classifyMove(s, recycleMove).status, 'meaningful');
+});
+
+// Regression for the reported bug: Hint suggested "move the 5S sequence
+// onto the 6D" when the only other effect was that a 5C elsewhere could now
+// reach the freshly-exposed 6H instead of the 6D it could already reach -
+// a relabeled destination, not a new one. The decoy 5C is what actually
+// exercises the bug: without another card able to reach *both* the source
+// and destination columns, a raw-moveKey diff wouldn't show a false
+// positive here at all.
+test('classifyMove: relocating an exposed sequence between two equivalent tableau destinations is trivial, even when another card could land on either one', () => {
+  const s = emptyState();
+  const buried = card('spades', 11, false); // face-down; stays covered either way, so no reveal
+  const six_h = card('hearts', 6);
+  const five_s = card('spades', 5);
+  const four_d = card('diamonds', 4);
+  const three_c = card('clubs', 3);
+  s.tableau[1] = [buried, six_h, five_s, four_d, three_c]; // the 5S-4D-3C run, sitting on 6H
+  s.tableau[2] = [card('diamonds', 6)]; // 6D - an equally legal destination for the run
+  s.tableau[3] = [card('spades', 8), card('clubs', 5)]; // 5C can reach whichever red 6 ends up exposed; the 8S under it means moving 5C alone doesn't itself empty column 3
+
+  const moves = getLegalMoves(s);
+  const move = moves.find(m => m.card.suit === 'spades' && m.card.rank === 5 && m.stackLength === 3 && m.targetIndex === 2);
+
+  // 1. It's legal.
+  assert.ok(move, 'getLegalMoves must still contain the move - it is legal Klondike');
+
+  // 2. The classifier rejects it.
+  assert.deepEqual(classifyMove(s, move), { status: 'trivial', reason: 'reversible_shuffle' });
+
+  // 3. Hint (via getProgressingMoves) does not offer it.
+  const progressing = getProgressingMoves(s);
+  assert.ok(!progressing.some(m => sameMove(m, move)));
+
+  // Sanity: this board has no foundation move, reveal, or empty-column
+  // change available at all - every legal move here is this same class of
+  // reversible relocation, so nothing progressing exists.
+  assert.equal(progressing.length, 0);
+});
+
+// ---------- getProgressingMoves: the shared filter Hint and the abandon dialog both read from ----------
+
+test('getProgressingMoves: drops non-progressing tableau shuffles but keeps a genuinely useful move alongside them', () => {
+  const s = emptyState();
+  const buried = card('hearts', 9, false);
+  const eight = card('spades', 8);
+  s.tableau[0] = [buried, eight]; // moving the 8 away reveals the buried 9
+  s.tableau[1] = [card('diamonds', 9)]; // red9 accepts the black8 - the reveal move
+  const king = card('clubs', 13);
+  s.tableau[3] = [king]; // free to shuffle to any other empty column - not progress
+
+  const moves = getLegalMoves(s);
+  const revealMove = moves.find(m => m.card.rank === 8);
+  const kingShuffle = moves.find(m => m.card.rank === 13);
+  assert.ok(revealMove && kingShuffle);
+
+  const progressing = getProgressingMoves(s);
+  assert.ok(progressing.some(m => sameMove(m, revealMove)));
+  assert.ok(!progressing.some(m => sameMove(m, kingShuffle)));
 });
 
 // ---------- abandon-confirmation ----------
@@ -658,10 +726,10 @@ test('a dead game (no cards left to draw, nothing exposed can move) never needs 
 });
 
 test('a board where only a trivial King shuffle remains still needs confirmation, but every legal move classifies as trivial', () => {
-  // This is the bug being fixed: visibility (a legal move genuinely exists)
-  // and wording (is any of them worth anything) are separate questions -
-  // the dialog must still show here, just with "only non-progressing moves
-  // remain" instead of falsely claiming real moves are available.
+  // Visibility (a legal move genuinely exists) and wording (is any of them
+  // worth anything) are separate questions - the dialog must still show
+  // here, just with "no useful moves remain" instead of falsely claiming
+  // real moves are available.
   const s = emptyState();
   const king = card('spades', 13);
   s.tableau[0] = [king]; // only legal moves: the King to any of the other 6 empty columns
@@ -669,6 +737,19 @@ test('a board where only a trivial King shuffle remains still needs confirmation
   const moves = getLegalMoves(s);
   assert.ok(moves.length > 0);
   assert.ok(moves.every(m => classifyMove(s, m).status === 'trivial'));
+  assert.equal(getProgressingMoves(s).length, 0);
+});
+
+test('the abandon dialog does not count a reversible sequence relocation (the reported 5S-onto-6D bug) as evidence that meaningful moves remain', () => {
+  const s = emptyState();
+  const buried = card('spades', 11, false);
+  s.tableau[1] = [buried, card('hearts', 6), card('spades', 5), card('diamonds', 4), card('clubs', 3)];
+  s.tableau[2] = [card('diamonds', 6)];
+  s.tableau[3] = [card('spades', 8), card('clubs', 5)]; // 8S under the 5C so moving it doesn't itself empty column 3
+
+  assert.equal(needsAbandonConfirmation(s, 5, false), true); // the move is still legal, so the dialog itself must show
+  assert.ok(getLegalMoves(s).length > 0);
+  assert.equal(getProgressingMoves(s).length, 0); // but none of what's legal is worth claiming as "moves available"
 });
 
 // ---------- Auto Finish ----------

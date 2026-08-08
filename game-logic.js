@@ -154,10 +154,6 @@ export function autoFinishAvailable(state) {
   return getLegalMoves(state).some(m => m.category === MoveCategory.FOUNDATION_MOVE);
 }
 
-function moveKey(m) {
-  return `${m.category}|${m.source}|${m.sourceIndex}|${m.card ? m.card.id : ''}|${m.target}|${m.targetIndex}`;
-}
-
 function nonShuffleReason(move) {
   if (move.target === 'foundation') return 'foundation_progress';
   if (move.category === MoveCategory.DRAW_STOCK) return 'draws_stock';
@@ -166,31 +162,59 @@ function nonShuffleReason(move) {
   return 'returns_card'; // source === 'foundation' -> tableau
 }
 
+// For every card NOT in `excludeIds`: can it currently reach a foundation,
+// and can it currently reach anywhere at all (foundation or tableau)? Used
+// to compare a board before/after a simulated move by what each card can
+// *do*, not by which exact column it would land in - see classifyMove.
+function opportunityMap(state, excludeIds) {
+  const map = new Map();
+  getLegalMoves(state).forEach(m => {
+    if (!m.card || excludeIds.has(m.card.id)) return;
+    const entry = map.get(m.card.id) || { playable: false, foundation: false };
+    entry.playable = true;
+    if (m.category === MoveCategory.FOUNDATION_MOVE) entry.foundation = true;
+    map.set(m.card.id, entry);
+  });
+  return map;
+}
+
 // Is this move genuinely progressive, or a reversible shuffle that leaves
 // the board effectively unchanged? Only tableau->tableau moves are
 // ambiguous enough to need resolving - every other category is always real
 // progress by definition (sending a card home, unsticking the waste,
 // drawing/recycling the stock), so those short-circuit immediately.
 //
-// For a tableau->tableau move: simulate it (cloneState + applyMove, the
-// same pair the undo system already uses) and diff getLegalMoves before and
-// after, excluding every move belonging to the card/stack actually being
-// moved (not just this one destination - the moved card's own set of
-// possible next moves is expected to look different after it relocates,
-// e.g. its sourceIndex changes, regardless of whether anything meaningful
-// happened; comparing the *rest* of the board is what actually answers the
-// question). If nothing else differs, the move could be undone for free
-// right now - a reversible shuffle. If the diff shows any other change (a
-// new destination opened, a previously-legal move gone), something real
-// happened, whatever it is - the diff finds it without this function having
-// to understand *why*.
+// Two things are checked directly, before any simulation:
+// - revealsCard: a face-down card becomes face-up. This can't be inferred
+//   from a legal-move diff - a freshly-revealed card only appears in
+//   getLegalMoves if it already has somewhere to go, so a reveal that
+//   doesn't immediately unlock anything would otherwise look like nothing
+//   happened, when it's real, irreversible progress regardless.
+// - emptiesColumn: the *net* number of empty tableau columns goes up. Net,
+//   not "the source column happens to end up empty" - a King relocating
+//   from one already-empty column to another empty one also "empties its
+//   column," but the total count of empty columns is unchanged, so nothing
+//   was actually gained (see the King-shuffle tests).
 //
-// One fact is checked directly rather than left to the diff: whether a
-// face-down card becomes face-up. A freshly-revealed card only appears in
-// getLegalMoves if it already has somewhere to go; if it doesn't yet, the
-// diff alone would see no change and call the reveal "trivial," which isn't
-// true - a reveal is real, irreversible progress regardless of whether it
-// immediately unlocks another move.
+// Everything else is decided by simulating the move (cloneState + applyMove,
+// the same pair the undo system already uses) and comparing, for every card
+// *not* carried by this move, whether it gains the ability to reach a
+// foundation or reach anywhere at all. This is a deliberately different
+// comparison than diffing getLegalMoves' raw entries: two red 6s are
+// interchangeable parking spots for a black 5, so if a 5 could already
+// reach *some* red 6 before and can reach a (possibly different) one after,
+// nothing new opened up - even though the exact (source, target) column
+// pair in getLegalMoves changed. Comparing at the level of "what can this
+// card do" rather than "which exact column" is what correctly ignores that
+// kind of relabeling while still catching a genuinely new opportunity
+// elsewhere on the board.
+//
+// Every card actually carried by the move (the full stack, via getStackFrom
+// - not just move.card, the stack's base) is excluded from that comparison.
+// A multi-card run's own sub-stack moves (e.g. moving just the top two
+// cards of a three-card sequence) are separate getLegalMoves entries whose
+// sourceIndex always travels with the run - comparing those would always
+// look like something changed, even when the run just relocated in whole.
 export function classifyMove(state, move) {
   if (move.category !== MoveCategory.TABLEAU_MOVE || move.source !== 'tableau') {
     return { status: 'meaningful', reason: nonShuffleReason(move) };
@@ -199,30 +223,45 @@ export function classifyMove(state, move) {
   const col = state.tableau[move.sourceIndex];
   const remaining = col.length - move.stackLength;
   const revealsCard = remaining > 0 && !col[remaining - 1].faceUp;
-
-  const belongsToMovedCard = m => m.card && m.card.id === move.card.id;
-  const beforeKeys = new Set(getLegalMoves(state).filter(m => !belongsToMovedCard(m)).map(moveKey));
+  if (revealsCard) return { status: 'meaningful', reason: 'reveals_card' };
 
   const after = cloneState(state);
   const afterStack = getStackFrom(after, move.source, move.sourceIndex, move.card);
   applyMove(after, afterStack, move.source, move.sourceIndex, move.target, move.targetIndex);
 
-  const afterKeys = new Set(getLegalMoves(after).filter(m => !belongsToMovedCard(m)).map(moveKey));
+  const emptyBefore = state.tableau.filter(c => c.length === 0).length;
+  const emptyAfter = after.tableau.filter(c => c.length === 0).length;
+  if (emptyAfter > emptyBefore) return { status: 'meaningful', reason: 'empties_column' };
 
-  const graphChanged = beforeKeys.size !== afterKeys.size || [...beforeKeys].some(k => !afterKeys.has(k));
+  const movedIds = new Set(getStackFrom(state, move.source, move.sourceIndex, move.card).map(c => c.id));
+  const before = opportunityMap(state, movedIds);
+  const afterMap = opportunityMap(after, movedIds);
 
-  if (revealsCard) return { status: 'meaningful', reason: 'reveals_card' };
-  return graphChanged
+  let opened = false;
+  afterMap.forEach((entry, id) => {
+    const prior = before.get(id) || { playable: false, foundation: false };
+    if ((entry.playable && !prior.playable) || (entry.foundation && !prior.foundation)) opened = true;
+  });
+
+  return opened
     ? { status: 'meaningful', reason: 'changes_available_moves' }
     : { status: 'trivial', reason: 'reversible_shuffle' };
 }
 
-// Hint's ranking policy - a third, separate layer on top of getLegalMoves
-// and classifyMove, same as classifyMove sits on top of getLegalMoves alone.
-// Never generates or filters moves itself, only reorders exactly the array
-// it was given, so the result is always a subset-free permutation of
-// getLegalMoves' own output - Hint can never show something that isn't
-// legal, because it never has an opinion about legality, only about order.
+// The shared "is this worth doing" filter - Hint and the abandon dialog
+// both call this instead of classifyMove directly, so the two can never
+// disagree about what counts as progress. Never reimplements the rule,
+// only selects from exactly what classifyMove already decided.
+export function getProgressingMoves(state) {
+  return getLegalMoves(state).filter(m => classifyMove(state, m).status === 'meaningful');
+}
+
+// Hint's ranking policy - a fourth, separate layer on top of getLegalMoves,
+// classifyMove, and getProgressingMoves. Never generates or filters moves
+// itself, only reorders exactly the array it was given - Hint calls this on
+// getProgressingMoves(state)'s output, so the result is always a permutation
+// of that (never something classifyMove would reject, and never something
+// getLegalMoves didn't produce in the first place).
 //
 // Priority: reaching a foundation first (always the best use of a card),
 // then revealing a hidden tableau card, then any other tableau

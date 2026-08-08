@@ -12,6 +12,7 @@ import {
   MoveCategory,
   autoFinishAvailable,
   rankMoves,
+  getProgressingMoves,
 } from './game-logic.js';
 import { getPreference, setPreference } from './preferences.js';
 import { shuffle } from './shuffle.js';
@@ -375,7 +376,7 @@ import { shuffle } from './shuffle.js';
       // see guardAbandon below. Visibility of the dialog itself is a
       // separate, unrelated question (needsAbandonConfirmation).
       meaningfulMessage: 'There are still moves available. A new deal will replace this one.',
-      stuckMessage: 'Only non-progressing moves remain. A new deal will replace this one.',
+      stuckMessage: 'No useful moves remain. A new deal will replace this one.',
     },
     restart: { title: 'Restart this deal?', message: 'Your moves will be undone, but the same cards will be dealt again.' },
   };
@@ -451,7 +452,7 @@ import { shuffle } from './shuffle.js';
     }
     if (actionKey === 'newGame') {
       const { title, meaningfulMessage, stuckMessage } = ABANDON_COPY.newGame;
-      const meaningful = getLegalMoves(state).some(m => classifyMove(state, m).status === 'meaningful');
+      const meaningful = getProgressingMoves(state).length > 0;
       showConfirm({ title, message: meaningful ? meaningfulMessage : stuckMessage, onConfirm: action });
       return;
     }
@@ -460,12 +461,11 @@ import { shuffle } from './shuffle.js';
 
   // ---------- hint ----------
   //
-  // Browses every entry in getLegalMoves(state) - the same shared
-  // enumeration click-to-move and the abandon dialog read from - in
-  // whatever order it comes back in. Deliberately unfiltered/unranked: v1
-  // shows "what can I do," not "what's best," per design. The one place it
-  // touches classifyMove is purely for copy (noting when a move reveals a
-  // hidden card), never to filter or reorder the list.
+  // Browses getProgressingMoves(state), ranked by rankMoves - the same
+  // shared filter the abandon dialog reads from, so the two can't disagree
+  // about what's worth doing. A non-progressing tableau shuffle (moves
+  // something already exposed to an equivalent spot, opens nothing new)
+  // never appears here, even if it's the only legal move left.
 
   let hintMoves = null; // cached getLegalMoves() result while a hint session is active; null = no active session
   let hintIndex = 0;
@@ -553,18 +553,20 @@ import { shuffle } from './shuffle.js';
     hintMessage.classList.remove('hidden');
   }
 
-  // First press shows the highest-priority legal move (foundation > reveals
-  // a hidden card > other tableau moves > stock/waste, see rankMoves); each
-  // press after that advances to the next-highest, wrapping past the end -
-  // a browse through every legal move in priority order, not just a single
-  // fixed "best move" popup. rankMoves only ever reorders exactly what
-  // getLegalMoves returned - it can't add, drop, or invent a move, so
-  // there's no separate board analysis for it to disagree with.
+  // First press shows the highest-priority progressing move (foundation >
+  // reveals a hidden card > other progressing tableau move > stock/waste,
+  // see rankMoves); each press after that advances to the next-highest,
+  // wrapping past the end - a browse through every progressing move in
+  // priority order, not just a single fixed "best move" popup. rankMoves
+  // only ever reorders exactly what it's given - it can't add, drop, or
+  // invent a move, so there's no separate board analysis for it to
+  // disagree with; getProgressingMoves is what actually decides which
+  // legal moves are worth showing at all.
   function showHint() {
     if (!hintMoves) {
-      const moves = rankMoves(state, getLegalMoves(state));
+      const moves = rankMoves(state, getProgressingMoves(state));
       if (!moves.length) {
-        hintMessage.textContent = 'No obvious move is available.';
+        hintMessage.textContent = 'No useful moves are available.';
         hintMessage.classList.remove('hidden');
         return;
       }
@@ -880,7 +882,10 @@ import { shuffle } from './shuffle.js';
   // real fanned slot, while the flip happens as a separate, synchronized
   // motion on top - "unit" comes from the flip firing at the same
   // instant for every card, not from an intermediate stop along the way.
-  function animateDraw(cards, originRect) {
+  // onCardRevealed(card, destRect), if given, fires the instant each card's
+  // ghost is swapped for its real element - i.e. exactly when that card
+  // actually becomes visible, per-card, not once for the whole batch.
+  function animateDraw(cards, originRect, onCardRevealed) {
     const ghosts = cards.map((card, i) => {
       const el = document.querySelector(`.card[data-id="${card.id}"]`);
       if (!el) return null; // covered by a later card in the same draw; nothing to animate
@@ -897,7 +902,7 @@ import { shuffle } from './shuffle.js';
         height: originRect.height,
       };
       const { wrapper, inner } = createFlipGhost(card, stackOrigin, 1000 + i);
-      return { el, wrapper, inner, stackOrigin, destRect };
+      return { card, el, wrapper, inner, stackOrigin, destRect };
     }).filter(Boolean);
 
     if (!ghosts.length) return;
@@ -921,6 +926,7 @@ import { shuffle } from './shuffle.js';
       setTimeout(() => {
         g.wrapper.remove();
         g.el.style.visibility = '';
+        if (onCardRevealed) onCardRevealed(g.card, g.destRect);
       }, startDelay + DEAL_TRAVEL_MS + 30);
     });
   }
@@ -964,7 +970,9 @@ import { shuffle } from './shuffle.js';
     return state.waste.find(c => String(c.id) === id);
   }
 
-  function createGatherGhost(imgSrc, rect, zIndex, fallbackSrc) {
+  // A plain, statically-positioned image ghost in the drag layer - no
+  // transition of its own. Callers decide whether (and how) it moves.
+  function createPositionedGhost(imgSrc, rect, zIndex, fallbackSrc) {
     const wrapper = document.createElement('div');
     wrapper.className = 'gather-ghost';
     wrapper.style.left = `${rect.left}px`;
@@ -981,13 +989,60 @@ import { shuffle } from './shuffle.js';
     return wrapper;
   }
 
+  // Draw 3's draw animation: cards already visible in the waste before this
+  // click must not move, slide, fade, or vanish - only the newly drawn
+  // cards animate, arriving on top of whatever was already there. render()
+  // has already rebuilt #waste to its final state, which means any old
+  // card no longer in the visible-3 window is already gone from the real
+  // DOM by the time this runs - so this drops in a completely static,
+  // untransitioned stand-in at each such card's exact prior on-screen
+  // position (never animated, just holding the spot) underneath the
+  // incoming cards, then runs the ordinary animateDraw for those. There's
+  // no gather/collapse phase at all here, which also means dealing starts
+  // the instant the stock is clicked instead of after a pre-gather delay.
+  //
+  // Each stand-in is removed the instant the card landing on its exact
+  // spot is actually revealed (via animateDraw's per-card callback), not
+  // once for the whole batch at the end - the three new cards reveal
+  // staggered, one at a time, so a single end-of-batch removal would leave
+  // a stand-in sitting on top of an already-revealed real card (which has
+  // a much lower z-index) for the rest of the batch, reading as that old
+  // card "flickering back in" right after the new one had already landed.
+  // Matched by final screen position rather than by array/order index, so
+  // this stays correct even in the rare case (near the end of the stock)
+  // where an old card survives into the new fan instead of being displaced.
+  function animateWasteDrawForDrawThree(drawn, stockRect, oldRectsById, onDone, arrivalMs) {
+    const stillRealIds = new Set(Array.from(document.querySelectorAll('#waste .card')).map(el => el.dataset.id));
+
+    const standIns = [];
+    oldRectsById.forEach((oldRect, id) => {
+      if (stillRealIds.has(id)) return; // still genuinely there; nothing to stand in for
+      const card = findWasteCard(id);
+      if (card) standIns.push({ el: createPositionedGhost(cardImageSrc(card), oldRect, 400, cardPngFallbackSrc(card)), rect: oldRect });
+    });
+
+    animateDraw(drawn, stockRect, (card, destRect) => {
+      for (let i = standIns.length - 1; i >= 0; i--) {
+        if (Math.round(standIns[i].rect.left) === Math.round(destRect.left) && Math.round(standIns[i].rect.top) === Math.round(destRect.top)) {
+          standIns[i].el.remove();
+          standIns.splice(i, 1);
+        }
+      }
+    });
+
+    setTimeout(() => {
+      standIns.forEach(s => s.el.remove()); // safety net - should normally be empty by now
+      onDone();
+    }, arrivalMs);
+  }
+
   // Fixes the flash where already-visible waste cards would instantly snap
   // to their new fanned position - or vanish outright, if they fall out of
   // renderWaste's "last 3 cards" window - the moment render() rebuilds the
   // waste pile's DOM. Every waste card at the moment of a draw is exactly
   // one of three things: departing (visible before, not after - tucked
   // under the pile), surviving (visible before *and* after, just at a new
-  // fan offset - e.g. Draw 1 continuations), or arriving (newly drawn this
+  // fan offset - a Draw 1 continuation), or arriving (newly drawn this
   // turn). All three get identified in one pass right after the normal
   // synchronous render() call - state truth never changes, this is a
   // purely cosmetic overlay using the same ghost/hide-the-real-element
@@ -996,6 +1051,12 @@ import { shuffle } from './shuffle.js';
   // position; Phase B lets survivors continue on to their real slot while
   // arrivals get the existing, unmodified animateDraw (flip + one
   // continuous glide from the stock).
+  //
+  // Draw 3 never actually has survivors (three new cards always fully
+  // displace up to three old ones), so it uses the simpler, unanimated
+  // stand-in approach above instead - see animateWasteDrawForDrawThree.
+  // This gather/settle version remains exactly as it was for Draw 1, which
+  // wasn't part of that request.
   function animateWasteDraw(drawn, stockRect, oldRectsById, onDone) {
     const arrivalMs = (drawn.length - 1) * SPREAD_STAGGER_MS + DEAL_TRAVEL_MS + 30;
 
@@ -1003,6 +1064,11 @@ import { shuffle } from './shuffle.js';
       // render() already left the correct final state on screen - nothing
       // was hidden, so there's nothing to animate or clean up.
       onDone();
+      return;
+    }
+
+    if (getDrawCount() === 3) {
+      animateWasteDrawForDrawThree(drawn, stockRect, oldRectsById, onDone, arrivalMs);
       return;
     }
 
@@ -1037,9 +1103,9 @@ import { shuffle } from './shuffle.js';
 
     survivors.forEach(s => { s.el.style.visibility = 'hidden'; });
 
-    const survivorGhosts = survivors.map((s, i) => createGatherGhost(s.imgSrc, s.oldRect, 500 + i));
+    const survivorGhosts = survivors.map((s, i) => createPositionedGhost(s.imgSrc, s.oldRect, 500 + i));
     const departureGhosts = departures.map((d, i) =>
-      createGatherGhost(cardImageSrc(d.card), d.oldRect, 400 + i, cardPngFallbackSrc(d.card))
+      createPositionedGhost(cardImageSrc(d.card), d.oldRect, 400 + i, cardPngFallbackSrc(d.card))
     );
 
     // Phase A: gather - everything already visible glides to the pile's
