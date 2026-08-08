@@ -518,7 +518,14 @@ body {
   box-shadow: 0 0 8px 1px rgba(217, 180, 92, 0.5);
 }
 
-.settings-option img {
+/* Direct child only - the Card Back swatch img sits right in the button,
+   but Deal Style's fan cards sit two levels down (inside .settings-option-
+   fan), and must keep their own fixed size from .settings-option-fan-card
+   instead of stretching to fill the fan. A descendant selector here would
+   match both and (at equal-ish specificity) fight that rule for width/
+   height/object-fit - which is exactly what stretched each fan card to the
+   fan's own box and made object-fit: cover crop its top and bottom. */
+.settings-option > img {
   display: block;
   width: 100%;
   height: 100%;
