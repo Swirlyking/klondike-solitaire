@@ -156,9 +156,18 @@ export function autoFinishAvailable(state) {
 
 function nonShuffleReason(move) {
   if (move.target === 'foundation') return 'foundation_progress';
-  if (move.category === MoveCategory.DRAW_STOCK) return 'draws_stock';
-  if (move.category === MoveCategory.RECYCLE_STOCK) return 'recycles_waste';
-  return 'clears_waste'; // only remaining case: source === 'waste' -> tableau (foundation-sourced moves are handled before this is ever called)
+  return 'clears_waste'; // only remaining case: source === 'waste' -> tableau (foundation-sourced and stock moves are handled before this is ever called)
+}
+
+// Drawing or recycling only ever changes which card sits on top of the
+// waste - it never touches a tableau or foundation top. So if nothing
+// still in the stock or waste matches *any* of today's tableau/foundation
+// tops, no amount of further drawing or recycling can ever change that
+// either: every card left in the game is already dead, and cycling
+// through them just puts the same unplayable cards on top of the waste,
+// over and over, forever.
+function stockHasReachableCard(state) {
+  return [...state.stock, ...state.waste].some(c => anyFoundationFor(state, c) !== -1 || findAnyLegalTableau(state, c) !== -1);
 }
 
 // For every card NOT in `excludeIds`: can it currently reach a foundation,
@@ -178,17 +187,18 @@ function opportunityMap(state, excludeIds) {
 }
 
 // Is this move genuinely progressive, or a reversible shuffle that leaves
-// the board effectively unchanged? Only tableau->tableau moves are
-// ambiguous enough to need resolving - every other category is always real
-// progress by definition (sending a card home, unsticking the waste,
-// drawing/recycling the stock), so those short-circuit immediately.
-//
-// One category is excluded outright rather than judged: a foundation-
-// sourced move (taking a card back out to free it up for a tableau build)
-// is legal Klondike and stays fully legal here - getLegalMoves is
-// untouched - but it is a step backward, not forward, regardless of
-// whether it happens to unlock something else down the line. V1 policy:
-// never try to weigh that tradeoff, just never call it progress.
+// the board effectively unchanged? Sending a card home or unsticking the
+// waste onto the tableau are always real progress by definition, so those
+// short-circuit immediately. Two other categories get their own direct
+// policy instead of that automatic pass, both for the same underlying
+// reason - a move can be perfectly legal Klondike and still not be worth
+// doing (getLegalMoves is never weakened for either case):
+// - foundation-sourced moves (taking a card back out) are always trivial -
+//   a step backward, never counted as progress, no matter what it might
+//   theoretically unlock.
+// - stock draws/recycles are trivial too, but only once nothing left in
+//   the stock or waste can currently land anywhere - see
+//   stockHasReachableCard. Until then they're real progress, same as ever.
 //
 // Two things are checked directly, before any simulation:
 // - revealsCard: a face-down card becomes face-up. This can't be inferred
@@ -224,6 +234,12 @@ function opportunityMap(state, excludeIds) {
 export function classifyMove(state, move) {
   if (move.source === 'foundation') {
     return { status: 'trivial', reason: 'foundation_return' };
+  }
+
+  if (move.category === MoveCategory.DRAW_STOCK || move.category === MoveCategory.RECYCLE_STOCK) {
+    return stockHasReachableCard(state)
+      ? { status: 'meaningful', reason: move.category === MoveCategory.DRAW_STOCK ? 'draws_stock' : 'recycles_waste' }
+      : { status: 'trivial', reason: 'stock_exhausted' };
   }
 
   if (move.category !== MoveCategory.TABLEAU_MOVE || move.source !== 'tableau') {

@@ -618,19 +618,60 @@ test('classifyMove: a non-King move that empties its column is meaningful (net i
   assert.deepEqual(classifyMove(s, move), { status: 'meaningful', reason: 'empties_column' });
 });
 
-test('classifyMove: foundation moves, waste moves, and stock draw/recycle are always meaningful, independent of the tableau-shuffle check', () => {
+test('classifyMove: foundation-bound moves and waste-to-tableau moves are always meaningful, independent of the tableau-shuffle check', () => {
   const s = emptyState();
   const foundationMove = { category: MoveCategory.FOUNDATION_MOVE, source: 'waste', sourceIndex: null, card: card('spades', 1), stackLength: 1, target: 'foundation', targetIndex: 0 };
   assert.equal(classifyMove(s, foundationMove).status, 'meaningful');
 
   const wasteMove = { category: MoveCategory.TABLEAU_MOVE, source: 'waste', sourceIndex: null, card: card('hearts', 5), stackLength: 1, target: 'tableau', targetIndex: 2 };
   assert.equal(classifyMove(s, wasteMove).status, 'meaningful');
+});
+
+test('classifyMove: drawing/recycling is meaningful as long as some card left in the stock or waste could still land somewhere', () => {
+  const s = emptyState();
+  s.stock = [card('hearts', 5)]; // buried in the stock, but reachable once it surfaces
+  s.tableau[0] = [card('clubs', 6)]; // black6 accepts the red5 sitting in the stock
+  const drawMove = { category: MoveCategory.DRAW_STOCK, source: 'stock', sourceIndex: null, card: null, stackLength: 0, target: 'waste', targetIndex: null };
+  assert.deepEqual(classifyMove(s, drawMove), { status: 'meaningful', reason: 'draws_stock' });
+
+  const s2 = emptyState();
+  s2.waste = [card('hearts', 5)];
+  s2.tableau[0] = [card('clubs', 6)];
+  const recycleMove = { category: MoveCategory.RECYCLE_STOCK, source: 'waste', sourceIndex: null, card: null, stackLength: 0, target: 'stock', targetIndex: null };
+  assert.deepEqual(classifyMove(s2, recycleMove), { status: 'meaningful', reason: 'recycles_waste' });
+});
+
+// Regression for the reported bug: Hint suggested "draw from the stock" (and
+// the abandon dialog claimed moves remained) when every card still in the
+// stock/waste was already dead - none of them matched any current tableau
+// or foundation top, so no amount of drawing or recycling could ever help.
+test('classifyMove: drawing/recycling is trivial once nothing left in the stock or waste can land anywhere', () => {
+  const s = emptyState();
+  s.stock = [card('hearts', 5), card('clubs', 9)]; // neither has a legal destination anywhere on this board
+  s.waste = [card('spades', 2)]; // same - dead
+  s.tableau[0] = [card('diamonds', 13)]; // an exposed King - nothing in stock/waste is a King, and it doesn't need one
 
   const drawMove = { category: MoveCategory.DRAW_STOCK, source: 'stock', sourceIndex: null, card: null, stackLength: 0, target: 'waste', targetIndex: null };
-  assert.equal(classifyMove(s, drawMove).status, 'meaningful');
+  assert.deepEqual(classifyMove(s, drawMove), { status: 'trivial', reason: 'stock_exhausted' });
 
+  const s2 = emptyState();
+  s2.waste = [card('hearts', 5), card('clubs', 9), card('spades', 2)]; // same dead cards, all already cycled into the waste
+  s2.tableau[0] = [card('diamonds', 13)];
   const recycleMove = { category: MoveCategory.RECYCLE_STOCK, source: 'waste', sourceIndex: null, card: null, stackLength: 0, target: 'stock', targetIndex: null };
-  assert.equal(classifyMove(s, recycleMove).status, 'meaningful');
+  assert.deepEqual(classifyMove(s2, recycleMove), { status: 'trivial', reason: 'stock_exhausted' });
+
+  assert.equal(getProgressingMoves(s).length, 0);
+  assert.equal(getProgressingMoves(s2).length, 0);
+});
+
+test('the abandon dialog does not count a dead stock as evidence that meaningful moves remain', () => {
+  const s = emptyState();
+  s.stock = [card('hearts', 5), card('clubs', 9)];
+  s.tableau[0] = [card('diamonds', 13)]; // nothing in stock accepts onto a King, and no Kings are stuck in stock either
+
+  assert.equal(needsAbandonConfirmation(s, 5, false), true); // drawing is still legal, so the dialog itself must show
+  assert.ok(getLegalMoves(s).some(m => m.category === MoveCategory.DRAW_STOCK));
+  assert.equal(getProgressingMoves(s).length, 0); // but it must not say "there are still moves available"
 });
 
 // Regression for the reported bug: Hint suggested "move the 2D onto the 3C"
