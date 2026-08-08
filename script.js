@@ -11,6 +11,7 @@ import {
   classifyMove,
   MoveCategory,
   autoFinishAvailable,
+  rankMoves,
 } from './game-logic.js';
 import { getPreference, setPreference } from './preferences.js';
 import { shuffle } from './shuffle.js';
@@ -469,15 +470,20 @@ import { shuffle } from './shuffle.js';
   let hintMoves = null; // cached getLegalMoves() result while a hint session is active; null = no active session
   let hintIndex = 0;
 
-  // Appends a card's label as real DOM: the rank as plain text (inherits
-  // the hint bar's gold), the suit symbol in its own span colored to match
-  // the card's actual color (see .suit-red/.suit-black in style.css).
+  // Appends a card's label as a small chip (see .hint-card in style.css) -
+  // rank and suit set tight against each other with no gap, on the chip's
+  // own light card-colored background, so it reads like a tiny card rather
+  // than plain sentence text. The suit symbol gets its own span colored to
+  // match the card's actual color (see .suit-red/.suit-black).
   function appendCardLabel(container, card) {
-    container.appendChild(document.createTextNode(RANK_LABELS[card.rank]));
+    const chip = document.createElement('span');
+    chip.className = 'hint-card';
+    chip.appendChild(document.createTextNode(RANK_LABELS[card.rank]));
     const suitEl = document.createElement('span');
     suitEl.className = card.color === 'red' ? 'suit-red' : 'suit-black';
     suitEl.textContent = SUITS.find(s => s.key === card.suit).symbol;
-    container.appendChild(suitEl);
+    chip.appendChild(suitEl);
+    container.appendChild(chip);
   }
 
   function cardElFor(card) {
@@ -547,12 +553,16 @@ import { shuffle } from './shuffle.js';
     hintMessage.classList.remove('hidden');
   }
 
-  // First press generates and shows the first move; each press after that
-  // advances to the next one, wrapping back to the first past the end - a
-  // browse, not a "here's the best move" recommendation.
+  // First press shows the highest-priority legal move (foundation > reveals
+  // a hidden card > other tableau moves > stock/waste, see rankMoves); each
+  // press after that advances to the next-highest, wrapping past the end -
+  // a browse through every legal move in priority order, not just a single
+  // fixed "best move" popup. rankMoves only ever reorders exactly what
+  // getLegalMoves returned - it can't add, drop, or invent a move, so
+  // there's no separate board analysis for it to disagree with.
   function showHint() {
     if (!hintMoves) {
-      const moves = getLegalMoves(state);
+      const moves = rankMoves(state, getLegalMoves(state));
       if (!moves.length) {
         hintMessage.textContent = 'No obvious move is available.';
         hintMessage.classList.remove('hidden');

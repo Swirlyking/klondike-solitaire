@@ -177,14 +177,27 @@ body {
 }
 #hint-message.hidden { display: none; }
 
-/* Suit symbols within a hint's card labels - only the symbol itself is
-   colored (rank text stays the surrounding gold), matching how a real card
-   reads: red for hearts/diamonds, "black" for spades/clubs. True black
-   would vanish against this bar's dark background, so black suits use the
-   app's existing light body-text color instead; red reuses the same warm
-   red already established for a destructive action (#confirmGiveUpBtn). */
-#hint-message .suit-red { color: #e07860; }
-#hint-message .suit-black { color: #eee; }
+/* A hint's card labels render as a small chip - light background matching
+   the actual card-face cream (#fbf7ee, same as .card.face-up), rank and
+   suit set tight against each other with no gap, so it reads like a
+   miniature card rather than plain sentence text. The chip's own dark text
+   color is what makes true black (#231f20, the exact ink color requested)
+   legible here at all - against #hint-message's own dark background it
+   nearly vanished, which is exactly why the chip exists. */
+.hint-card {
+  display: inline-flex;
+  align-items: center;
+  background: #fbf7ee;
+  color: #231f20;
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin: 0 1px;
+  font-weight: 700;
+  line-height: 1.4;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.hint-card .suit-red { color: #e07860; }
+.hint-card .suit-black { color: #231f20; }
 
 #board {
   padding: 24px 28px 60px;

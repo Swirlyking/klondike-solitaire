@@ -217,6 +217,31 @@ export function classifyMove(state, move) {
     : { status: 'trivial', reason: 'reversible_shuffle' };
 }
 
+// Hint's ranking policy - a third, separate layer on top of getLegalMoves
+// and classifyMove, same as classifyMove sits on top of getLegalMoves alone.
+// Never generates or filters moves itself, only reorders exactly the array
+// it was given, so the result is always a subset-free permutation of
+// getLegalMoves' own output - Hint can never show something that isn't
+// legal, because it never has an opinion about legality, only about order.
+//
+// Priority: reaching a foundation first (always the best use of a card),
+// then revealing a hidden tableau card, then any other tableau
+// rearrangement, then stock/waste actions last (drawing or recycling never
+// improves the board on its own - it only sets up a future move). Stable
+// within each tier: Array.prototype.sort is required to be stable, so ties
+// keep getLegalMoves' own left-to-right, top-to-bottom order.
+function movePriority(state, move) {
+  if (move.category === MoveCategory.FOUNDATION_MOVE) return 0;
+  if (move.category === MoveCategory.TABLEAU_MOVE) {
+    return classifyMove(state, move).reason === 'reveals_card' ? 1 : 2;
+  }
+  return 3; // DRAW_STOCK / RECYCLE_STOCK
+}
+
+export function rankMoves(state, moves) {
+  return [...moves].sort((a, b) => movePriority(state, a) - movePriority(state, b));
+}
+
 // Given the current legal destinations (ascending) and the column this card
 // was sent to last time it was cycled, returns the next one: the smallest
 // legal index greater than lastUsed, or the leftmost again if lastUsed was

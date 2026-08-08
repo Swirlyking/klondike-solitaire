@@ -17,6 +17,7 @@ import {
   classifyMove,
   MoveCategory,
   autoFinishAvailable,
+  rankMoves,
 } from './game-logic.js';
 
 let nextId = 0;
@@ -839,4 +840,86 @@ test('Auto Finish: an Ace targets the correct leftmost open foundation slot rega
   const move = getLegalMoves(s).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
   assert.equal(move.card.id, aceSpades.id);
   assert.equal(move.targetIndex, 0); // slot 0 is the leftmost still-empty slot
+});
+
+// ---------- rankMoves: Hint's priority policy ----------
+
+test('rankMoves: a foundation move outranks a tableau move for the same card, even when the tableau move also reveals a card (regression for the A♣-onto-2♥ hint bug)', () => {
+  const s = emptyState();
+  const buried = card('spades', 9, false); // face-down beneath the ace
+  const aceClubs = card('clubs', 1);
+  s.tableau[0] = [buried, aceClubs];
+  s.tableau[1] = [card('hearts', 2)]; // a red 2 also legally accepts the ace - the wrong move the bug report showed
+
+  const ranked = rankMoves(s, getLegalMoves(s));
+  assert.equal(ranked[0].category, MoveCategory.FOUNDATION_MOVE);
+  assert.equal(ranked[0].card.id, aceClubs.id);
+});
+
+test('rankMoves: a reveal-producing tableau move outranks a non-reveal tableau move', () => {
+  const s = emptyState();
+  const buried = card('clubs', 9, false);
+  const mover = card('hearts', 8); // moving this reveals `buried`
+  s.tableau[0] = [buried, mover];
+  s.tableau[1] = [card('spades', 9)]; // accepts the red 8
+
+  const shuffler = card('hearts', 5);
+  s.tableau[2] = [card('clubs', 10), shuffler]; // already-exposed top beneath it - moving reveals nothing
+  s.tableau[3] = [card('clubs', 6)]; // accepts the red 5
+
+  const ranked = rankMoves(s, getLegalMoves(s));
+  const revealIndex = ranked.findIndex(m => m.card && m.card.id === mover.id);
+  const shuffleIndex = ranked.findIndex(m => m.card && m.card.id === shuffler.id);
+  assert.ok(revealIndex < shuffleIndex);
+});
+
+test('rankMoves: a tableau move outranks a stock draw', () => {
+  const s = emptyState();
+  const five = card('hearts', 5);
+  s.tableau[0] = [card('clubs', 10), five]; // a legal (non-revealing) tableau shuffle
+  s.tableau[1] = [card('clubs', 6)];
+  s.stock = [card('diamonds', 9)];
+  const ranked = rankMoves(s, getLegalMoves(s));
+  const tableauIndex = ranked.findIndex(m => m.card && m.card.id === five.id);
+  const drawIndex = ranked.findIndex(m => m.category === MoveCategory.DRAW_STOCK);
+  assert.ok(tableauIndex < drawIndex);
+});
+
+test('rankMoves only reorders getLegalMoves\' own output - same moves, same count, nothing added or dropped', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)];
+  s.tableau[0] = [card('hearts', 2)];
+  s.tableau[1] = [card('clubs', 6)];
+  s.tableau[2] = [card('diamonds', 5)];
+  s.waste = [card('spades', 3)];
+  s.stock = [card('clubs', 9)];
+  const moves = getLegalMoves(s);
+  const ranked = rankMoves(s, moves);
+  assert.equal(ranked.length, moves.length);
+  const key = m => `${m.category}|${m.source}|${m.sourceIndex}|${m.card ? m.card.id : ''}|${m.target}|${m.targetIndex}`;
+  assert.deepEqual(new Set(ranked.map(key)), new Set(moves.map(key)));
+});
+
+test('rankMoves keeps getLegalMoves\' left-to-right order for moves within the same priority tier', () => {
+  const s = emptyState();
+  s.tableau[1] = [card('diamonds', 5)]; // red5 -> needs a black6, no reveal
+  s.tableau[4] = [card('hearts', 5)];   // red5 -> needs a black6, no reveal
+  s.tableau[0] = [card('clubs', 6)];
+  s.tableau[6] = [card('spades', 6)];
+  const ranked = rankMoves(s, getLegalMoves(s))
+    .filter(m => m.category === MoveCategory.TABLEAU_MOVE && m.source === 'tableau');
+  const sourceOrder = ranked.map(m => m.sourceIndex);
+  assert.ok(sourceOrder.indexOf(1) < sourceOrder.indexOf(4));
+});
+
+test('rankMoves does not mutate the input array or state', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)];
+  s.tableau[0] = [card('hearts', 2)];
+  const moves = getLegalMoves(s);
+  const movesCopy = [...moves];
+  const beforeState = cloneState(s);
+  rankMoves(s, moves);
+  assert.deepEqual(moves, movesCopy);
+  assert.deepEqual(s, beforeState);
 });
