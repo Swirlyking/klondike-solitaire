@@ -160,14 +160,38 @@ function nonShuffleReason(move) {
 }
 
 // Drawing or recycling only ever changes which card sits on top of the
-// waste - it never touches a tableau or foundation top. So if nothing
-// still in the stock or waste matches *any* of today's tableau/foundation
-// tops, no amount of further drawing or recycling can ever change that
-// either: every card left in the game is already dead, and cycling
-// through them just puts the same unplayable cards on top of the waste,
-// over and over, forever.
-function stockHasReachableCard(state) {
-  return [...state.stock, ...state.waste].some(c => anyFoundationFor(state, c) !== -1 || findAnyLegalTableau(state, c) !== -1);
+// waste - it never touches a tableau or foundation top - so whether it can
+// ever help depends on whether some card that could still reach one is
+// actually capable of *becoming* the waste's top card at all.
+//
+// At Draw 1 that's every remaining card eventually, but at Draw 3+ it is
+// not: onStockClick pops drawCount cards off the end of the stock and
+// pushes them onto the waste in that same order, so within each group only
+// the last one pushed ends up exposed - the other drawCount-1 are
+// immediately buried underneath it. Recycling pops the waste from its end
+// and pushes onto the stock in that order too, which is a second reversal
+// that exactly undoes the first - a recycle always restores the precise
+// pre-pass stock order (confirmed by direct simulation), so every pass
+// draws the identical groups in the identical order, forever. A card that
+// isn't the last card of its group is therefore never individually
+// reachable, no matter how many times the stock is cycled.
+//
+// state.stock (bottom-to-top) is exactly the undrawn prefix of this pass's
+// original order; state.waste (bottom-to-top) is exactly that same order's
+// drawn suffix, reversed (each draw reverses the group it moves) - so
+// un-reversing the waste and appending it back after the stock reconstructs
+// this pass's full original order, from which the reachable (last-of-
+// -group, counting from the top) cards can be read off directly.
+function stockHasReachableCard(state, drawCount) {
+  const order = [...state.stock, ...state.waste.slice().reverse()]; // bottom-to-top, this pass's original order
+  let pos = order.length - 1;
+  while (pos >= 0) {
+    const groupSize = Math.min(drawCount, pos + 1);
+    const exposedCard = order[pos - groupSize + 1]; // the last card drawn in this group - the only one ever exposed as the waste's top
+    if (anyFoundationFor(state, exposedCard) !== -1 || findAnyLegalTableau(state, exposedCard) !== -1) return true;
+    pos -= groupSize;
+  }
+  return false;
 }
 
 // For every card NOT in `excludeIds`: can it currently reach a foundation,
@@ -197,8 +221,12 @@ function opportunityMap(state, excludeIds) {
 //   a step backward, never counted as progress, no matter what it might
 //   theoretically unlock.
 // - stock draws/recycles are trivial too, but only once nothing left in
-//   the stock or waste can currently land anywhere - see
+//   the stock or waste can ever actually *reach* the waste's top - see
 //   stockHasReachableCard. Until then they're real progress, same as ever.
+//   drawCount defaults to 1 (Draw 1, where every remaining card eventually
+//   reaches the top) so callers that don't care about the distinction -
+//   most tests, and every reason unrelated to stock/waste - are unaffected;
+//   real gameplay must pass the game's actual draw count explicitly.
 //
 // Two things are checked directly, before any simulation:
 // - revealsCard: a face-down card becomes face-up. This can't be inferred
@@ -231,13 +259,13 @@ function opportunityMap(state, excludeIds) {
 // cards of a three-card sequence) are separate getLegalMoves entries whose
 // sourceIndex always travels with the run - comparing those would always
 // look like something changed, even when the run just relocated in whole.
-export function classifyMove(state, move) {
+export function classifyMove(state, move, drawCount = 1) {
   if (move.source === 'foundation') {
     return { status: 'trivial', reason: 'foundation_return' };
   }
 
   if (move.category === MoveCategory.DRAW_STOCK || move.category === MoveCategory.RECYCLE_STOCK) {
-    return stockHasReachableCard(state)
+    return stockHasReachableCard(state, drawCount)
       ? { status: 'meaningful', reason: move.category === MoveCategory.DRAW_STOCK ? 'draws_stock' : 'recycles_waste' }
       : { status: 'trivial', reason: 'stock_exhausted' };
   }
@@ -277,9 +305,10 @@ export function classifyMove(state, move) {
 // The shared "is this worth doing" filter - Hint and the abandon dialog
 // both call this instead of classifyMove directly, so the two can never
 // disagree about what counts as progress. Never reimplements the rule,
-// only selects from exactly what classifyMove already decided.
-export function getProgressingMoves(state) {
-  return getLegalMoves(state).filter(m => classifyMove(state, m).status === 'meaningful');
+// only selects from exactly what classifyMove already decided. drawCount
+// matters only for DRAW_STOCK/RECYCLE_STOCK moves - see classifyMove.
+export function getProgressingMoves(state, drawCount = 1) {
+  return getLegalMoves(state).filter(m => classifyMove(state, m, drawCount).status === 'meaningful');
 }
 
 // Hint's ranking policy - a fourth, separate layer on top of getLegalMoves,

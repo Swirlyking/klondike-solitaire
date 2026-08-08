@@ -452,7 +452,7 @@ import { shuffle } from './shuffle.js';
     }
     if (actionKey === 'newGame') {
       const { title, meaningfulMessage, stuckMessage } = ABANDON_COPY.newGame;
-      const meaningful = getProgressingMoves(state).length > 0;
+      const meaningful = getProgressingMoves(state, getDrawCount()).length > 0;
       showConfirm({ title, message: meaningful ? meaningfulMessage : stuckMessage, onConfirm: action });
       return;
     }
@@ -564,7 +564,7 @@ import { shuffle } from './shuffle.js';
   // legal moves are worth showing at all.
   function showHint() {
     if (!hintMoves) {
-      const moves = rankMoves(state, getProgressingMoves(state));
+      const moves = rankMoves(state, getProgressingMoves(state, getDrawCount()));
       if (!moves.length) {
         hintMessage.textContent = 'No useful moves are available.';
         hintMessage.classList.remove('hidden');

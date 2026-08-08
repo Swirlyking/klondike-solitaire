@@ -674,6 +674,42 @@ test('the abandon dialog does not count a dead stock as evidence that meaningful
   assert.equal(getProgressingMoves(s).length, 0); // but it must not say "there are still moves available"
 });
 
+// Regression for the follow-up report: recycling was still being offered at
+// Draw 3 in a genuinely dead position. At Draw 1 every card in the stock
+// eventually reaches the waste's top, but at Draw 3 onStockClick pops
+// drawCount cards off the stock and pushes them onto the waste in that same
+// order, so only the *last* card of each group of 3 (counting from the
+// top) is ever individually exposed - the other two are buried underneath
+// it in every single pass, forever, because recycling exactly restores the
+// pre-pass order (see stockHasReachableCard). A card can have a perfectly
+// good destination and still never matter, if it never lands in that
+// last-of-group position.
+test('classifyMove: at Draw 3, a card buried mid-group in the waste never counts, even though the same card would count at Draw 1', () => {
+  const s = emptyState();
+  // Current waste (bottom-to-top): A, B, C, D - so this pass's original
+  // stock order (bottom-to-top) was D, C, B, A (draws pop off the end and
+  // push in that order, which is what un-reversing the waste recovers).
+  // Grouping from the top in 3s: {A,B,C} (reachable = C, the last one
+  // drawn/pushed) then {D} alone (reachable = D). Verified numerically
+  // against stockHasReachableCard's own algorithm: the two positions that
+  // actually ever surface are C and D - never A or B.
+  const A = card('hearts', 5); // HAS a legal destination (the black 6 below) - but never surfaces at Draw 3
+  const B = card('clubs', 9);  // dead either way
+  const C = card('spades', 8); // dead either way
+  const D = card('diamonds', 9); // dead either way
+  s.waste = [A, B, C, D];
+  s.tableau[0] = [card('clubs', 6)]; // black6 - only A (red 5) matches it
+
+  const recycleMove = getLegalMoves(s).find(m => m.category === MoveCategory.RECYCLE_STOCK);
+  assert.ok(recycleMove, 'recycling must still be legal - stock is empty and waste is not');
+
+  assert.deepEqual(classifyMove(s, recycleMove, 3), { status: 'trivial', reason: 'stock_exhausted' });
+  assert.deepEqual(classifyMove(s, recycleMove, 1), { status: 'meaningful', reason: 'recycles_waste' });
+
+  assert.equal(getProgressingMoves(s, 3).length, 0);
+  assert.ok(getProgressingMoves(s, 1).some(m => sameMove(m, recycleMove)));
+});
+
 // Regression for the reported bug: Hint suggested "move the 2D onto the 3C"
 // - legal (foundation-to-tableau is allowed Klondike), but a step backward,
 // not progress. classifyMove must reject it outright, without running the
