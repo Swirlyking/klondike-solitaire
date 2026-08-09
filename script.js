@@ -370,13 +370,14 @@ import { shuffle } from './shuffle.js';
   // ---------- abandon-game confirmation ----------
 
   const ABANDON_COPY = {
+    // Which of these two shows depends on classifyMove (game-logic.js) - see
+    // guardAbandon below. Visibility of the dialog itself is a separate,
+    // unrelated question (needsAbandonConfirmation). No message on the
+    // stuck case is deliberate - "no more useful moves" doesn't need a
+    // second sentence explaining itself the way "are you sure?" does.
     newGame: {
-      title: 'Give up this game?',
-      // Which of these two shows depends on classifyMove (game-logic.js) -
-      // see guardAbandon below. Visibility of the dialog itself is a
-      // separate, unrelated question (needsAbandonConfirmation).
-      meaningfulMessage: 'There are still moves available. A new deal will replace this one.',
-      stuckMessage: 'No useful moves remain. A new deal will replace this one.',
+      meaningful: { title: 'Quitting?', message: 'There are still moves available, are you sure?', confirmLabel: 'Shuffle Me a New Game' },
+      stuck: { title: 'No more useful moves!', message: '', confirmLabel: 'Shuffle Me a New Game' },
     },
     restart: { title: 'Restart this deal?', message: 'Your moves will be undone, but the same cards will be dealt again.' },
   };
@@ -411,14 +412,16 @@ import { shuffle } from './shuffle.js';
     confirmTriggerEl = null;
   }
 
-  function showConfirm({ title, message, onConfirm }) {
+  function showConfirm({ title, message, confirmLabel, onConfirm }) {
     if (confirmOpen) return; // only one modal at a time
     confirmOpen = true;
     confirmResolving = false;
     confirmOnConfirm = onConfirm;
     confirmTriggerEl = document.activeElement;
     confirmTitle.textContent = title;
-    confirmMessage.textContent = message;
+    confirmMessage.textContent = message || '';
+    confirmMessage.classList.toggle('hidden', !message); // some dialogs (e.g. the stuck-game case) are title-only
+    confirmGiveUpBtn.textContent = confirmLabel || 'Give Up'; // reset every time - this button is shared across every dialog variant
     confirmOverlay.classList.remove('hidden');
     document.addEventListener('keydown', onConfirmKeydown, true);
     confirmKeepBtn.focus();
@@ -444,16 +447,15 @@ import { shuffle } from './shuffle.js';
   // current deal (see needsAbandonConfirmation in game-logic.js) - runs
   // `action` immediately when nothing would actually be lost, otherwise
   // shows the modal with action-specific wording and only runs it if the
-  // player picks "Give Up".
+  // player confirms via the modal's own destructive button.
   function guardAbandon(actionKey, action) {
     if (!needsAbandonConfirmation(state, history.length, won)) {
       action();
       return;
     }
     if (actionKey === 'newGame') {
-      const { title, meaningfulMessage, stuckMessage } = ABANDON_COPY.newGame;
       const meaningful = getProgressingMoves(state, getDrawCount()).length > 0;
-      showConfirm({ title, message: meaningful ? meaningfulMessage : stuckMessage, onConfirm: action });
+      showConfirm({ ...(meaningful ? ABANDON_COPY.newGame.meaningful : ABANDON_COPY.newGame.stuck), onConfirm: action });
       return;
     }
     showConfirm({ ...ABANDON_COPY[actionKey], onConfirm: action });
