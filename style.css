@@ -673,23 +673,22 @@ body {
   outline-offset: 2px;
 }
 
-/* Keep Playing: the primary/default action - same gold-fill treatment as
-   the win card's button, so it's unmistakably the "safe" choice. */
+/* Keep Playing: de-emphasized outline - still gold, just not the fill, so
+   it doesn't compete with the emphasized choice on the other button. */
 #confirmKeepBtn {
+  background: transparent;
+  border: 1px solid rgba(217, 180, 92, 0.6);
+  color: var(--gold);
+}
+#confirmKeepBtn:hover { background: rgba(217, 180, 92, 0.12); }
+
+/* Give Up / Shuffle Me a New Game: the emphasized, filled choice - same
+   gold-fill treatment as the win card's button. */
+#confirmGiveUpBtn {
   background: var(--gold);
   border: none;
   color: #222;
 }
-
-/* Give Up: destructive, deliberately de-emphasized so it never reads as
-   the default - an outline rather than a fill, in a muted warm red that
-   still sits comfortably in the felt/gold palette. */
-#confirmGiveUpBtn {
-  background: transparent;
-  border: 1px solid rgba(224, 120, 96, 0.6);
-  color: #e07860;
-}
-#confirmGiveUpBtn:hover { background: rgba(224, 120, 96, 0.12); }
 
 /* Above the mobile breakpoint, --card-w was a flat 84px regardless of how
    wide the viewport actually was - fine for a modest browser window, but

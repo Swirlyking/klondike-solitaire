@@ -288,16 +288,25 @@ import { shuffle } from './shuffle.js';
   // Three-phase accordion, cheapest concession first:
   // 1. Normal spacing, if the whole column already fits top to bottom -
   //    true for every desktop/portrait/short-column case.
-  // 2. Otherwise, compress face-down gaps first, toward a near-zero floor -
-  //    they carry no information, so they're the first to give.
+  // 2. Otherwise, compress face-down gaps first, toward MIN_DOWN_GAP - they
+  //    carry no information, so they're the first to give.
   // 3. If that alone isn't enough, compress face-up gaps too: first toward
   //    a floor that still shows the corner rank/suit, and only past that -
-  //    a genuinely extreme case - toward near-total overlap.
+  //    a genuinely extreme case - toward MIN_UP_GAP.
   // Within a tier every gap shrinks by the same amount, so a column
   // compresses evenly instead of some cards staying spaced while others
-  // jump straight to minimum. The bottom card's own top always lands at
-  // exactly availableHeight - cardHeight once any compression kicks in,
-  // since every phase targets that sum precisely rather than approximating.
+  // jump straight to minimum.
+  //
+  // MIN_DOWN_GAP/MIN_UP_GAP are hard floors, never crossed, deliberately
+  // small enough to read as "almost completely overlapping" but never
+  // "identical" - a cascade must never look like a single card no matter
+  // how little room is available. That means the bottom card's top is only
+  // guaranteed to land at exactly availableHeight - cardHeight when the
+  // column fits within these floors; a column with more cards than that
+  // genuinely allows accepts the bottom card extending past the ideal
+  // boundary rather than erasing the gaps that make it a cascade at all.
+  const MIN_DOWN_GAP = 4;
+  const MIN_UP_GAP = 6;
   function computeTableauTops(faceUpFlags, availableHeight, cascadeDown, cascadeUp, cardHeight) {
     const n = faceUpFlags.length;
     if (n === 0) return [];
@@ -309,9 +318,9 @@ import { shuffle } from './shuffle.js';
     if (naturalGapSum + cardHeight > availableHeight) {
       let excess = naturalGapSum - Math.max(0, availableHeight - cardHeight);
 
-      const minDown = Math.min(cascadeDown, Math.max(2, cascadeDown * 0.2));
+      const minDown = Math.min(cascadeDown, Math.max(MIN_DOWN_GAP, cascadeDown * 0.25));
       const minUpInformative = Math.min(cascadeUp, cascadeUp * 0.7);
-      const minUpExtreme = Math.min(minUpInformative, Math.max(3, cascadeUp * 0.12));
+      const minUpExtreme = Math.min(minUpInformative, Math.max(MIN_UP_GAP, cascadeUp * 0.15));
 
       const downIdx = [], upIdx = [];
       faceUpFlags.slice(0, n - 1).forEach((faceUp, i) => (faceUp ? upIdx : downIdx).push(i));
@@ -331,18 +340,9 @@ import { shuffle } from './shuffle.js';
       shrinkTier(downIdx, minDown);
       shrinkTier(upIdx, minUpInformative);
       shrinkTier(upIdx, minUpExtreme);
-
-      // Pathological fallback: even minimum spacing everywhere doesn't fit
-      // (an unrealistic number of cards for the available room). Rather
-      // than overflow, scale every remaining gap toward zero uniformly -
-      // the bottom card stays reachable even if middle cards fully overlap.
-      if (excess > 0.5 && gaps.length) {
-        const remaining = gaps.reduce((a, g) => a + g, 0);
-        if (remaining > 0) {
-          const ratio = Math.max(0, 1 - excess / remaining);
-          for (let i = 0; i < gaps.length; i++) gaps[i] *= ratio;
-        }
-      }
+      // No further fallback beyond this point - if excess remains, every
+      // gap is already sitting at its hard floor. The column overflows the
+      // ideal boundary rather than collapsing into a single visual card.
     }
 
     const tops = [0];
