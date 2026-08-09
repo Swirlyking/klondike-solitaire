@@ -262,6 +262,94 @@ import { shuffle } from './shuffle.js';
     return resolveCssLength('var(--cascade-up)');
   }
 
+  function getCardHeight() {
+    return resolveCssLength('var(--card-h)');
+  }
+
+  // How much vertical room a tableau column actually has, from its own
+  // current top (wherever the existing header/top-row layout puts it -
+  // untouched by any of this) down to the bottom of the *safe*, visible
+  // viewport - past the home-indicator/notch safe area, with a little
+  // breathing room so the bottom card isn't flush against the edge.
+  const TABLEAU_BOTTOM_MARGIN_PX = 10;
+  function getTableauAvailableHeight(colTop) {
+    const safeBottom = resolveCssLength('env(safe-area-inset-bottom, 0px)');
+    return Math.max(0, window.innerHeight - safeBottom - TABLEAU_BOTTOM_MARGIN_PX - colTop);
+  }
+
+  // The one place a tableau column's per-card vertical offsets are computed
+  // from scratch - renderTableauCol uses it for the real column, and
+  // computeDestRects uses it to predict where cards not yet in the DOM will
+  // land, so the two can never disagree. Everything else (drag, click-move,
+  // the flip reveal, hint highlighting) reads a card's real position back
+  // out of the DOM via getBoundingClientRect() rather than recomputing it,
+  // so it automatically inherits whatever this function decided.
+  //
+  // Three-phase accordion, cheapest concession first:
+  // 1. Normal spacing, if the whole column already fits top to bottom -
+  //    true for every desktop/portrait/short-column case.
+  // 2. Otherwise, compress face-down gaps first, toward a near-zero floor -
+  //    they carry no information, so they're the first to give.
+  // 3. If that alone isn't enough, compress face-up gaps too: first toward
+  //    a floor that still shows the corner rank/suit, and only past that -
+  //    a genuinely extreme case - toward near-total overlap.
+  // Within a tier every gap shrinks by the same amount, so a column
+  // compresses evenly instead of some cards staying spaced while others
+  // jump straight to minimum. The bottom card's own top always lands at
+  // exactly availableHeight - cardHeight once any compression kicks in,
+  // since every phase targets that sum precisely rather than approximating.
+  function computeTableauTops(faceUpFlags, availableHeight, cascadeDown, cascadeUp, cardHeight) {
+    const n = faceUpFlags.length;
+    if (n === 0) return [];
+    if (n === 1) return [0];
+
+    const gaps = faceUpFlags.slice(0, n - 1).map(faceUp => faceUp ? cascadeUp : cascadeDown);
+    const naturalGapSum = gaps.reduce((a, b) => a + b, 0);
+
+    if (naturalGapSum + cardHeight > availableHeight) {
+      let excess = naturalGapSum - Math.max(0, availableHeight - cardHeight);
+
+      const minDown = Math.min(cascadeDown, Math.max(2, cascadeDown * 0.2));
+      const minUpInformative = Math.min(cascadeUp, cascadeUp * 0.7);
+      const minUpExtreme = Math.min(minUpInformative, Math.max(3, cascadeUp * 0.12));
+
+      const downIdx = [], upIdx = [];
+      faceUpFlags.slice(0, n - 1).forEach((faceUp, i) => (faceUp ? upIdx : downIdx).push(i));
+
+      // Shrinks every gap in `idx` toward `floor` by an equal amount,
+      // absorbing as much of `excess` as that tier's slack allows.
+      const shrinkTier = (idx, floor) => {
+        if (excess <= 0 || !idx.length) return;
+        const slack = idx.reduce((a, i) => a + (gaps[i] - floor), 0);
+        const used = Math.min(excess, slack);
+        if (used <= 0) return;
+        const perGap = used / idx.length;
+        idx.forEach(i => { gaps[i] -= perGap; });
+        excess -= used;
+      };
+
+      shrinkTier(downIdx, minDown);
+      shrinkTier(upIdx, minUpInformative);
+      shrinkTier(upIdx, minUpExtreme);
+
+      // Pathological fallback: even minimum spacing everywhere doesn't fit
+      // (an unrealistic number of cards for the available room). Rather
+      // than overflow, scale every remaining gap toward zero uniformly -
+      // the bottom card stays reachable even if middle cards fully overlap.
+      if (excess > 0.5 && gaps.length) {
+        const remaining = gaps.reduce((a, g) => a + g, 0);
+        if (remaining > 0) {
+          const ratio = Math.max(0, 1 - excess / remaining);
+          for (let i = 0; i < gaps.length; i++) gaps[i] *= ratio;
+        }
+      }
+    }
+
+    const tops = [0];
+    for (let i = 0; i < gaps.length; i++) tops.push(tops[i] + gaps[i]);
+    return tops;
+  }
+
   let state = null;
   // Snapshot of the very first deal from the current newGame() call, kept
   // around (untouched by any subsequent move) so restart() can jump back
@@ -729,7 +817,12 @@ import { shuffle } from './shuffle.js';
     renderStock();
     renderWaste();
     for (let i = 0; i < 4; i++) renderFoundation(i);
-    for (let i = 0; i < 7; i++) renderTableauCol(i);
+    // Resolved once per render, not per column - same three values feed
+    // every column's compression calc (see computeTableauTops).
+    const cascadeDown = getCascadeDown();
+    const cascadeUp = getCascadeUp();
+    const cardHeight = getCardHeight();
+    for (let i = 0; i < 7; i++) renderTableauCol(i, cascadeDown, cascadeUp, cardHeight);
     checkWin();
   }
 
@@ -803,16 +896,16 @@ import { shuffle } from './shuffle.js';
     }
   }
 
-  function renderTableauCol(i) {
+  function renderTableauCol(i, cascadeDown, cascadeUp, cardHeight) {
     const el = document.getElementById(`tableau-${i}`);
     el.innerHTML = '';
     const col = state.tableau[i];
-    const cascadeDown = getCascadeDown();
-    const cascadeUp = getCascadeUp();
-    let top = 0;
+    const colTop = el.getBoundingClientRect().top; // fixed by the layout above it - this compression never moves it
+    const availableHeight = getTableauAvailableHeight(colTop);
+    const tops = computeTableauTops(col.map(c => c.faceUp), availableHeight, cascadeDown, cascadeUp, cardHeight);
     col.forEach((card, idx) => {
       const cardEl = makeCardEl(card, card.faceUp);
-      cardEl.style.top = `${top}px`;
+      cardEl.style.top = `${tops[idx]}px`;
       cardEl.style.zIndex = idx;
       if (card.faceUp) {
         attachCardInteractions(cardEl, card, 'tableau', i);
@@ -820,10 +913,6 @@ import { shuffle } from './shuffle.js';
         cardEl.classList.add('not-draggable');
       }
       el.appendChild(cardEl);
-      // How much of *this* card peeks out is what determines where the next
-      // one starts - a back only needs its top-border sliver, a face needs
-      // enough to read the corner index.
-      top += card.faceUp ? cascadeUp : cascadeDown;
     });
   }
 
@@ -1228,31 +1317,27 @@ import { shuffle } from './shuffle.js';
     return false;
   }
 
+  // Predicts where cards not yet in the DOM will land - called before
+  // commitMove, so state.tableau[targetIndex] is still the pre-move column.
+  // Uses computeTableauTops, the exact function renderTableauCol itself
+  // uses, on "the real column plus these incoming cards" - not a
+  // lighter-weight approximation - so a drop into an already-compressed
+  // column (or one about to become compressed once these cards land)
+  // predicts the same position the next render() will actually produce.
   function computeDestRects(target, targetIndex, count) {
     if (target === 'foundation') {
       return [document.getElementById(`foundation-${targetIndex}`).getBoundingClientRect()];
     }
     const colEl = document.getElementById(`tableau-${targetIndex}`);
     const colRect = colEl.getBoundingClientRect();
-    // Every card landing here is face-up (only face-up sequences can be
-    // dropped on a tableau column), and so is whatever it's landing on top
-    // of - but cards further down that existing pile may be face-down,
-    // each with their own smaller gap (see renderTableauCol), so the
-    // existing top card's *actual* rendered position - not index * a
-    // single cascade constant - is the only reliable base to build on.
+    const cascadeDown = getCascadeDown();
     const cascadeUp = getCascadeUp();
-    const existingCards = colEl.children;
-    // Expressed as "one cascadeUp step above the first new card's slot" in
-    // both branches, so the loop below can add (i + 1) * cascadeUp uniformly
-    // regardless of whether the column already had cards in it.
-    const baseTop = existingCards.length
-      ? existingCards[existingCards.length - 1].getBoundingClientRect().top
-      : colRect.top - cascadeUp;
-    const rects = [];
-    for (let i = 0; i < count; i++) {
-      rects.push({ left: colRect.left, top: baseTop + cascadeUp * (i + 1) });
-    }
-    return rects;
+    const cardHeight = getCardHeight();
+    const existingFlags = state.tableau[targetIndex].map(c => c.faceUp);
+    const incomingFlags = new Array(count).fill(true); // only face-up sequences are ever dropped
+    const availableHeight = getTableauAvailableHeight(colRect.top);
+    const tops = computeTableauTops(existingFlags.concat(incomingFlags), availableHeight, cascadeDown, cascadeUp, cardHeight);
+    return tops.slice(existingFlags.length).map(top => ({ left: colRect.left, top: colRect.top + top }));
   }
 
   // Click-to-move: a single click on a movable exposed card sends it to its
@@ -1654,6 +1739,28 @@ import { shuffle } from './shuffle.js';
   winNewGameBtn.addEventListener('click', newGame); // starting again from the win screen is never gated
 
   timerHandle = setInterval(tick, 500);
+
+  // Recomputes tableau cascade compression whenever the viewport's usable
+  // height changes - covers portrait/landscape rotation and any other
+  // resize. Debounced since resize fires rapidly; skipped entirely while a
+  // drag/draw/Auto Finish run is actively in progress, the same guard
+  // every other state-changing entry point already uses - it simply
+  // catches up on the next resize or interaction rather than risk
+  // rebuilding DOM out from under an active gesture. Re-shows the current
+  // hint highlight afterward, if one was up - render() rebuilds every
+  // tableau card element, which would otherwise silently drop the glow.
+  let reflowHandle = null;
+  function scheduleTableauReflow() {
+    if (reflowHandle) clearTimeout(reflowHandle);
+    reflowHandle = setTimeout(() => {
+      reflowHandle = null;
+      if (dragCtx || isDrawing || autoFinishRunning) return;
+      render();
+      if (hintMoves) showHintMove(hintMoves[hintIndex]);
+    }, 120);
+  }
+  window.addEventListener('resize', scheduleTableauReflow);
+  window.addEventListener('orientationchange', scheduleTableauReflow);
 
   newGame();
   backgroundPreloadRemaining(); // only schedules idle-time work - the board above is already rendered and interactive
