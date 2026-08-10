@@ -39,6 +39,18 @@ html, body {
   overscroll-behavior: none;
 }
 
+/* Only while a tableau column is in its temporary expanded/inspection
+   state (see toggleColumnExpanded, which toggles this on <body>) - height:
+   100% caps the document and clips anything past it from ever being
+   scrollable, so this swaps to min-height for just that window, letting
+   the page grow enough to scroll to an expanded column's overflowing
+   bottom card. Reverts to the normal fixed-viewport, no-scroll layout the
+   instant it's collapsed - never a permanent change to page height. */
+body.tableau-inspecting {
+  height: auto;
+  min-height: 100%;
+}
+
 /* Standalone iOS home-screen mode (viewport-fit=cover in index.html) lets
    the page draw into the notch/status-bar/home-indicator area instead of
    iOS letterboxing it in white - html's own full-bleed background now
@@ -273,11 +285,50 @@ body {
   border-radius: 8px;
 }
 
+/* Temporary inspection state (see toggleColumnExpanded) - a subtle glow,
+   no modal or message per design. Raised above sibling columns so an
+   overflowing expanded cascade - allowed to extend past the viewport
+   while inspecting it - never renders under a neighboring column. */
+.column.expanded {
+  z-index: 50;
+  box-shadow: 0 0 0 2px rgba(217, 180, 92, 0.5), 0 0 16px 3px rgba(217, 180, 92, 0.3);
+}
+
 #tableau {
   align-items: flex-start;
   width: var(--tableau-width);
   margin-inline: auto;
 }
+
+/* A compressed column's expand/collapse handle - deliberately its own
+   small element rather than a click-area carved out of the column
+   background, since in heavy compression a card's own full-size box
+   already covers nearly the whole visual stack (see createExpandToggle).
+   Top-right, clear of the corner rank/suit index every card in this deck
+   shows top-left; a z-index above any card (however many are in the
+   column) so it's always reachable. */
+.tableau-expand-toggle {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 700;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(217, 180, 92, 0.55);
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--gold);
+  font-size: 10px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s;
+}
+.tableau-expand-toggle:hover { background: rgba(0, 0, 0, 0.7); transform: scale(1.08); }
+.tableau-expand-toggle:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
 
 .card {
   position: absolute;

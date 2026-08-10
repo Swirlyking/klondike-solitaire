@@ -285,28 +285,32 @@ import { shuffle } from './shuffle.js';
   // out of the DOM via getBoundingClientRect() rather than recomputing it,
   // so it automatically inherits whatever this function decided.
   //
-  // Three-phase accordion, cheapest concession first:
+  // Two-phase accordion, cheapest concession first:
   // 1. Normal spacing, if the whole column already fits top to bottom -
   //    true for every desktop/portrait/short-column case.
   // 2. Otherwise, compress face-down gaps first, toward MIN_DOWN_GAP - they
-  //    carry no information, so they're the first to give.
-  // 3. If that alone isn't enough, compress face-up gaps too: first toward
-  //    a floor that still shows the corner rank/suit, and only past that -
-  //    a genuinely extreme case - toward MIN_UP_GAP.
+  //    carry no information, so they're the only thing allowed to give
+  //    much ground. Face-up gaps only ever shrink toward READABLE_UP_GAP,
+  //    a floor measured against the actual card art (see below) rather
+  //    than an arbitrary pixel value - in practice that floor sits *above*
+  //    cascadeUp's own normal value, so this tier is a no-op almost always,
+  //    which is the point: legibility comes first, face-down compression
+  //    absorbs the room instead.
   // Within a tier every gap shrinks by the same amount, so a column
   // compresses evenly instead of some cards staying spaced while others
   // jump straight to minimum.
   //
-  // MIN_DOWN_GAP/MIN_UP_GAP are hard floors, never crossed, deliberately
-  // small enough to read as "almost completely overlapping" but never
-  // "identical" - a cascade must never look like a single card no matter
-  // how little room is available. That means the bottom card's top is only
-  // guaranteed to land at exactly availableHeight - cardHeight when the
-  // column fits within these floors; a column with more cards than that
-  // genuinely allows accepts the bottom card extending past the ideal
-  // boundary rather than erasing the gaps that make it a cascade at all.
+  // MIN_DOWN_GAP/READABLE_UP_GAP are hard floors, never crossed. Cropping
+  // the actual card art (Ace/2/10/King, all four suits) at increasing
+  // reveal heights found that cascadeUp's own current value (~19.7% of
+  // card height) already only shows a sliver of the suit pip under the
+  // rank; 25% comfortably shows the whole pip. READABLE_UP_FRACTION splits
+  // the difference with a little margin. That means a column with more
+  // cards than even this allows accepts the bottom card extending past the
+  // ideal boundary rather than shrinking a face-up card past legibility -
+  // see the expand/collapse toggle for that case.
   const MIN_DOWN_GAP = 4;
-  const MIN_UP_GAP = 6;
+  const READABLE_UP_FRACTION = 0.28;
   function computeTableauTops(faceUpFlags, availableHeight, cascadeDown, cascadeUp, cardHeight) {
     const n = faceUpFlags.length;
     if (n === 0) return [];
@@ -319,8 +323,7 @@ import { shuffle } from './shuffle.js';
       let excess = naturalGapSum - Math.max(0, availableHeight - cardHeight);
 
       const minDown = Math.min(cascadeDown, Math.max(MIN_DOWN_GAP, cascadeDown * 0.25));
-      const minUpInformative = Math.min(cascadeUp, cascadeUp * 0.7);
-      const minUpExtreme = Math.min(minUpInformative, Math.max(MIN_UP_GAP, cascadeUp * 0.15));
+      const minUp = Math.max(cascadeUp, cardHeight * READABLE_UP_FRACTION);
 
       const downIdx = [], upIdx = [];
       faceUpFlags.slice(0, n - 1).forEach((faceUp, i) => (faceUp ? upIdx : downIdx).push(i));
@@ -338,17 +341,39 @@ import { shuffle } from './shuffle.js';
       };
 
       shrinkTier(downIdx, minDown);
-      shrinkTier(upIdx, minUpInformative);
-      shrinkTier(upIdx, minUpExtreme);
+      shrinkTier(upIdx, minUp);
       // No further fallback beyond this point - if excess remains, every
       // gap is already sitting at its hard floor. The column overflows the
-      // ideal boundary rather than collapsing into a single visual card.
+      // ideal boundary rather than erasing the gaps that make it a cascade
+      // - or, once expand/collapse below can compensate, staying readable.
     }
 
     const tops = [0];
     for (let i = 0; i < gaps.length; i++) tops.push(tops[i] + gaps[i]);
     return tops;
   }
+
+  // Cheap yes/no companion to computeTableauTops - same "does the natural
+  // height fit" check that function makes internally, exposed separately
+  // so callers can know whether a column is a compression candidate at all
+  // without running (or duplicating) the actual shrink logic. Drives both
+  // the expand-toggle badge's visibility and whether tapping it does
+  // anything - a column that already fits never gets a toggle.
+  function columnWouldCompress(faceUpFlags, availableHeight, cascadeDown, cascadeUp, cardHeight) {
+    const n = faceUpFlags.length;
+    if (n <= 1) return false;
+    const naturalGapSum = faceUpFlags.slice(0, n - 1).reduce((sum, faceUp) => sum + (faceUp ? cascadeUp : cascadeDown), 0);
+    return naturalGapSum + cardHeight > availableHeight;
+  }
+
+  // Which tableau column, if any, is temporarily showing full normal
+  // spacing instead of its calculated compressed spacing - a display-only
+  // inspection mode, never more than one column at a time (see
+  // toggleColumnExpanded). Cleared - not just left stale - by every place
+  // that changes what's rendered underneath it: a fresh render() call on
+  // its own doesn't reset this, since simply *looking* at an expanded
+  // column shouldn't collapse it.
+  let expandedColumnIndex = null;
 
   let state = null;
   // Snapshot of the very first deal from the current newGame() call, kept
@@ -408,6 +433,7 @@ import { shuffle } from './shuffle.js';
     clearGhosts();
     resetTableauClickMemory();
     clearHint();
+    expandedColumnIndex = null;
     const deck = shuffle(freshDeck());
     const tableau = [[], [], [], [], [], [], []];
     let idx = 0;
@@ -445,6 +471,7 @@ import { shuffle } from './shuffle.js';
     clearGhosts();
     resetTableauClickMemory();
     clearHint();
+    expandedColumnIndex = null;
     state = cloneState(initialDeal);
     history = [];
     moveCount = 0;
@@ -774,6 +801,7 @@ import { shuffle } from './shuffle.js';
     cancelActiveDrag();
     clearGhosts();
     resetTableauClickMemory();
+    expandedColumnIndex = null;
     const entry = history.pop();
     state = entry.state;
     moveCount = entry.moveCount;
@@ -823,6 +851,10 @@ import { shuffle } from './shuffle.js';
     const cascadeUp = getCascadeUp();
     const cardHeight = getCardHeight();
     for (let i = 0; i < 7; i++) renderTableauCol(i, cascadeDown, cascadeUp, cardHeight);
+    // Lets the page scroll far enough to reach an expanded column's
+    // overflowing bottom card (see the body.tableau-inspecting rule) -
+    // only while one is actually expanded, never otherwise.
+    document.body.classList.toggle('tableau-inspecting', expandedColumnIndex !== null);
     checkWin();
   }
 
@@ -896,13 +928,54 @@ import { shuffle } from './shuffle.js';
     }
   }
 
+  // Small toggle badge for a compressed column - a separate element with
+  // its own click handler, not a click-area carved out of the column
+  // background, because in heavy compression a card's own (full-size) box
+  // already covers nearly the entire visual stack, leaving no reliable
+  // "background" pixel to target. Placed top-right, clear of the corner
+  // rank/suit index (which sits top-left on every card in this deck), with
+  // a z-index above every card in the column so it's always reachable
+  // regardless of how many cards overlap that spot - and a stopPropagation
+  // so a tap here can never also register as a click on whatever card sits
+  // underneath it.
+  function createExpandToggle(i, isExpanded) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'tableau-expand-toggle';
+    const label = isExpanded ? 'Collapse column' : 'Expand column';
+    toggle.setAttribute('aria-label', label);
+    toggle.title = label;
+    toggle.textContent = isExpanded ? '▴' : '▾'; // ▴ collapse / ▾ expand
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleColumnExpanded(i);
+    });
+    return toggle;
+  }
+
+  function toggleColumnExpanded(i) {
+    expandedColumnIndex = expandedColumnIndex === i ? null : i;
+    render();
+    // render() rebuilds every tableau card element, which would otherwise
+    // silently drop an already-showing hint glow - same fix as the resize
+    // reflow uses, for the same reason.
+    if (hintMoves) showHintMove(hintMoves[hintIndex]);
+  }
+
   function renderTableauCol(i, cascadeDown, cascadeUp, cardHeight) {
     const el = document.getElementById(`tableau-${i}`);
     el.innerHTML = '';
     const col = state.tableau[i];
     const colTop = el.getBoundingClientRect().top; // fixed by the layout above it - this compression never moves it
-    const availableHeight = getTableauAvailableHeight(colTop);
-    const tops = computeTableauTops(col.map(c => c.faceUp), availableHeight, cascadeDown, cascadeUp, cardHeight);
+    const realAvailableHeight = getTableauAvailableHeight(colTop);
+    const faceUpFlags = col.map(c => c.faceUp);
+    const compressed = columnWouldCompress(faceUpFlags, realAvailableHeight, cascadeDown, cascadeUp, cardHeight);
+    const isExpanded = i === expandedColumnIndex;
+    // The only place expanded state actually does anything: feed the same
+    // computeTableauTops call Infinity instead of the real measured room,
+    // which is exactly the "already fits" branch it already has - not a
+    // second spacing system, just a different input to the one that exists.
+    const tops = computeTableauTops(faceUpFlags, isExpanded ? Infinity : realAvailableHeight, cascadeDown, cascadeUp, cardHeight);
     col.forEach((card, idx) => {
       const cardEl = makeCardEl(card, card.faceUp);
       cardEl.style.top = `${tops[idx]}px`;
@@ -914,6 +987,8 @@ import { shuffle } from './shuffle.js';
       }
       el.appendChild(cardEl);
     });
+    el.classList.toggle('expanded', isExpanded);
+    if (compressed) el.appendChild(createExpandToggle(i, isExpanded));
   }
 
   // ---------- game rules ----------
@@ -1294,6 +1369,14 @@ import { shuffle } from './shuffle.js';
   function commitMove(cards, source, sourceIndex, target, targetIndex, { recordHistory = true } = {}) {
     resetTableauClickMemory();
     clearHint();
+    // A card leaving or landing in the expanded column means whatever's
+    // showing there is about to change - never leave a stale expanded
+    // layout up over a column whose contents just moved out from under it.
+    if (expandedColumnIndex !== null
+      && ((source === 'tableau' && sourceIndex === expandedColumnIndex)
+        || (target === 'tableau' && targetIndex === expandedColumnIndex))) {
+      expandedColumnIndex = null;
+    }
     if (recordHistory) pushHistory();
     const cardToFlip = peekCardToFlip(source, sourceIndex, cards);
     applyMove(state, cards, source, sourceIndex, target, targetIndex);
@@ -1369,11 +1452,12 @@ import { shuffle } from './shuffle.js';
     }));
 
     const destRects = computeDestRects(target, targetIndex, stack.length);
+    const previousTopCard = target === 'foundation' ? currentFoundationTop(targetIndex) : null;
     commitMove(stack, source, sourceIndex, target, targetIndex, options); // clears tableauClickMemory — re-set below if this continues a cycle
     if (source === 'tableau' && target === 'tableau') {
       tableauClickMemory = { cardId: stack[0].id, destIndex: targetIndex };
     }
-    const revealDest = hideDestElements(stack);
+    const revealDest = hideDestElements(stack, target, targetIndex, previousTopCard);
 
     setTimeout(() => {
       glideGhostsTo(ghosts, originRects, destRects, CLICK_MOVE_MS, target === 'foundation', revealDest);
@@ -1450,15 +1534,39 @@ import { shuffle } from './shuffle.js';
     }, ms + 30);
   }
 
+  function currentFoundationTop(targetIndex) {
+    const pile = state.foundations[targetIndex];
+    return pile.length ? pile[pile.length - 1] : null;
+  }
+
   // commitMove's render() paints the real cards at their destination
   // immediately, before the matching ghost has finished flying there —
   // without this, both are visible at once and it reads as two cards.
   // Hides the just-rendered destination elements; call the returned
   // function once the ghost covering them is gone.
-  function hideDestElements(cards) {
+  //
+  // A foundation destination needs one thing more: renderFoundation only
+  // ever keeps the pile's current top card in the DOM (unlike a tableau
+  // column, which still shows every earlier card underneath), so hiding
+  // the just-landed card there leaves the whole pile looking like it
+  // vanished, not just the newest card. previousTopCard (whatever was on
+  // top before this move, or null for an empty pile) gets a static
+  // stand-in at that same slot for the same window, so the existing pile
+  // stays visible right up until the incoming card actually arrives.
+  function hideDestElements(cards, target, targetIndex, previousTopCard) {
     const els = cards.map(c => document.querySelector(`.card[data-id="${c.id}"]`)).filter(Boolean);
     els.forEach(el => { el.style.visibility = 'hidden'; });
-    return () => { els.forEach(el => { el.style.visibility = ''; }); };
+
+    let standIn = null;
+    if (target === 'foundation' && previousTopCard) {
+      const rect = document.getElementById(`foundation-${targetIndex}`).getBoundingClientRect();
+      standIn = createPositionedGhost(cardImageSrc(previousTopCard), rect, 300, cardPngFallbackSrc(previousTopCard));
+    }
+
+    return () => {
+      if (standIn) standIn.remove();
+      els.forEach(el => { el.style.visibility = ''; });
+    };
   }
 
   function clearGhosts() {
@@ -1622,8 +1730,9 @@ import { shuffle } from './shuffle.js';
       const target = pileEl.dataset.pile;
       const targetIndex = parseInt(pileEl.dataset.index, 10);
       const destRects = computeDestRects(target, targetIndex, stack.length);
+      const previousTopCard = target === 'foundation' ? currentFoundationTop(targetIndex) : null;
       commitMove(stack, source, sourceIndex, target, targetIndex);
-      const revealDest = hideDestElements(stack);
+      const revealDest = hideDestElements(stack, target, targetIndex, previousTopCard);
       glideGhostsTo(ghosts, originRects, destRects, DROP_MS, target === 'foundation', revealDest);
     } else {
       originEls.forEach(el => { el.style.visibility = ''; });
@@ -1755,6 +1864,10 @@ import { shuffle } from './shuffle.js';
     reflowHandle = setTimeout(() => {
       reflowHandle = null;
       if (dragCtx || isDrawing || autoFinishRunning) return;
+      // A resize/rotation recalculates every column's compression from
+      // scratch - an expanded column's "should this fit at normal spacing"
+      // premise no longer holds once the viewport itself has changed.
+      expandedColumnIndex = null;
       render();
       if (hintMoves) showHintMove(hintMoves[hintIndex]);
     }, 120);
