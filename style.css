@@ -218,11 +218,77 @@ body {
 }
 
 #top-row {
+  position: relative; /* anchors #top-row-watermark below */
   display: flex;
   justify-content: space-between;
   width: var(--tableau-width);
   margin-inline: auto;
   margin-bottom: 34px;
+}
+
+/* Decorative-only: the open gap #top-row's own space-between leaves
+   between stock/waste and the foundations, at whatever size that gap
+   happens to be at the current breakpoint. Taken out of flex flow with
+   position: absolute so it can never become a third flex item and widen
+   that gap or shift the piles - it consumes zero layout space, same as if
+   it weren't there at all.
+
+   The left/width formulas below are pure algebra on #top-row's own
+   existing box model, not tuned/guessed pixel values: #top-row is exactly
+   7 card-widths + 6 pile-gaps wide (same as the tableau below it);
+   stock-waste uses 2 card-widths + 1 gap, foundations use 4 card-widths +
+   3 gaps, so what's left for the middle gap is always exactly
+   1 card-width + 2 pile-gaps, centered at 2.5 card-widths + 2 pile-gaps
+   from the left edge - regardless of which breakpoint's --card-w/
+   --pile-gap are currently in effect.
+
+   Tweak these three custom properties directly - nothing else needs to
+   change to resize, dim, or nudge the mark:
+     --watermark-width    size (proportional to the gap, so it already
+                           scales with the board - override to resize)
+     --watermark-opacity  visibility - halve it for "half as visible"
+     --watermark-y        vertical nudge from dead-center, in px */
+#top-row-watermark {
+  --watermark-width: calc((var(--card-w) + 2 * var(--pile-gap)) * 0.52);
+  --watermark-opacity: 0.26;
+  --watermark-y: 0px;
+  /* Matches the real mark's own cropped proportions (145:207), so
+     mask-size: contain doesn't have to guess. */
+  --watermark-aspect: 145 / 207;
+
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  left: calc(2.5 * var(--card-w) + 2 * var(--pile-gap));
+  top: calc(50% + var(--watermark-y));
+  transform: translate(-50%, -50%);
+
+  width: var(--watermark-width);
+  aspect-ratio: var(--watermark-aspect);
+  opacity: var(--watermark-opacity);
+
+  /* Black composited at low opacity directly over the felt - the result
+     reads as a darker shade of the same green, not literal black, since
+     the felt shows through. --watermark-opacity above is the single knob
+     for how dark it reads; no separate color-mix step, so there's no
+     double-attenuation between a "how dark" color choice and a separate
+     "how visible" opacity choice. */
+  background-color: black;
+  -webkit-mask-image: url('assets/watermark-logo.png');
+  mask-image: url('assets/watermark-logo.png');
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+}
+
+/* Below this, the middle gap itself has shrunk enough that the mark can
+   no longer sit in it cleanly without crowding the waste or first
+   foundation - hide rather than risk overlapping a playable card. */
+@media (max-width: 420px) {
+  #top-row-watermark { display: none; }
 }
 
 #stock-waste, #foundations, #tableau {
