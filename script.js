@@ -485,15 +485,7 @@ import { shuffle } from './shuffle.js';
   // ---------- abandon-game confirmation ----------
 
   const ABANDON_COPY = {
-    // Which of these two shows depends on classifyMove (game-logic.js) - see
-    // guardAbandon below. Visibility of the dialog itself is a separate,
-    // unrelated question (needsAbandonConfirmation). No message on the
-    // stuck case is deliberate - "no more useful moves" doesn't need a
-    // second sentence explaining itself the way "are you sure?" does.
-    newGame: {
-      meaningful: { title: 'Quitting?', message: 'There are still moves available, are you sure?', confirmLabel: 'Shuffle Me a New Game' },
-      stuck: { title: 'No more useful moves!', message: '', confirmLabel: 'Shuffle Me a New Game' },
-    },
+    newGame: { title: 'Quitting?', message: 'There are still moves available, are you sure?', confirmLabel: 'Shuffle Me a New Game' },
     restart: { title: 'Restart this deal?', message: 'Your moves will be undone, but the same cards will be dealt again.' },
   };
 
@@ -560,17 +552,13 @@ import { shuffle } from './shuffle.js';
 
   // The one place every destructive action consults before discarding the
   // current deal (see needsAbandonConfirmation in game-logic.js) - runs
-  // `action` immediately when nothing would actually be lost, otherwise
+  // `action` immediately when nothing meaningful would actually be lost
+  // (including when only trivial/non-progressing moves remain), otherwise
   // shows the modal with action-specific wording and only runs it if the
   // player confirms via the modal's own destructive button.
   function guardAbandon(actionKey, action) {
-    if (!needsAbandonConfirmation(state, history.length, won)) {
+    if (!needsAbandonConfirmation(state, history.length, won, getDrawCount())) {
       action();
-      return;
-    }
-    if (actionKey === 'newGame') {
-      const meaningful = getProgressingMoves(state, getDrawCount()).length > 0;
-      showConfirm({ ...(meaningful ? ABANDON_COPY.newGame.meaningful : ABANDON_COPY.newGame.stuck), onConfirm: action });
       return;
     }
     showConfirm({ ...ABANDON_COPY[actionKey], onConfirm: action });

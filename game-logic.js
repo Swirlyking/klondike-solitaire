@@ -357,9 +357,14 @@ export function nextCycleIndex(legalIndices, lastUsed) {
 //    has rank 0 to stack beneath it in a tableau run — so this never blocks
 //    a sequence move.) A foundation-sourced Ace has nowhere else to go by
 //    click, since foundation-to-foundation is never a legal move.
-//  - waste/foundation source (non-Ace): leftmost legal tableau column
-//    anywhere, else leftmost legal foundation (foundation skipped entirely
-//    for foundation-sourced cards).
+//  - waste/foundation source, a 2: a legal foundation first, if one exists
+//    (a 2 is the last rank that only ever completes a foundation - never
+//    reveals anything or opens a column by leaving the waste/foundation the
+//    way a 3-or-higher's tableau placement might); only when none does,
+//    leftmost legal tableau column.
+//  - waste/foundation source, anything else (non-Ace, non-2): leftmost
+//    legal tableau column anywhere, else leftmost legal foundation
+//    (foundation skipped entirely for foundation-sourced cards).
 //  - tableau source, single card (non-Ace): a legal foundation first, if
 //    one exists; only when none does, every legal tableau column, left to
 //    right, cycling forward from lastTableauDest each time the same card is
@@ -407,6 +412,7 @@ export function resolveClickDestination(state, card, source, sourceIndex, stackL
     return null;
   }
 
+  if (card.rank === 2 && source !== 'foundation' && foundationMove) return { type: 'foundation', index: foundationMove.targetIndex };
   if (tableauTargets.length) return { type: 'tableau', index: tableauTargets[0] };
   if (source !== 'foundation' && foundationMove) return { type: 'foundation', index: foundationMove.targetIndex };
   return null;
@@ -414,13 +420,15 @@ export function resolveClickDestination(state, card, source, sourceIndex, stackL
 
 // The single place every destructive action (New Game, Restart, ...)
 // consults before discarding the current deal. historyLength and won are
-// caller-tracked (script.js), not part of `state` itself. Visibility only -
-// script.js separately consults classifyMove to choose the dialog's
-// wording ("still available" vs "only non-progressing moves remain").
-export function needsAbandonConfirmation(state, historyLength, won) {
+// caller-tracked (script.js), not part of `state` itself. Reads
+// getProgressingMoves rather than raw getLegalMoves - a board where only
+// trivial/non-progressing moves remain (a dead stock, a reversible
+// shuffle, a foundation-to-tableau return) has nothing worth confirming
+// before it's discarded, even though moves are technically still legal.
+export function needsAbandonConfirmation(state, historyLength, won, drawCount = 1) {
   if (historyLength === 0) return false; // nothing played yet - nothing to lose
   if (won) return false;
-  return getLegalMoves(state).length > 0;
+  return getProgressingMoves(state, drawCount).length > 0;
 }
 
 export function flipNewTopIfNeeded(state, colIndex) {

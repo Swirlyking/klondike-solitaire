@@ -123,14 +123,24 @@ test('3. no legal tableau destination -> moves to a foundation', () => {
   assert.deepEqual(dest, { type: 'foundation', index: 1 });
 });
 
-test('4. foundation is not preferred over an available tableau move', () => {
+test('4. for most ranks, foundation is not preferred over an available tableau move', () => {
+  const s = emptyState();
+  const seven = card('hearts', 7);
+  s.waste = [seven];
+  s.tableau[3] = [card('spades', 8)]; // black 8 accepts red 7
+  s.foundations[1] = [card('hearts', 1), card('hearts', 2), card('hearts', 3), card('hearts', 4), card('hearts', 5), card('hearts', 6)]; // a foundation move IS also legal here
+  const dest = resolveClickDestination(s, seven, 'waste', null, 1);
+  assert.deepEqual(dest, { type: 'tableau', index: 3 });
+});
+
+test('4b. a 2 clicks straight to the foundation from the waste, even when a legal tableau spot exists', () => {
   const s = emptyState();
   const two = card('hearts', 2);
   s.waste = [two];
-  s.tableau[3] = [card('clubs', 3)]; // black 3 accepts red 2
+  s.tableau[3] = [card('clubs', 3)]; // black 3 would also legally accept this red 2
   s.foundations[1] = [card('hearts', 1)]; // a foundation move IS also legal here
   const dest = resolveClickDestination(s, two, 'waste', null, 1);
-  assert.deepEqual(dest, { type: 'tableau', index: 3 });
+  assert.deepEqual(dest, { type: 'foundation', index: 1 });
 });
 
 test('a waste card with no legal tableau destination falls back to the foundation', () => {
@@ -664,14 +674,14 @@ test('classifyMove: drawing/recycling is trivial once nothing left in the stock 
   assert.equal(getProgressingMoves(s2).length, 0);
 });
 
-test('the abandon dialog does not count a dead stock as evidence that meaningful moves remain', () => {
+test('the abandon dialog does not show for a dead stock, even though drawing is still technically legal', () => {
   const s = emptyState();
   s.stock = [card('hearts', 5), card('clubs', 9)];
   s.tableau[0] = [card('diamonds', 13)]; // nothing in stock accepts onto a King, and no Kings are stuck in stock either
 
-  assert.equal(needsAbandonConfirmation(s, 5, false), true); // drawing is still legal, so the dialog itself must show
   assert.ok(getLegalMoves(s).some(m => m.category === MoveCategory.DRAW_STOCK));
-  assert.equal(getProgressingMoves(s).length, 0); // but it must not say "there are still moves available"
+  assert.equal(getProgressingMoves(s).length, 0);
+  assert.equal(needsAbandonConfirmation(s, 5, false), false); // nothing meaningful would be lost, so no confirmation
 });
 
 // Regression for the follow-up report: recycling was still being offered at
@@ -769,14 +779,14 @@ test('getProgressingMoves: excludes every foundation-to-tableau move when severa
   assert.equal(progressing.length, 0); // neither counts as progress
 });
 
-test('the abandon dialog does not count a foundation-to-tableau move as evidence that meaningful moves remain', () => {
+test('the abandon dialog does not show when only a foundation-to-tableau move remains', () => {
   const s = emptyState();
   s.foundations[1] = [card('diamonds', 1), card('diamonds', 2)];
   s.tableau[0] = [card('clubs', 3)];
 
-  assert.equal(needsAbandonConfirmation(s, 5, false), true); // the move is still legal, so the dialog itself must show
   assert.ok(getLegalMoves(s).length > 0);
-  assert.equal(getProgressingMoves(s).length, 0); // but it must not say "there are still moves available"
+  assert.equal(getProgressingMoves(s).length, 0);
+  assert.equal(needsAbandonConfirmation(s, 5, false), false); // nothing meaningful would be lost, so no confirmation
 });
 
 // Regression for the reported bug: Hint suggested "move the 5S sequence
@@ -846,15 +856,17 @@ test('an untouched game never needs confirmation, regardless of moves or won sta
   assert.equal(needsAbandonConfirmation(s, 0, true), false); // won + untouched is a contradiction, but still: no history, no confirmation
 });
 
-test('an active game with legal moves needs confirmation', () => {
+test('an active game with a meaningful move needs confirmation', () => {
   const s = emptyState();
-  s.stock = [card('clubs', 4)]; // stock alone is enough to count as "a move might exist"
+  s.stock = [card('hearts', 4)]; // red4 has a real destination below
+  s.tableau[0] = [card('clubs', 5)]; // black5 accepts it once drawn
   assert.equal(needsAbandonConfirmation(s, 3, false), true);
 });
 
 test('a won game never needs confirmation, even with moves still technically available', () => {
   const s = emptyState();
-  s.stock = [card('clubs', 4)];
+  s.stock = [card('hearts', 4)];
+  s.tableau[0] = [card('clubs', 5)];
   assert.equal(needsAbandonConfirmation(s, 10, true), false);
 });
 
@@ -871,31 +883,27 @@ test('a dead game (no cards left to draw, nothing exposed can move) never needs 
   assert.equal(needsAbandonConfirmation(s, 5, false), false);
 });
 
-test('a board where only a trivial King shuffle remains still needs confirmation, but every legal move classifies as trivial', () => {
-  // Visibility (a legal move genuinely exists) and wording (is any of them
-  // worth anything) are separate questions - the dialog must still show
-  // here, just with "no useful moves remain" instead of falsely claiming
-  // real moves are available.
+test('a board where only a trivial King shuffle remains does not need confirmation, even though moves are still legal', () => {
   const s = emptyState();
   const king = card('spades', 13);
   s.tableau[0] = [king]; // only legal moves: the King to any of the other 6 empty columns
-  assert.equal(needsAbandonConfirmation(s, 5, false), true);
   const moves = getLegalMoves(s);
   assert.ok(moves.length > 0);
   assert.ok(moves.every(m => classifyMove(s, m).status === 'trivial'));
   assert.equal(getProgressingMoves(s).length, 0);
+  assert.equal(needsAbandonConfirmation(s, 5, false), false); // nothing meaningful would be lost, so no confirmation
 });
 
-test('the abandon dialog does not count a reversible sequence relocation (the reported 5S-onto-6D bug) as evidence that meaningful moves remain', () => {
+test('the abandon dialog does not show when only a reversible sequence relocation (the reported 5S-onto-6D bug) remains', () => {
   const s = emptyState();
   const buried = card('spades', 11, false);
   s.tableau[1] = [buried, card('hearts', 6), card('spades', 5), card('diamonds', 4), card('clubs', 3)];
   s.tableau[2] = [card('diamonds', 6)];
   s.tableau[3] = [card('spades', 8), card('clubs', 5)]; // 8S under the 5C so moving it doesn't itself empty column 3
 
-  assert.equal(needsAbandonConfirmation(s, 5, false), true); // the move is still legal, so the dialog itself must show
   assert.ok(getLegalMoves(s).length > 0);
-  assert.equal(getProgressingMoves(s).length, 0); // but none of what's legal is worth claiming as "moves available"
+  assert.equal(getProgressingMoves(s).length, 0);
+  assert.equal(needsAbandonConfirmation(s, 5, false), false); // nothing meaningful would be lost, so no confirmation
 });
 
 // ---------- Auto Finish ----------
