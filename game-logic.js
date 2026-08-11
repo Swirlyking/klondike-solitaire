@@ -362,9 +362,13 @@ export function nextCycleIndex(legalIndices, lastUsed) {
 //    reveals anything or opens a column by leaving the waste/foundation the
 //    way a 3-or-higher's tableau placement might); only when none does,
 //    leftmost legal tableau column.
-//  - waste/foundation source, anything else (non-Ace, non-2): leftmost
-//    legal tableau column anywhere, else leftmost legal foundation
-//    (foundation skipped entirely for foundation-sourced cards).
+//  - waste source, anything else (non-Ace, non-2): the first legal column
+//    in WASTE_TABLEAU_PRIORITY's fixed order below (middle-out, not
+//    left-to-right), else the foundation.
+//  - foundation source, anything else (non-Ace, non-2): leftmost legal
+//    tableau column anywhere (foundation itself is never retried - a
+//    foundation-sourced card's only other legal destination is the
+//    tableau).
 //  - tableau source, single card (non-Ace): a legal foundation first, if
 //    one exists; only when none does, every legal tableau column, left to
 //    right, cycling forward from lastTableauDest each time the same card is
@@ -385,6 +389,13 @@ export function nextCycleIndex(legalIndices, lastUsed) {
 // via the priority/cycling rules above. It deliberately never consults
 // classifyMove: a manual click is an intentional action, even when the same
 // move wouldn't be worth a Hint or count as "progress."
+// Waste-click tableau search order: the two middle columns first, then
+// alternating outward (right, left, right, left...) rather than strict
+// left-to-right. A fixed, explicit list rather than anything derived from
+// column count/DOM position/spacing, so it can never shift with
+// responsive layout, compression, or rotation.
+const WASTE_TABLEAU_PRIORITY = [3, 4, 2, 5, 1, 6, 0];
+
 export function resolveClickDestination(state, card, source, sourceIndex, stackLength, lastTableauDest = null) {
   const isSequence = stackLength > 1;
   const candidates = getLegalMoves(state).filter(
@@ -413,6 +424,13 @@ export function resolveClickDestination(state, card, source, sourceIndex, stackL
   }
 
   if (card.rank === 2 && source !== 'foundation' && foundationMove) return { type: 'foundation', index: foundationMove.targetIndex };
+
+  if (source === 'waste') {
+    const ti = WASTE_TABLEAU_PRIORITY.find(i => tableauTargets.includes(i));
+    if (ti !== undefined) return { type: 'tableau', index: ti };
+    return foundationMove ? { type: 'foundation', index: foundationMove.targetIndex } : null;
+  }
+
   if (tableauTargets.length) return { type: 'tableau', index: tableauTargets[0] };
   if (source !== 'foundation' && foundationMove) return { type: 'foundation', index: foundationMove.targetIndex };
   return null;

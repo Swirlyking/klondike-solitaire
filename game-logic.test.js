@@ -48,14 +48,83 @@ function emptyState() {
   };
 }
 
-test('1. waste card with two legal tableau destinations moves to the leftmost', () => {
+test('1. waste card with two legal tableau destinations follows WASTE_TABLEAU_PRIORITY, not left-to-right', () => {
   const s = emptyState();
   const seven = card('hearts', 7); // red 7 — legal on any black 8
   s.waste = [seven];
   s.tableau[2] = [card('spades', 8)];  // black 8, column 2
   s.tableau[5] = [card('clubs', 8)];   // black 8, column 5
+  // Column 2 comes before column 5 in the priority order [3,4,2,5,1,6,0],
+  // so this happens to match plain left-to-right too - see the dedicated
+  // priority-order tests below for cases where it doesn't.
   const dest = resolveClickDestination(s, seven, 'waste', null, 1);
   assert.deepEqual(dest, { type: 'tableau', index: 2 });
+});
+
+// ---------- waste click-to-move: WASTE_TABLEAU_PRIORITY (middle-out, not left-to-right) ----------
+
+test('waste click-to-move searches tableau columns in exactly [3, 4, 2, 5, 1, 6, 0], then the foundation', () => {
+  const s = emptyState();
+  const eight = card('hearts', 8); // red 8 - legal on any black 9
+  s.waste = [eight];
+  s.foundations[1] = [
+    card('hearts', 1), card('hearts', 2), card('hearts', 3), card('hearts', 4),
+    card('hearts', 5), card('hearts', 6), card('hearts', 7),
+  ]; // hearts foundation ready for this 8 too, once no tableau column works
+
+  // Every column starts as a legal destination (alternating black suit so
+  // each is independently a valid landing spot for the red 8).
+  [0, 1, 2, 3, 4, 5, 6].forEach(i => {
+    s.tableau[i] = [card(i % 2 === 0 ? 'spades' : 'clubs', 9)];
+  });
+
+  const expectedOrder = [3, 4, 2, 5, 1, 6, 0];
+  for (const expectedIndex of expectedOrder) {
+    const dest = resolveClickDestination(s, eight, 'waste', null, 1);
+    assert.deepEqual(dest, { type: 'tableau', index: expectedIndex });
+    s.tableau[expectedIndex] = []; // that column is no longer legal - the next call must move on to the next priority entry
+  }
+
+  // Every tableau column has now been exhausted - only the foundation is left.
+  const finalDest = resolveClickDestination(s, eight, 'waste', null, 1);
+  assert.deepEqual(finalDest, { type: 'foundation', index: 1 });
+});
+
+test('waste click-to-move: with only columns 0 and 6 legal, picks 6 (priority), not 0 (leftmost)', () => {
+  const s = emptyState();
+  const eight = card('hearts', 8);
+  s.waste = [eight];
+  s.tableau[0] = [card('spades', 9)];
+  s.tableau[6] = [card('clubs', 9)];
+  const dest = resolveClickDestination(s, eight, 'waste', null, 1);
+  assert.deepEqual(dest, { type: 'tableau', index: 6 });
+});
+
+test('waste click-to-move: with only column 0 legal, still picks it (end of priority list, not skipped)', () => {
+  const s = emptyState();
+  const eight = card('hearts', 8);
+  s.waste = [eight];
+  s.tableau[0] = [card('spades', 9)];
+  const dest = resolveClickDestination(s, eight, 'waste', null, 1);
+  assert.deepEqual(dest, { type: 'tableau', index: 0 });
+});
+
+test('tableau-sourced and foundation-sourced click-to-move are unaffected by WASTE_TABLEAU_PRIORITY - both still pick the leftmost legal column', () => {
+  const eight = card('hearts', 8);
+
+  const sTableau = emptyState();
+  sTableau.tableau[0] = [eight];
+  sTableau.tableau[6] = [card('clubs', 9)];
+  sTableau.tableau[3] = [card('spades', 9)];
+  const fromTableau = resolveClickDestination(sTableau, eight, 'tableau', 0, 1, null);
+  assert.deepEqual(fromTableau, { type: 'tableau', index: 3 }); // leftmost of {3, 6}, not priority-order
+
+  const sFoundation = emptyState();
+  sFoundation.foundations[1] = [card('hearts', 1), card('hearts', 2), card('hearts', 3), card('hearts', 4), card('hearts', 5), card('hearts', 6), eight];
+  sFoundation.tableau[6] = [card('clubs', 9)];
+  sFoundation.tableau[3] = [card('spades', 9)];
+  const fromFoundation = resolveClickDestination(sFoundation, eight, 'foundation', 1, 1);
+  assert.deepEqual(fromFoundation, { type: 'tableau', index: 3 }); // leftmost of {3, 6}, not priority-order
 });
 
 test('2. clicking again cycles to the next legal tableau destination, including leftward', () => {
