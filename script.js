@@ -219,8 +219,13 @@ import { shuffle } from './shuffle.js';
   }
 
   // Animation tuning.
-  const DROP_MS = 100;
-  const ROTATE_MS = 90;
+  // One shared duration for every "card slides from A to B" glide -
+  // click-to-move, a completed drag's settle, Auto Finish (which reuses
+  // click-to-move directly), and the King-column swap - so the physical
+  // sliding motion feels the same regardless of what triggered it. Within
+  // the ~180-220ms range that reads as a quick, snappy slide rather than a
+  // slow float.
+  const MOVE_GLIDE_MS = 200;
   const MAX_ROTATE_DEG = 1.6;
   const ROTATE_VELOCITY_PX_MS = 1.6; // pointer speed (px/ms) that reaches MAX_ROTATE_DEG
   const FLIP_MS = 260; // keep in sync with .flip-inner's transition duration in style.css - the whole dealt packet flips together, in place, over this long
@@ -230,8 +235,6 @@ import { shuffle } from './shuffle.js';
   const GATHER_MS = 120; // waste-pile draw transition: already-visible cards squaring up into the pile before the next batch deals
   const SURVIVOR_SETTLE_MS = 180; // waste-pile draw transition: a still-visible card's short hop from the gathered pile out to its new fanned slot
   const DRAG_THRESHOLD_PX = 4; // pointer movement below this counts as a click, not a drag
-  const CLICK_LIFT_MS = 60; // brief lift before a click-move starts gliding
-  const CLICK_MOVE_MS = 190; // click-move glide duration (+ CLICK_LIFT_MS ≈ 250ms total) - slow enough for the ease-out to actually read as a glide, not a snap
   const TABLEAU_FLIP_PAUSE_MS = 170; // beat of stillness after a move exposes a new tableau card, before it turns - reads as a natural pause rather than an instant swap
   const TABLEAU_FLIP_MS = 410; // this reveal's own flip duration - deliberately separate from the deal's FLIP_MS so the two can be tuned independently
 
@@ -699,10 +702,10 @@ import { shuffle } from './shuffle.js';
   let autoFinishRunning = false;
   let autoFinishStopRequested = false;
   // Eases in over the first few cards, then settles - a purely cosmetic
-  // pacing curve; CLICK_LIFT_MS/CLICK_MOVE_MS (the glide itself, reused
-  // unchanged from click-to-move) aren't touched. executeClickMove doesn't
-  // return a Promise/take a completion callback today, so this is a fixed
-  // delay rather than awaiting the actual animation.
+  // pacing curve; MOVE_GLIDE_MS (the glide itself, reused unchanged from
+  // click-to-move) isn't touched. executeClickMove doesn't return a
+  // Promise/take a completion callback today, so this is a fixed delay
+  // rather than awaiting the actual animation.
   const AUTO_FINISH_STEP_MS = [260, 220, 190];
   const AUTO_FINISH_STEP_MS_FLOOR = 175;
   function autoFinishStepDelay(i) { return AUTO_FINISH_STEP_MS[i] ?? AUTO_FINISH_STEP_MS_FLOOR; }
@@ -1451,10 +1454,11 @@ import { shuffle } from './shuffle.js';
     const targetStack = targetCol.slice(targetCol.length - targetFaceUpCount);
     const targetOriginEls = targetStack.map(c => document.querySelector(`.card[data-id="${c.id}"]`)).filter(Boolean);
     const targetOriginRects = targetOriginEls.map(el => el.getBoundingClientRect());
+    // No lift here - unlike the dragged stack, nobody physically picked
+    // this column up, so it glides flat from the start (glideGhostsTo
+    // resets any lift to flat anyway, but there's no reason to apply one
+    // just to immediately undo it).
     const targetGhosts = createGhostStack(targetStack, targetOriginRects);
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      targetGhosts.visuals.forEach(v => v.classList.add('lifted'));
-    }));
     targetOriginEls.forEach(el => { el.style.visibility = 'hidden'; });
 
     // Read before mutating - both columns' post-swap contents are exactly
@@ -1477,8 +1481,8 @@ import { shuffle } from './shuffle.js';
 
     const revealDragged = hideDestElements(stack, 'tableau', targetIndex, null);
     const revealTarget = hideDestElements(targetStack, 'tableau', sourceIndex, null);
-    glideGhostsTo(ghosts, originRects, destForDraggedStack, DROP_MS, false, revealDragged);
-    glideGhostsTo(targetGhosts, targetOriginRects, destForTargetStack, DROP_MS, false, revealTarget);
+    glideGhostsTo(ghosts, originRects, destForDraggedStack, MOVE_GLIDE_MS, revealDragged);
+    glideGhostsTo(targetGhosts, targetOriginRects, destForTargetStack, MOVE_GLIDE_MS, revealTarget);
   }
 
   // Click-to-move: a single click on a movable exposed card sends it to its
@@ -1504,10 +1508,9 @@ import { shuffle } from './shuffle.js';
     const originRects = originEls.map(el => el.getBoundingClientRect());
     originEls.forEach(el => { el.style.visibility = 'hidden'; });
 
+    // No lift, no pause - nobody physically picked this card up, so it
+    // glides flat from the instant it's committed.
     const ghosts = createGhostStack(stack, originRects);
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      ghosts.visuals.forEach(v => v.classList.add('lifted'));
-    }));
 
     const destRects = computeDestRects(target, targetIndex, stack.length);
     const previousTopCard = target === 'foundation' ? currentFoundationTop(targetIndex) : null;
@@ -1517,9 +1520,7 @@ import { shuffle } from './shuffle.js';
     }
     const revealDest = hideDestElements(stack, target, targetIndex, previousTopCard);
 
-    setTimeout(() => {
-      glideGhostsTo(ghosts, originRects, destRects, CLICK_MOVE_MS, target === 'foundation', revealDest);
-    }, CLICK_LIFT_MS);
+    glideGhostsTo(ghosts, originRects, destRects, MOVE_GLIDE_MS, revealDest);
   }
 
   function checkWin() {
@@ -1570,21 +1571,28 @@ import { shuffle } from './shuffle.js';
     return { wrappers, visuals };
   }
 
-  // Glides ghosts from baseRects to destRects (position), while easing
-  // their visual lift/scale/rotate back to rest. Foundation landings use
-  // a slight overshoot easing on the visual only — never on the flight
-  // path itself, so the trajectory stays clean.
-  function glideGhostsTo(ghosts, baseRects, destRects, ms, isFoundationDrop, onDone) {
+  // Glides ghosts from baseRects to destRects: a clean, flat position
+  // slide with a natural ease-out - the only thing that animates is
+  // position. Any lift/scale/tilt a ghost picked up while actively held
+  // (see .lifted, and the live velocity-rotation in processDragFrame)
+  // settles back to rest *instantly*, before the position glide starts -
+  // never eased alongside it, so unlifting can never read as part of the
+  // card's travel (an arc, bounce, or grow). A programmatic glide
+  // (click-to-move, Auto Finish, King-swap's own un-dragged ghost) was
+  // never lifted in the first place, so this reset is a harmless no-op
+  // there - one glide implementation for every trigger.
+  function glideGhostsTo(ghosts, baseRects, destRects, ms, onDone) {
     const { wrappers, visuals } = ghosts;
-    const settleEase = isFoundationDrop ? 'var(--ease-bounce)' : 'var(--ease-out-smooth)';
+    visuals.forEach(visual => {
+      visual.style.transition = 'none';
+      visual.classList.remove('lifted');
+      visual.style.rotate = '0deg';
+      visual.offsetHeight; // commit the instant reset before the transition below can pick it up
+      visual.style.transition = '';
+    });
     wrappers.forEach((wrapper, i) => {
       wrapper.style.transition = `translate ${ms}ms var(--ease-out-smooth)`;
       wrapper.style.translate = `${destRects[i].left - baseRects[i].left}px ${destRects[i].top - baseRects[i].top}px`;
-    });
-    visuals.forEach(visual => {
-      visual.style.transition = `translate ${ms}ms ${settleEase}, scale ${ms}ms ${settleEase}, rotate ${ROTATE_MS}ms ease-out`;
-      visual.classList.remove('lifted');
-      visual.style.rotate = '0deg';
     });
     setTimeout(() => {
       wrappers.forEach(w => w.remove());
@@ -1795,10 +1803,10 @@ import { shuffle } from './shuffle.js';
       const previousTopCard = target === 'foundation' ? currentFoundationTop(targetIndex) : null;
       commitMove(stack, source, sourceIndex, target, targetIndex);
       const revealDest = hideDestElements(stack, target, targetIndex, previousTopCard);
-      glideGhostsTo(ghosts, originRects, destRects, DROP_MS, target === 'foundation', revealDest);
+      glideGhostsTo(ghosts, originRects, destRects, MOVE_GLIDE_MS, revealDest);
     } else {
       originEls.forEach(el => { el.style.visibility = ''; });
-      glideGhostsTo(ghosts, originRects, originRects, DROP_MS, false);
+      glideGhostsTo(ghosts, originRects, originRects, MOVE_GLIDE_MS);
     }
   }
 
