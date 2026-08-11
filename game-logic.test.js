@@ -19,6 +19,8 @@ import {
   autoFinishAvailable,
   rankMoves,
   getProgressingMoves,
+  isKingColumnSwap,
+  applyKingColumnSwap,
 } from './game-logic.js';
 
 let nextId = 0;
@@ -1157,4 +1159,143 @@ test('rankMoves does not mutate the input array or state', () => {
   rankMoves(s, moves);
   assert.deepEqual(moves, movesCopy);
   assert.deepEqual(s, beforeState);
+});
+
+// ---------- isKingColumnSwap / applyKingColumnSwap: the King-column swap ----------
+
+test('isKingColumnSwap: two King-led columns with no empty column anywhere -> swap allowed', () => {
+  const s = emptyState();
+  const kingA = card('spades', 13);
+  s.tableau[0] = [kingA, card('hearts', 12), card('clubs', 11)]; // K-Q-J
+  s.tableau[1] = [card('diamonds', 13), card('spades', 12)]; // K-Q
+  s.tableau[2] = [card('clubs', 1)]; // just something occupying every other column, so none are empty
+  s.tableau[3] = [card('clubs', 2)];
+  s.tableau[4] = [card('clubs', 3)];
+  s.tableau[5] = [card('clubs', 4)];
+  s.tableau[6] = [card('clubs', 5)];
+
+  const stack = getStackFrom(s, 'tableau', 0, kingA);
+  assert.equal(isKingColumnSwap(s, stack, 'tableau', 0, 1), true);
+});
+
+test('isKingColumnSwap: same two King-led columns, but an empty column exists -> no swap (normal rules apply)', () => {
+  const s = emptyState();
+  const kingA = card('spades', 13);
+  s.tableau[0] = [kingA, card('hearts', 12), card('clubs', 11)];
+  s.tableau[1] = [card('diamonds', 13), card('spades', 12)];
+  // tableau[2..6] left empty - a King has a real legal destination now
+  const stack = getStackFrom(s, 'tableau', 0, kingA);
+  assert.equal(isKingColumnSwap(s, stack, 'tableau', 0, 1), false);
+});
+
+test('isKingColumnSwap: a non-King column dragged onto a King-led column -> no swap', () => {
+  const s = emptyState();
+  const queen = card('hearts', 12);
+  s.tableau[0] = [queen]; // not a King
+  s.tableau[1] = [card('diamonds', 13)];
+  s.tableau[2] = [card('clubs', 1)]; // no empty columns
+  s.tableau[3] = [card('clubs', 2)];
+  s.tableau[4] = [card('clubs', 3)];
+  s.tableau[5] = [card('clubs', 4)];
+  s.tableau[6] = [card('clubs', 5)];
+  const stack = getStackFrom(s, 'tableau', 0, queen);
+  assert.equal(isKingColumnSwap(s, stack, 'tableau', 0, 1), false);
+});
+
+test('isKingColumnSwap: a King-led column dragged onto a non-King column -> no swap', () => {
+  const s = emptyState();
+  const king = card('spades', 13);
+  s.tableau[0] = [king];
+  s.tableau[1] = [card('hearts', 9)]; // not King-led
+  s.tableau[2] = [card('clubs', 1)]; // no empty columns
+  s.tableau[3] = [card('clubs', 2)];
+  s.tableau[4] = [card('clubs', 3)];
+  s.tableau[5] = [card('clubs', 4)];
+  s.tableau[6] = [card('clubs', 5)];
+  const stack = getStackFrom(s, 'tableau', 0, king);
+  assert.equal(isKingColumnSwap(s, stack, 'tableau', 0, 1), false);
+});
+
+test('isKingColumnSwap: grabbing a card partway down a King-led run (not the King itself) -> no swap', () => {
+  const s = emptyState();
+  const king = card('spades', 13);
+  const queen = card('hearts', 12);
+  s.tableau[0] = [king, queen]; // K-Q
+  s.tableau[1] = [card('diamonds', 13)];
+  s.tableau[2] = [card('clubs', 1)]; // no empty columns
+  s.tableau[3] = [card('clubs', 2)];
+  s.tableau[4] = [card('clubs', 3)];
+  s.tableau[5] = [card('clubs', 4)];
+  s.tableau[6] = [card('clubs', 5)];
+  const partialStack = getStackFrom(s, 'tableau', 0, queen); // just the Queen, not the whole column
+  assert.equal(isKingColumnSwap(s, partialStack, 'tableau', 0, 1), false);
+});
+
+test('isKingColumnSwap: allowed even with face-down cards buried beneath either King', () => {
+  const s = emptyState();
+  const buriedUnderSource = card('hearts', 4, false);
+  const kingA = card('spades', 13);
+  s.tableau[0] = [buriedUnderSource, kingA, card('hearts', 12)]; // face-down 4, then K-Q exposed
+  const buriedUnderTarget = card('clubs', 7, false);
+  s.tableau[1] = [buriedUnderTarget, card('diamonds', 13)]; // face-down 7, then K exposed
+  s.tableau[2] = [card('clubs', 1)]; // no empty columns
+  s.tableau[3] = [card('clubs', 2)];
+  s.tableau[4] = [card('clubs', 3)];
+  s.tableau[5] = [card('clubs', 4)];
+  s.tableau[6] = [card('clubs', 5)];
+
+  const stack = getStackFrom(s, 'tableau', 0, kingA);
+  assert.equal(isKingColumnSwap(s, stack, 'tableau', 0, 1), true);
+});
+
+test('applyKingColumnSwap: exchanges full column contents, preserving card identity, order, and face state', () => {
+  const s = emptyState();
+  const buried = card('hearts', 4, false);
+  const kingA = card('spades', 13);
+  const queenA = card('hearts', 12);
+  s.tableau[0] = [buried, kingA, queenA];
+  const kingB = card('diamonds', 13);
+  s.tableau[1] = [kingB];
+
+  applyKingColumnSwap(s, 0, 1);
+
+  assert.deepEqual(s.tableau[0], [kingB]);
+  assert.deepEqual(s.tableau[1], [buried, kingA, queenA]);
+  assert.equal(s.tableau[1][0].faceUp, false); // the buried card's face-down state survived the move
+});
+
+test('applyKingColumnSwap round-trips cleanly through cloneState (the undo pattern)', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('hearts', 4, false), card('spades', 13), card('hearts', 12)];
+  s.tableau[1] = [card('diamonds', 13)];
+  const before = cloneState(s);
+
+  applyKingColumnSwap(s, 0, 1);
+  assert.notDeepEqual(s, before);
+
+  const restored = before; // undo() just restores the pre-move snapshot wholesale
+  assert.equal(restored.tableau[0].length, 3);
+  assert.equal(restored.tableau[1].length, 1);
+});
+
+test('a King-column swap situation produces zero legal moves for either column - Hint, Auto Finish, and stuck-game detection all read getLegalMoves, so the swap is invisible to every one of them by construction', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('spades', 13), card('hearts', 12)];
+  s.tableau[1] = [card('diamonds', 13)];
+  // isolated black filler, ranks that can't reach a (still-empty) foundation
+  // or stack on each other (all same color) - genuinely zero moves anywhere
+  s.tableau[2] = [card('clubs', 2)];
+  s.tableau[3] = [card('clubs', 3)];
+  s.tableau[4] = [card('clubs', 4)];
+  s.tableau[5] = [card('clubs', 5)];
+  s.tableau[6] = [card('clubs', 6)];
+
+  const moves = getLegalMoves(s);
+  assert.ok(!moves.some(m => m.sourceIndex === 0 && m.source === 'tableau'));
+  assert.ok(!moves.some(m => m.sourceIndex === 1 && m.source === 'tableau'));
+  assert.equal(getProgressingMoves(s).length, 0);
+  assert.equal(autoFinishAvailable(s), false);
+  // historyLength > 0 and not won: the only way needsAbandonConfirmation
+  // could say true here is if it counted the swap as a real move - it must not.
+  assert.equal(needsAbandonConfirmation(s, 5, false), false);
 });

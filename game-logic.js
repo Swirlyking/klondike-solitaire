@@ -465,6 +465,53 @@ export function applyMove(state, cards, source, sourceIndex, target, targetIndex
   }
 }
 
+// A board-layout convenience, not a real Klondike move: two complete
+// King-led columns can trade positions when neither can otherwise go
+// anywhere (a King only ever legally lands on an empty column, so once
+// none exist, two King-based columns are permanently stuck relative to
+// each other without this). Deliberately never routed through
+// getLegalMoves/MoveCategory - see the swap's caller in script.js for why
+// keeping it a sibling predicate (alongside canPlaceOnFoundation/
+// canPlaceOnTableau) rather than a new move category matters: it must
+// never surface as a Hint, count toward "moves available", or be offered
+// to Auto Finish, and a shared-list entry would need active exclusion in
+// every one of those readers to guarantee that. Kept out of the list
+// entirely, it's excluded by construction instead.
+//
+// A face-up King can never have another face-up card beneath it in the
+// same column - it only ever lands on an empty column or starts as a
+// column's lone dealt card, and nothing is ever inserted below an
+// existing card. So whichever King is grabbed is always already sitting
+// at its own column's exposed-run base, and dragging it always carries
+// that column's entire visible cascade; both are re-verified directly
+// below anyway, rather than leaned on as an unstated assumption.
+export function isKingColumnSwap(state, stack, source, sourceIndex, targetIndex) {
+  if (source !== 'tableau' || sourceIndex === targetIndex) return false;
+  if (!stack.length || stack[0].rank !== 13) return false;
+
+  const sourceCol = state.tableau[sourceIndex];
+  const sourceBase = sourceCol.find(c => c.faceUp);
+  if (!sourceBase || sourceBase.id !== stack[0].id) return false;
+
+  const targetCol = state.tableau[targetIndex];
+  if (!targetCol.length) return false; // empty target is the normal King move, not a swap
+  const targetBase = targetCol.find(c => c.faceUp);
+  if (!targetBase || targetBase.rank !== 13) return false;
+
+  return state.tableau.every(col => col.length > 0); // only when no empty column exists anywhere
+}
+
+// Mutates state: exchanges the two tableau columns' full contents outright
+// - not a merge or append, see isKingColumnSwap for when this is legal to
+// call. Card identity, order, and faceUp state are all untouched; only
+// which column's array each card lives in changes.
+export function applyKingColumnSwap(state, sourceIndex, targetIndex) {
+  const a = state.tableau[sourceIndex];
+  const b = state.tableau[targetIndex];
+  state.tableau[sourceIndex] = b;
+  state.tableau[targetIndex] = a;
+}
+
 export function cloneState(state) {
   return JSON.parse(JSON.stringify(state));
 }

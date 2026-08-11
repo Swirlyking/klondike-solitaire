@@ -13,6 +13,8 @@ import {
   autoFinishAvailable,
   rankMoves,
   getProgressingMoves,
+  isKingColumnSwap,
+  applyKingColumnSwap,
 } from './game-logic.js';
 import { getPreference, setPreference } from './preferences.js';
 import { shuffle } from './shuffle.js';
@@ -1383,7 +1385,12 @@ import { shuffle } from './shuffle.js';
     }
     if (target === 'tableau') {
       if (source === 'tableau' && sourceIndex === targetIndex) return false;
-      return canPlaceOnTableau(state, stack[0], targetIndex);
+      // A King never legally lands on a non-empty column under normal rules
+      // (see canPlaceOnTableau), so this can only ever add a drop target in
+      // situations that were already illegal - never loosens real Klondike
+      // legality.
+      return canPlaceOnTableau(state, stack[0], targetIndex)
+        || isKingColumnSwap(state, stack, source, sourceIndex, targetIndex);
     }
     return false;
   }
@@ -1409,6 +1416,69 @@ import { shuffle } from './shuffle.js';
     const availableHeight = getTableauAvailableHeight(colRect.top);
     const tops = computeTableauTops(existingFlags.concat(incomingFlags), availableHeight, cascadeDown, cascadeUp, cardHeight);
     return tops.slice(existingFlags.length).map(top => ({ left: colRect.left, top: colRect.top + top }));
+  }
+
+  // Sibling to computeDestRects, for a King-column swap: the incoming
+  // column isn't appended onto whatever's already at targetIndex, it
+  // *replaces* it outright, and the two columns can carry different
+  // face-down counts - so this needs the full incoming faceUpFlags (not
+  // just the visible run) to get the face-up run's vertical offsets right.
+  // revealCount trims the result to just the entries actually animated
+  // (the face-up tail - always the last revealCount entries, since a
+  // column's face-down cards are always a contiguous prefix).
+  function computeColumnDestRects(fullFaceUpFlags, colIndex, revealCount) {
+    const colEl = document.getElementById(`tableau-${colIndex}`);
+    const colRect = colEl.getBoundingClientRect();
+    const cascadeDown = getCascadeDown();
+    const cascadeUp = getCascadeUp();
+    const cardHeight = getCardHeight();
+    const availableHeight = getTableauAvailableHeight(colRect.top);
+    const tops = computeTableauTops(fullFaceUpFlags, availableHeight, cascadeDown, cascadeUp, cardHeight);
+    return tops.slice(fullFaceUpFlags.length - revealCount).map(top => ({ left: colRect.left, top: colRect.top + top }));
+  }
+
+  // The King-column swap: a board-layout convenience, not a real Klondike
+  // move (see isKingColumnSwap in game-logic.js for why it's kept entirely
+  // outside getLegalMoves). Reuses the exact ghost/glide pipeline a normal
+  // drop uses, run twice - once for the already-in-flight dragged stack,
+  // once for a freshly-created ghost of the target column's own cards -
+  // so both columns visibly cross-slide into each other's position rather
+  // than teleporting. One pushHistory() + one state mutation + one
+  // moveCount++ makes the whole swap a single undoable move.
+  function commitKingColumnSwap(sourceIndex, targetIndex, stack, ghosts, originRects) {
+    const targetCol = state.tableau[targetIndex];
+    const targetFaceUpCount = targetCol.filter(c => c.faceUp).length;
+    const targetStack = targetCol.slice(targetCol.length - targetFaceUpCount);
+    const targetOriginEls = targetStack.map(c => document.querySelector(`.card[data-id="${c.id}"]`)).filter(Boolean);
+    const targetOriginRects = targetOriginEls.map(el => el.getBoundingClientRect());
+    const targetGhosts = createGhostStack(targetStack, targetOriginRects);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      targetGhosts.visuals.forEach(v => v.classList.add('lifted'));
+    }));
+    targetOriginEls.forEach(el => { el.style.visibility = 'hidden'; });
+
+    // Read before mutating - both columns' post-swap contents are exactly
+    // each other's current (pre-swap) contents.
+    const sourceFullFlags = state.tableau[sourceIndex].map(c => c.faceUp);
+    const targetFullFlags = targetCol.map(c => c.faceUp);
+    const destForDraggedStack = computeColumnDestRects(sourceFullFlags, targetIndex, stack.length);
+    const destForTargetStack = computeColumnDestRects(targetFullFlags, sourceIndex, targetStack.length);
+
+    resetTableauClickMemory();
+    clearHint();
+    if (expandedColumnIndex === sourceIndex || expandedColumnIndex === targetIndex) {
+      expandedColumnIndex = null;
+    }
+    pushHistory();
+    applyKingColumnSwap(state, sourceIndex, targetIndex);
+    moveCount++;
+    updateMoves();
+    render();
+
+    const revealDragged = hideDestElements(stack, 'tableau', targetIndex, null);
+    const revealTarget = hideDestElements(targetStack, 'tableau', sourceIndex, null);
+    glideGhostsTo(ghosts, originRects, destForDraggedStack, DROP_MS, false, revealDragged);
+    glideGhostsTo(targetGhosts, targetOriginRects, destForTargetStack, DROP_MS, false, revealTarget);
   }
 
   // Click-to-move: a single click on a movable exposed card sends it to its
@@ -1717,6 +1787,10 @@ import { shuffle } from './shuffle.js';
     if (valid) {
       const target = pileEl.dataset.pile;
       const targetIndex = parseInt(pileEl.dataset.index, 10);
+      if (target === 'tableau' && isKingColumnSwap(state, stack, source, sourceIndex, targetIndex)) {
+        commitKingColumnSwap(sourceIndex, targetIndex, stack, ghosts, originRects);
+        return;
+      }
       const destRects = computeDestRects(target, targetIndex, stack.length);
       const previousTopCard = target === 'foundation' ? currentFoundationTop(targetIndex) : null;
       commitMove(stack, source, sourceIndex, target, targetIndex);
