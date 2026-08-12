@@ -66,7 +66,7 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
   // in a returning player's cache: a version bump mints new URLs, which
   // are cache misses by construction, while every URL that didn't change
   // keeps serving instantly from cache forever.
-  const ASSET_VERSION = 'v1';
+  const ASSET_VERSION = 'v2';
 
   function cardImageSrc(card) {
     const suit = SUITS.find(s => s.key === card.suit);
