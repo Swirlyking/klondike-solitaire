@@ -19,7 +19,7 @@ import {
 import { getPreference, setPreference } from './preferences.js';
 import { shuffle } from './shuffle.js';
 import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from './victory.js';
-import { recordWin, getStatsForMode, applyWin } from './stats.js';
+import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 
 (() => {
   const SUITS = [
@@ -495,6 +495,7 @@ import { recordWin, getStatsForMode, applyWin } from './stats.js';
     resetTableauClickMemory();
     clearHint();
     expandedColumnIndex = null;
+    recordPlay(currentDrawModeKey()); // a fresh deal, independent of whether it's ever won - restart() replays this same deal, so it doesn't count again
     const deck = shuffle(freshDeck());
     const tableau = [[], [], [], [], [], [], []];
     let idx = 0;
@@ -2565,6 +2566,7 @@ import { recordWin, getStatsForMode, applyWin } from './stats.js';
     const stats = getStatsForMode(modeKey);
 
     statsRows.innerHTML = '';
+    statsRows.appendChild(renderStatRow(`${modeLabel} Plays`, String(stats.plays)));
     statsRows.appendChild(renderStatRow(`${modeLabel} Wins`, String(stats.wins)));
     statsRows.appendChild(renderStatRow('Fastest Time', stats.fastestTimeSeconds != null ? formatTime(stats.fastestTimeSeconds) : '—'));
     statsRows.appendChild(renderStatRow('Fewest Moves', stats.fewestMoves != null ? String(stats.fewestMoves) : '—'));

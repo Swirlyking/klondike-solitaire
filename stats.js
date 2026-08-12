@@ -12,9 +12,11 @@ export const MODES = ['draw1', 'draw3'];
 
 // null (not 0) means "no record yet" - a real game can never finish in 0
 // seconds or 0 moves, so null stays an unambiguous "never won" sentinel
-// throughout, both here and in the UI that reads it.
+// throughout, both here and in the UI that reads it. plays counts every
+// fresh deal (script.js's newGame(), not restart() - replaying the exact
+// same deal isn't a new play) started in this mode, independent of wins.
 export function emptyModeStats() {
-  return { wins: 0, fastestTimeSeconds: null, fewestMoves: null, lastWin: null };
+  return { plays: 0, wins: 0, fastestTimeSeconds: null, fewestMoves: null, lastWin: null };
 }
 
 function isPositiveInt(n) {
@@ -29,6 +31,7 @@ function sanitizeModeStats(raw) {
   const empty = emptyModeStats();
   if (!raw || typeof raw !== 'object') return empty;
 
+  const plays = isPositiveInt(raw.plays) ? raw.plays : empty.plays;
   const wins = isPositiveInt(raw.wins) ? raw.wins : empty.wins;
   const fastestTimeSeconds = isPositiveInt(raw.fastestTimeSeconds) ? raw.fastestTimeSeconds : empty.fastestTimeSeconds;
   const fewestMoves = isPositiveInt(raw.fewestMoves) ? raw.fewestMoves : empty.fewestMoves;
@@ -39,7 +42,7 @@ function sanitizeModeStats(raw) {
     lastWin = { timeSeconds: raw.lastWin.timeSeconds, moves: raw.lastWin.moves };
   }
 
-  return { wins, fastestTimeSeconds, fewestMoves, lastWin };
+  return { plays, wins, fastestTimeSeconds, fewestMoves, lastWin };
 }
 
 // Always returns a well-formed { draw1, draw3 } regardless of what's
@@ -75,6 +78,7 @@ export function applyWin(modeStats, elapsedSeconds, moveCount) {
 
   return {
     stats: {
+      plays: current.plays ?? 0, // a win never changes the play count - carried through unchanged
       wins: winNumber,
       fastestTimeSeconds,
       fewestMoves,
@@ -84,6 +88,12 @@ export function applyWin(modeStats, elapsedSeconds, moveCount) {
     isNewFastest,
     isNewFewestMoves,
   };
+}
+
+// Pure: a fresh deal starting, independent of whether it's ever won.
+export function incrementPlays(modeStats) {
+  const current = modeStats || emptyModeStats();
+  return { ...current, plays: (current.plays ?? 0) + 1 };
 }
 
 // ---------- persistence (impure - the only functions here that touch
@@ -111,4 +121,15 @@ export function recordWin(drawModeKey, elapsedSeconds, moveCount) {
   fullStats[drawModeKey] = stats;
   saveStats(fullStats);
   return { winNumber, isNewFastest, isNewFewestMoves, stats };
+}
+
+// Loads, increments just this one mode's play count, saves, and returns the
+// updated slice. Called once per fresh deal (script.js's newGame()) -
+// independent of recordWin, since most plays never end in a win.
+export function recordPlay(drawModeKey) {
+  const fullStats = loadStats();
+  const updated = incrementPlays(fullStats[drawModeKey]);
+  fullStats[drawModeKey] = updated;
+  saveStats(fullStats);
+  return updated;
 }

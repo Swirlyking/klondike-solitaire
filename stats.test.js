@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyModeStats, sanitizeStats, applyWin } from './stats.js';
+import { emptyModeStats, sanitizeStats, applyWin, incrementPlays } from './stats.js';
 
 // Pure-logic tests only, same split as victory.test.js/game-logic.test.js:
 // this project has no jsdom/Playwright, and loadStats/saveStats/recordWin
@@ -13,7 +13,7 @@ import { emptyModeStats, sanitizeStats, applyWin } from './stats.js';
 
 test('emptyModeStats: the zero/never-played shape', () => {
   const empty = emptyModeStats();
-  assert.deepEqual(empty, { wins: 0, fastestTimeSeconds: null, fewestMoves: null, lastWin: null });
+  assert.deepEqual(empty, { plays: 0, wins: 0, fastestTimeSeconds: null, fewestMoves: null, lastWin: null });
 });
 
 test('sanitizeStats: missing/empty input recovers to default empty stats for both modes', () => {
@@ -26,27 +26,27 @@ test('sanitizeStats: missing/empty input recovers to default empty stats for bot
 
 test('sanitizeStats: a well-formed object round-trips unchanged', () => {
   const raw = {
-    draw1: { wins: 14, fastestTimeSeconds: 131, fewestMoves: 77, lastWin: { timeSeconds: 163, moves: 87 } },
-    draw3: { wins: 8, fastestTimeSeconds: 194, fewestMoves: 92, lastWin: { timeSeconds: 221, moves: 104 } },
+    draw1: { plays: 20, wins: 14, fastestTimeSeconds: 131, fewestMoves: 77, lastWin: { timeSeconds: 163, moves: 87 } },
+    draw3: { plays: 11, wins: 8, fastestTimeSeconds: 194, fewestMoves: 92, lastWin: { timeSeconds: 221, moves: 104 } },
   };
   assert.deepEqual(sanitizeStats(raw), raw);
 });
 
 test('sanitizeStats: a corrupted field falls back to its own default without discarding the rest of the mode', () => {
   const raw = {
-    draw1: { wins: 14, fastestTimeSeconds: 'not a number', fewestMoves: -5, lastWin: { timeSeconds: 163, moves: 87 } },
+    draw1: { plays: 'not a number', wins: 14, fastestTimeSeconds: 'not a number', fewestMoves: -5, lastWin: { timeSeconds: 163, moves: 87 } },
     draw3: 'totally the wrong shape',
   };
   const stats = sanitizeStats(raw);
   assert.deepEqual(stats.draw1, {
-    wins: 14, fastestTimeSeconds: null, fewestMoves: null,
+    plays: 0, wins: 14, fastestTimeSeconds: null, fewestMoves: null,
     lastWin: { timeSeconds: 163, moves: 87 },
   });
   assert.deepEqual(stats.draw3, emptyModeStats());
 });
 
 test('sanitizeStats: a malformed lastWin falls back to null rather than a partial object', () => {
-  const stats = sanitizeStats({ draw1: { wins: 1, fastestTimeSeconds: 100, fewestMoves: 50, lastWin: { timeSeconds: 100 } } });
+  const stats = sanitizeStats({ draw1: { plays: 5, wins: 1, fastestTimeSeconds: 100, fewestMoves: 50, lastWin: { timeSeconds: 100 } } });
   assert.equal(stats.draw1.lastWin, null);
 });
 
@@ -56,9 +56,15 @@ test('applyWin: win #1 saves fastest/fewest as the baseline but flags neither as
   assert.equal(result.isNewFastest, false);
   assert.equal(result.isNewFewestMoves, false);
   assert.deepEqual(result.stats, {
-    wins: 1, fastestTimeSeconds: 131, fewestMoves: 77,
+    plays: 0, wins: 1, fastestTimeSeconds: 131, fewestMoves: 77,
     lastWin: { timeSeconds: 131, moves: 77 },
   });
+});
+
+test('applyWin: never changes the play count - it only ever tracks wins/records', () => {
+  const modeStats = { plays: 20, wins: 3, fastestTimeSeconds: 131, fewestMoves: 77, lastWin: { timeSeconds: 131, moves: 77 } };
+  const result = applyWin(modeStats, 100, 60);
+  assert.equal(result.stats.plays, 20);
 });
 
 test('applyWin: a strictly faster win with the same move count sets only the fastest flag', () => {
@@ -143,4 +149,34 @@ test('applyWin: recording a win for one mode never touches the other mode\'s sta
 
   assert.deepEqual(fullStats.draw3, before);
   assert.equal(fullStats.draw1.wins, 14);
+});
+
+test('incrementPlays: starts at 0 and increments by exactly 1 per call, independent of wins', () => {
+  let modeStats = emptyModeStats();
+  for (let i = 1; i <= 5; i++) {
+    modeStats = incrementPlays(modeStats);
+    assert.equal(modeStats.plays, i);
+  }
+  assert.equal(modeStats.wins, 0); // 5 plays, still 0 wins - a play is not a win
+});
+
+test('incrementPlays: leaves every other field untouched', () => {
+  const modeStats = { plays: 4, wins: 2, fastestTimeSeconds: 100, fewestMoves: 50, lastWin: { timeSeconds: 100, moves: 50 } };
+  const result = incrementPlays(modeStats);
+  assert.equal(result.plays, 5);
+  assert.equal(result.wins, 2);
+  assert.equal(result.fastestTimeSeconds, 100);
+  assert.equal(result.fewestMoves, 50);
+  assert.deepEqual(result.lastWin, { timeSeconds: 100, moves: 50 });
+});
+
+test('incrementPlays: recording a play for one mode never touches the other mode\'s stats', () => {
+  const draw3Untouched = { plays: 9, wins: 8, fastestTimeSeconds: 194, fewestMoves: 92, lastWin: { timeSeconds: 221, moves: 104 } };
+  const fullStats = { draw1: emptyModeStats(), draw3: draw3Untouched };
+  const before = JSON.parse(JSON.stringify(draw3Untouched));
+
+  fullStats.draw1 = incrementPlays(fullStats.draw1);
+
+  assert.deepEqual(fullStats.draw3, before);
+  assert.equal(fullStats.draw1.plays, 1);
 });
