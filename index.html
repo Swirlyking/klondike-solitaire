@@ -87,15 +87,36 @@
         <button id="settingsCloseBtn" aria-label="Close">&times;</button>
       </div>
       <div id="settings-sections"></div>
+      <div id="settings-secondary">
+        <!-- Message-square icon: Lucide (ISC license), same icon set as
+             Undo/Hint above. A plain external link (not a JS click handler)
+             so opening it can never touch this page's own game state - the
+             browser handles target="_blank" entirely on its own. -->
+        <a id="feedbackLink" class="settings-feedback-link" href="https://docs.google.com/forms/d/e/1FAIpQLSeoGpjkiNNTupsJzx13C9tAeDU6277djkto8vvxjKY55C84KA/viewform?usp=publish-editor" target="_blank" rel="noopener noreferrer" aria-label="Open feedback form">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          <span class="settings-feedback-link-label">Feedback</span>
+          <span class="settings-feedback-link-arrow" aria-hidden="true">&#8599;</span>
+        </a>
+      </div>
+      <!-- Plain-looking version text, not styled as a button - clicking it
+           instantly completes the current board and plays the win
+           celebration, for previewing it without actually finishing a deal.
+           Text content/version number is set from script.js. -->
+      <button type="button" id="versionLink" class="settings-version" aria-label="Version"></button>
     </div>
   </div>
 
-  <div id="win-overlay" class="hidden">
-    <div id="win-card">
-      <h2>You win!</h2>
-      <p id="win-stats"></p>
-      <button id="winNewGameBtn">Play again</button>
-    </div>
+  <!-- No scrim, no boxed card - once the celebration's cards have cleared,
+       this appears directly on the visible green felt. Entrance class is
+       applied by script.js (one of a few random, subtle treatments); the
+       headline text is set from victory.js's pickHeadline() so a future
+       array of alternates needs no markup change. -->
+  <div id="win-message" class="hidden">
+    <h1 id="winHeadline">YOU WIN</h1>
+    <button id="winNewGameBtn">Shuffle Me a New Game</button>
+    <p id="win-stats"></p>
   </div>
 
   <div id="confirm-overlay" class="hidden">
@@ -110,6 +131,9 @@
   </div>
 
   <div id="drag-layer"></div>
+  <!-- Win-celebration clone cards only ever live here - never in #drag-layer,
+       so the two systems can't collide in z-index or cleanup ordering. -->
+  <div id="celebration-layer"></div>
 
   <script type="module" src="script.js"></script>
 </body>

@@ -18,6 +18,7 @@ import {
 } from './game-logic.js';
 import { getPreference, setPreference } from './preferences.js';
 import { shuffle } from './shuffle.js';
+import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from './victory.js';
 
 (() => {
   const SUITS = [
@@ -52,6 +53,11 @@ import { shuffle } from './shuffle.js';
     const MOBILE_TIER_NATIVE_PX = 175;
     return (window.innerWidth <= 720 && neededPhysicalPx <= MOBILE_TIER_NATIVE_PX) ? 'mobile' : 'full';
   })();
+
+  // Displayed at the bottom of Settings (see versionLink) - no build step
+  // generates this, so it's a plain hand-bumped constant, same convention
+  // as ASSET_VERSION just below.
+  const APP_VERSION = '1.0.0';
 
   // Cache-buster on every card image URL, not a build/deploy version -
   // bump this by hand whenever the card art itself changes. It's what
@@ -390,6 +396,21 @@ import { shuffle } from './shuffle.js';
   let startTime = null;
   let timerHandle = null;
   let won = false;
+  // Snapshot taken the instant checkWin() detects the win, so the celebration
+  // (which only starts after a deliberate pause) still shows the exact
+  // moveCount/elapsed time from the winning move itself, not whatever they'd
+  // be by the time the message actually renders.
+  let pendingWinResult = null;
+  let celebrationTimer = null;
+  // The win message reveals this long relative to the *actual* last card's
+  // landing time (computed per-run from the real plan, not
+  // personality.chaosDurationMs - that value is only a soft envelope
+  // victory.js uses to bound individual durations during generation, and
+  // the realized max finish time is routinely well under it, which used to
+  // leave an awkward dead pause before the message showed up). Negative on
+  // purpose: the message now arrives while the last card or two are still
+  // gently settling, not after every last pixel has stopped moving.
+  const MESSAGE_REVEAL_BUFFER_MS = -880;
 
   // Remembers, per tableau card/sequence, which column a click-cycle last
   // sent it to — so the next click on the same card advances to the next
@@ -409,13 +430,16 @@ import { shuffle } from './shuffle.js';
   const autoFinishBtn = document.getElementById('autoFinishBtn');
   const newGameBtn = document.getElementById('newGameBtn');
   const restartBtn = document.getElementById('restartBtn');
-  const winOverlay = document.getElementById('win-overlay');
+  const winMessage = document.getElementById('win-message');
+  const winHeadline = document.getElementById('winHeadline');
   const winStats = document.getElementById('win-stats');
   const winNewGameBtn = document.getElementById('winNewGameBtn');
+  const celebrationLayer = document.getElementById('celebration-layer');
   const settingsBtn = document.getElementById('settingsBtn');
   const settingsOverlay = document.getElementById('settings-overlay');
   const settingsCloseBtn = document.getElementById('settingsCloseBtn');
   const settingsSections = document.getElementById('settings-sections');
+  const versionLink = document.getElementById('versionLink');
   const confirmOverlay = document.getElementById('confirm-overlay');
   const confirmTitle = document.getElementById('confirm-title');
   const confirmMessage = document.getElementById('confirm-message');
@@ -436,6 +460,7 @@ import { shuffle } from './shuffle.js';
   function newGame() {
     cancelActiveDrag();
     clearGhosts();
+    cleanupVictoryCelebration();
     resetTableauClickMemory();
     clearHint();
     expandedColumnIndex = null;
@@ -460,7 +485,8 @@ import { shuffle } from './shuffle.js';
     history = [];
     moveCount = 0;
     won = false;
-    winOverlay.classList.add('hidden');
+    winMessage.classList.add('hidden');
+    setAutoFinishControlsDisabled(false); // the only re-enable path once a win has locked the toolbar - see checkWin()
     startTime = Date.now();
     updateMoves();
     render();
@@ -474,6 +500,7 @@ import { shuffle } from './shuffle.js';
     if (!initialDeal) return;
     cancelActiveDrag();
     clearGhosts();
+    cleanupVictoryCelebration();
     resetTableauClickMemory();
     clearHint();
     expandedColumnIndex = null;
@@ -481,7 +508,8 @@ import { shuffle } from './shuffle.js';
     history = [];
     moveCount = 0;
     won = false;
-    winOverlay.classList.add('hidden');
+    winMessage.classList.add('hidden');
+    setAutoFinishControlsDisabled(false);
     startTime = Date.now();
     updateMoves();
     render();
@@ -762,8 +790,17 @@ import { shuffle } from './shuffle.js';
     autoFinishBtn.textContent = 'Auto Finish';
     autoFinishBtn.classList.remove('flash'); // so the next start re-triggers the animation rather than being a no-op class toggle
     document.removeEventListener('keydown', onAutoFinishKeydown, true);
-    setAutoFinishControlsDisabled(false);
-    updateMoves(); // re-derives undoBtn.disabled and autoFinishBtn's own disabled state
+    // A run that just ended in victory must NOT hand control back to the
+    // toolbar - checkWin() has already locked it (synchronously, the instant
+    // the winning move committed) specifically to close the window where a
+    // grouped Auto Finish run's own end-of-run re-enable would otherwise
+    // race the celebration's pending pause and let Undo become clickable on
+    // a won board. The toolbar's only re-enable path once won is
+    // newGame()/restart()/undo().
+    if (!won) {
+      setAutoFinishControlsDisabled(false);
+      updateMoves(); // re-derives undoBtn.disabled and autoFinishBtn's own disabled state
+    }
     hintMessage.classList.add('hidden');
     hintMessage.textContent = '';
   }
@@ -793,21 +830,22 @@ import { shuffle } from './shuffle.js';
     if (!history.length) return;
     cancelActiveDrag();
     clearGhosts();
+    cleanupVictoryCelebration();
     resetTableauClickMemory();
     expandedColumnIndex = null;
     const entry = history.pop();
     state = entry.state;
     moveCount = entry.moveCount;
-    // Pre-existing gap, not previously reachable often enough to notice:
-    // undo() never reset the win state, so undoing back across a win left
-    // the "You win!" overlay showing over a board that was, once again,
-    // still in play. Grouped Auto Finish undo makes "win, then undo the
-    // whole run" a routine path rather than an edge case, so it needs to
-    // behave the same as newGame()/restart() here - always reset, since
-    // hiding an already-hidden overlay is a harmless no-op when the game
-    // wasn't won to begin with.
+    // Defensive, not reachable via the UI today: once won, checkWin() has
+    // already disabled Undo along with the rest of the toolbar, and nothing
+    // re-enables it except newGame()/restart()/undo() themselves - so this
+    // function can no longer actually run in a won state. Kept anyway
+    // (matching newGame/restart) in case some future path calls undo()
+    // directly - resetting won/hiding the message is a harmless no-op when
+    // the game wasn't won to begin with.
     won = false;
-    winOverlay.classList.add('hidden');
+    winMessage.classList.add('hidden');
+    setAutoFinishControlsDisabled(false);
     updateMoves();
     render();
   }
@@ -1523,14 +1561,476 @@ import { shuffle } from './shuffle.js';
     glideGhostsTo(ghosts, originRects, destRects, MOVE_GLIDE_MS, revealDest);
   }
 
+  // Bottom-of-Settings easter egg (see versionLink): instantly overwrites
+  // the board with a legitimately-solved deck and re-renders, so checkWin()
+  // - completely unmodified - detects the same "all 52 on foundations" win
+  // it always does and runs the real celebration pipeline. This never
+  // touches win-detection itself; it only fabricates the state win-detection
+  // already knows how to recognize. moveCount/startTime are left alone, so
+  // the celebration's stats line still reflects the game actually played.
+  function forceWinForTesting() {
+    settingsOverlay.classList.add('hidden');
+    if (won) {
+      // Let an already-finished (or in-progress) celebration reset first,
+      // so a repeated click always produces a fresh one instead of a no-op.
+      cleanupVictoryCelebration();
+      won = false;
+    }
+    cancelActiveDrag();
+    clearGhosts();
+    resetTableauClickMemory();
+    clearHint();
+    expandedColumnIndex = null;
+    state.stock = [];
+    state.waste = [];
+    state.tableau = [[], [], [], [], [], [], []];
+    let forcedId = 0;
+    state.foundations = SUITS.map(suit => {
+      const pile = [];
+      for (let rank = 1; rank <= 13; rank++) {
+        pile.push({ id: forcedId++, suit: suit.key, color: suit.color, rank, faceUp: true });
+      }
+      return pile;
+    });
+    render();
+  }
+
+  // Win-detection condition/timing is untouched from before this feature -
+  // still exactly `total === 52 && !won`, still flips `won` synchronously
+  // inside the same render() the winning move committed. The only change is
+  // what happens after: the toolbar locks immediately (closing a real race -
+  // see stopAutoFinish's own comment) and the celebration is scheduled
+  // rather than shown immediately, since the winning move's own glide is
+  // very likely still in flight at this exact instant.
   function checkWin() {
     const total = state.foundations.reduce((a, p) => a + p.length, 0);
     if (total === 52 && !won) {
       won = true;
       const secs = Math.floor((Date.now() - startTime) / 1000);
-      winStats.textContent = `${moveCount} moves, ${Math.floor(secs / 60)}:${(secs % 60).toString().padStart(2, '0')}`;
-      winOverlay.classList.remove('hidden');
+      pendingWinResult = { moveCount, secs };
+      setAutoFinishControlsDisabled(true);
+
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const personality = generateVictoryPersonality(reducedMotion);
+      // MOVE_GLIDE_MS + 30 matches glideGhostsTo's own ghost-removal buffer -
+      // the winning move's card must have visually landed before the
+      // celebration captures any positions or hides any real card.
+      const glideSettleMs = MOVE_GLIDE_MS + 30;
+      celebrationTimer = setTimeout(() => runVictoryCelebrationSequence(personality), glideSettleMs + personality.pauseMs);
     }
+  }
+
+  // ---------- victory celebration ----------
+  //
+  // Purely visual, and strictly downstream of checkWin() already having
+  // decided the game is won - nothing here ever mutates `state`, `history`,
+  // or calls anything from game-logic.js. All 52 cards are read once from
+  // state.foundations (already correct, per the real rules) to build
+  // temporary clone elements; the real board is only ever hidden, never
+  // touched. victory.js owns all the randomness/decision-making (personality
+  // + per-card behavior plans); everything below just turns that into real
+  // pixels, elements, and Web Animations API calls.
+
+  function runVictoryCelebrationSequence(personality) {
+    celebrationTimer = null;
+    if (!won) return; // defense in depth - nothing today can reach this while won, but cheap insurance against a future path
+    if (personality.reducedMotion) {
+      showVictoryMessage(personality.messageEntrance);
+    } else {
+      createVictoryCelebration(personality);
+    }
+  }
+
+  // translate/rotate/scale composed into one `transform` string per
+  // keyframe - rotationAxis 'xy' splits the turn across rotateX/rotateY for
+  // a tumbling look; 'x'/'y' alone need the wrapper's perspective (see
+  // .celebration-card--3d) to actually read as 3D rather than a squish.
+  function buildCelebrationTransform({ dx, dy, rotDeg, axis, scale }) {
+    let rotationPart;
+    if (axis === 'x') rotationPart = `rotateX(${rotDeg}deg)`;
+    else if (axis === 'y') rotationPart = `rotateY(${rotDeg}deg)`;
+    else if (axis === 'xy') rotationPart = `rotateX(${rotDeg * 0.6}deg) rotateY(${rotDeg * 0.6}deg)`;
+    else rotationPart = `rotate(${rotDeg}deg)`;
+    return `translate(${dx}px, ${dy}px) ${rotationPart} scale(${scale})`;
+  }
+
+  // One WAAPI keyframe object. opacity/offset are only included when given,
+  // so behaviors that never fade (most of them - once a card is off-viewport
+  // it's already invisible) don't carry a pointless constant-1 opacity track.
+  function kf(dx, dy, rotDeg, axis, scale, opacity, offset) {
+    const entry = { transform: buildCelebrationTransform({ dx, dy, rotDeg, axis, scale }) };
+    if (opacity !== undefined) entry.opacity = opacity;
+    if (offset !== undefined) entry.offset = offset;
+    return entry;
+  }
+
+  // ---------- per-behavior keyframe generators ----------
+  //
+  // Each of these owns its own motion grammar - not just different distance/
+  // rotation magnitudes layered on one shared translate+rotate+fade formula.
+  // animateCelebrationCard (below) just picks the right one and hands it the
+  // already-computed pixel geometry; nothing here is a special case bolted
+  // onto a shared path; every behavior is its own function, so the "how many
+  // genuinely distinct things can happen" question is answered by how many
+  // functions exist here, not by how many parameter combinations there are.
+
+  // Nearly no horizontal movement; nearly all the vertical distance is
+  // covered in the back half of the duration (a real ease-in-like weight,
+  // expressed as keyframe placement, not just a CSS easing string);
+  // rotation grows with it rather than starting at speed.
+  function createFallKeyframes(plan, viewport) {
+    const dyEnd = viewport.height * (0.85 + plan.distanceFactor * 0.6);
+    const dxEnd = viewport.width * 0.05 * plan.signA * plan.secondaryFactor;
+    const rotEnd = plan.rotationTurns * 360;
+    return [
+      kf(0, 0, 0, 'z', 1, undefined, 0),
+      kf(dxEnd * 0.12, dyEnd * 0.1, rotEnd * 0.06, 'z', 1, undefined, 0.4),
+      kf(dxEnd * 0.4, dyEnd * 0.45, rotEnd * 0.35, 'z', 1, undefined, 0.7),
+      kf(dxEnd, dyEnd, rotEnd, 'z', 1, undefined, 1),
+    ];
+  }
+
+  // Strong lateral travel, almost flat (tiny vertical drop), fast constant
+  // spin - a genuinely different shape from FALL: mostly linear/decelerating
+  // rather than accelerating, like something thrown that's losing momentum
+  // to air resistance rather than gaining it to gravity.
+  function createFrisbeeKeyframes(plan, viewport) {
+    const dxEnd = viewport.width * (1.0 + plan.distanceFactor) * plan.signA;
+    const dyEnd = viewport.height * 0.1 * plan.secondaryFactor;
+    const rotEnd = plan.rotationTurns * 360 * 1.3;
+    return [
+      kf(0, 0, 0, 'z', 1, undefined, 0),
+      kf(dxEnd * 0.55, dyEnd * 0.4, rotEnd * 0.5, 'z', 1, undefined, 0.45),
+      kf(dxEnd, dyEnd, rotEnd, 'z', 1, undefined, 1),
+    ];
+  }
+
+  // Explosive: most of the distance is covered in the FRONT of the
+  // duration (front-loaded keyframes), minimal rotation ("mostly straight
+  // trajectory"), short overall duration already comes from
+  // BEHAVIOR_PROFILES.LAUNCH's own low duration range. In fountain mode
+  // (plan.arc), an up-then-over-then-down parabolic arc replaces the
+  // straight shot - a genuinely different path, not a parameter tweak.
+  function createLaunchKeyframes(plan, viewport) {
+    const rad = (plan.exitAngleDeg ?? 270) * Math.PI / 180;
+    const dist = viewport.diagonal * (1.1 + plan.distanceFactor);
+    const dxEnd = Math.cos(rad) * dist;
+    const dyEnd = Math.sin(rad) * dist;
+    const rotEnd = plan.rotationTurns * 360 * 0.35;
+
+    if (plan.arc) {
+      // Up first (steeper than the base angle), then arcs over and falls -
+      // a real parabola: a peak keyframe well above the final resting dy,
+      // reached early, followed by the ballistic fall to dxEnd/dyEnd.
+      const peakDy = -viewport.height * (0.5 + plan.distanceFactor * 0.3);
+      const peakDx = dxEnd * 0.3;
+      return [
+        kf(0, 0, 0, 'z', 1, undefined, 0),
+        kf(peakDx, peakDy, rotEnd * 0.3, 'z', 1, undefined, 0.35),
+        kf(dxEnd * 0.7, peakDy * 0.2, rotEnd * 0.7, 'z', 1, undefined, 0.7),
+        kf(dxEnd, dyEnd, rotEnd, 'z', 1, undefined, 1),
+      ];
+    }
+
+    return [
+      kf(0, 0, 0, 'z', 1, undefined, 0),
+      kf(dxEnd * 0.72, dyEnd * 0.72, rotEnd * 0.6, 'z', 1, undefined, 0.28),
+      kf(dxEnd, dyEnd, rotEnd, 'z', 1, undefined, 1),
+    ];
+  }
+
+  // Slow, steady (linear) downward drift with a very fast continuous spin
+  // and an actual side-to-side wander - alternating sign on the x offset at
+  // each waypoint, not a single diagonal line.
+  function createHelicopterKeyframes(plan, viewport) {
+    const dyEnd = viewport.height * (0.75 + plan.distanceFactor * 0.5);
+    const wander = viewport.width * 0.06 * (0.4 + plan.secondaryFactor);
+    const rotEnd = plan.rotationTurns * 360 * 1.6;
+    return [
+      kf(0, 0, 0, 'z', 1, undefined, 0),
+      kf(wander * plan.signA, dyEnd * 0.3, rotEnd * 0.3, 'z', 1, undefined, 0.3),
+      kf(-wander * plan.signA, dyEnd * 0.62, rotEnd * 0.62, 'z', 1, undefined, 0.62),
+      kf(wander * plan.signA * 0.5, dyEnd, rotEnd, 'z', 1, undefined, 1),
+    ];
+  }
+
+  // Very little travel; scale grows large ("fills a large part of the
+  // screen"); stays fully opaque until late, then vanishes fast - reads as
+  // flying toward the viewer, not away from the board.
+  function createPopKeyframes(plan, viewport) {
+    const jitter = viewport.width * 0.015 * plan.secondaryFactor;
+    return [
+      kf(0, 0, 0, 'z', 1, 1, 0),
+      kf(jitter * plan.signA, jitter * plan.signB, 0, 'z', plan.scaleTarget * 0.6, 1, 0.6),
+      kf(jitter * plan.signA * 1.3, jitter * plan.signB * 1.3, 0, 'z', plan.scaleTarget, 1, 0.85),
+      kf(jitter * plan.signA * 1.3, jitter * plan.signB * 1.3, 0, 'z', plan.scaleTarget, 0, 1),
+    ];
+  }
+
+  // Stays exactly where it started (dx/dy always 0, per spec: "does NOT fly
+  // offscreen") and collapses toward nothing, with a small spin flourish as
+  // it goes - the opposite silhouette from POP despite both being
+  // "in-place" behaviors.
+  function createShrinkKeyframes(plan) {
+    const rotEnd = plan.rotationTurns * 180;
+    return [
+      kf(0, 0, 0, 'z', 1, 1, 0),
+      kf(0, 0, rotEnd * 0.5, 'z', 0.45, 1, 0.55),
+      kf(0, 0, rotEnd, 'z', 0, 0, 1),
+    ];
+  }
+
+  // Dominated by 3D rotation at a steady (linear) cadence, so it reads as a
+  // repeated flip-flip-flip rather than one spin; translation is real but
+  // secondary - noticeably less distance than FALL/LAUNCH/FRISBEE.
+  function createFlipKeyframes(plan, viewport) {
+    const rad = (plan.exitAngleDeg ?? 90) * Math.PI / 180;
+    const dist = viewport.diagonal * (0.35 + plan.distanceFactor * 0.35);
+    const dxEnd = Math.cos(rad) * dist;
+    const dyEnd = Math.sin(rad) * dist;
+    const rotEnd = plan.rotationTurns * 360 * 1.5;
+    const axis = plan.rotationAxis === 'y' ? 'y' : 'x';
+    return [
+      kf(0, 0, 0, axis, 1, undefined, 0),
+      kf(dxEnd * 0.33, dyEnd * 0.33, rotEnd * 0.33, axis, 1, undefined, 0.33),
+      kf(dxEnd * 0.66, dyEnd * 0.66, rotEnd * 0.66, axis, 1, undefined, 0.66),
+      kf(dxEnd, dyEnd, rotEnd, axis, 1, undefined, 1),
+    ];
+  }
+
+  // Combined X/Y 3D rotation on an irregular (not straight) path - each
+  // waypoint gets its own small lateral nudge, so the trajectory itself
+  // wobbles rather than just spinning while traveling in a line. Distinct
+  // from FLIP by using both axes together (a genuine tumble, not a flat
+  // flip) and from HELICOPTER by being 3D rather than a flat Z-spin.
+  function createTumbleKeyframes(plan, viewport) {
+    const rad = (plan.exitAngleDeg ?? 90) * Math.PI / 180;
+    const dist = viewport.diagonal * (0.8 + plan.distanceFactor);
+    const dxEnd = Math.cos(rad) * dist;
+    const dyEnd = Math.sin(rad) * dist;
+    const rotEnd = plan.rotationTurns * 360 * 1.3;
+    const wob = viewport.width * 0.045 * (0.4 + plan.secondaryFactor);
+    return [
+      kf(0, 0, 0, 'xy', 1, undefined, 0),
+      kf(dxEnd * 0.22 + wob * plan.signA, dyEnd * 0.18 - wob * plan.signB * 0.5, rotEnd * 0.25, 'xy', 1, undefined, 0.22),
+      kf(dxEnd * 0.5 - wob * plan.signA * 0.7, dyEnd * 0.48 + wob * plan.signB, rotEnd * 0.55, 'xy', 1, undefined, 0.5),
+      kf(dxEnd * 0.78 + wob * plan.signA * 0.4, dyEnd * 0.78 - wob * plan.signB * 0.3, rotEnd * 0.82, 'xy', 1, undefined, 0.78),
+      kf(dxEnd, dyEnd, rotEnd, 'xy', 1, undefined, 1),
+    ];
+  }
+
+  // A real multi-turn parametric spiral: as t goes 0->1, the card sweeps
+  // 1.5-4 full turns around the direct line toward its target while the
+  // sweep's own radius shrinks to 0 right as it arrives - several visible
+  // turns, not a straight path with one bowed midpoint.
+  function createSpiralKeyframes(plan, viewport, startRect, focalPoint) {
+    const cx = startRect.left + startRect.width / 2;
+    const cy = startRect.top + startRect.height / 2;
+    let targetX, targetY;
+    if (focalPoint) {
+      targetX = focalPoint.xFrac * viewport.width;
+      targetY = focalPoint.yFrac * viewport.height;
+    } else {
+      const rad = (plan.exitAngleDeg ?? 0) * Math.PI / 180;
+      targetX = cx + Math.cos(rad) * viewport.diagonal * plan.distanceFactor;
+      targetY = cy + Math.sin(rad) * viewport.diagonal * plan.distanceFactor;
+    }
+    const baseDx = targetX - cx;
+    const baseDy = targetY - cy;
+    const totalTurns = 1.5 + plan.secondaryFactor * 2.5;
+    const ampBase = Math.max(50, Math.hypot(baseDx, baseDy) * 0.32);
+    const rotEnd = plan.rotationTurns * 360;
+    const steps = 10;
+    const keyframes = [];
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const theta = t * totalTurns * 2 * Math.PI;
+      const amp = ampBase * (1 - t);
+      const perpX = -Math.sin(theta) * amp;
+      const perpY = Math.cos(theta) * amp;
+      const scale = 1 - (1 - plan.scaleTarget) * t;
+      const opacity = t < 0.8 ? 1 : 1 - (t - 0.8) / 0.2;
+      keyframes.push(kf(baseDx * t + perpX, baseDy * t + perpY, rotEnd * t, 'z', scale, opacity, t));
+    }
+    return keyframes;
+  }
+
+  // Initially almost motionless (most of the DURATION covers only a sliver
+  // of the DISTANCE), then a dramatic accelerating rush over the final
+  // fraction, converging with the other VACUUM cards on the same focal
+  // point while shrinking in step - what makes a Black Hole win read as
+  // "everything getting sucked into one spot," not "cards flying off in
+  // random directions that happen to share a target."
+  function createVacuumKeyframes(plan, viewport, startRect, focalPoint) {
+    const cx = startRect.left + startRect.width / 2;
+    const cy = startRect.top + startRect.height / 2;
+    const targetX = focalPoint ? focalPoint.xFrac * viewport.width : viewport.width / 2;
+    const targetY = focalPoint ? focalPoint.yFrac * viewport.height : viewport.height / 2;
+    const dxEnd = (targetX - cx) * plan.distanceFactor;
+    const dyEnd = (targetY - cy) * plan.distanceFactor;
+    const rotEnd = plan.rotationTurns * 360;
+    return [
+      kf(0, 0, 0, 'z', 1, 1, 0),
+      kf(dxEnd * 0.05, dyEnd * 0.05, rotEnd * 0.08, 'z', 0.94, 1, 0.55),
+      kf(dxEnd * 0.3, dyEnd * 0.3, rotEnd * 0.35, 'z', 0.6, 1, 0.8),
+      kf(dxEnd, dyEnd, rotEnd, 'z', plan.scaleTarget, 0, 1),
+    ];
+  }
+
+  // The calm counterpart to FRISBEE: a steady, low-energy glide in one
+  // consistent direction with only a slight, constant tilt (never a spin)
+  // and no scale change - keyframes are evenly spaced (no front/back-loaded
+  // easing baked into their placement) so the motion itself reads as
+  // constant-speed sliding, not acceleration or deceleration. Powers
+  // tableTip ("someone tipped the table") and shows up as gravity's rare
+  // calm rebel too.
+  function createSlideKeyframes(plan, viewport) {
+    const rad = (plan.exitAngleDeg ?? 90) * Math.PI / 180;
+    const dist = viewport.diagonal * (0.9 + plan.distanceFactor * 0.55);
+    const dxEnd = Math.cos(rad) * dist;
+    const dyEnd = Math.sin(rad) * dist;
+    const rotEnd = plan.rotationTurns * 360;
+    return [
+      kf(0, 0, 0, 'z', 1, undefined, 0),
+      kf(dxEnd * 0.35, dyEnd * 0.35, rotEnd * 0.4, 'z', 1, undefined, 0.35),
+      kf(dxEnd * 0.7, dyEnd * 0.7, rotEnd * 0.75, 'z', 1, undefined, 0.7),
+      kf(dxEnd, dyEnd, rotEnd, 'z', 1, undefined, 1),
+    ];
+  }
+
+  const CELEBRATION_KEYFRAME_GENERATORS = {
+    FALL: createFallKeyframes,
+    FRISBEE: createFrisbeeKeyframes,
+    LAUNCH: createLaunchKeyframes,
+    HELICOPTER: createHelicopterKeyframes,
+    POP: createPopKeyframes,
+    SHRINK: createShrinkKeyframes,
+    FLIP: createFlipKeyframes,
+    TUMBLE: createTumbleKeyframes,
+    SPIRAL: createSpiralKeyframes,
+    VACUUM: createVacuumKeyframes,
+    SLIDE: createSlideKeyframes,
+  };
+
+  // The only place a card plan's normalized (angle/distance-factor/turns)
+  // values become real pixels - viewport is captured once by the caller,
+  // never re-read mid-animation. Only transform/opacity are ever animated
+  // (no top/left/width), and only via the Web Animations API - several
+  // behaviors (SPIRAL's real multi-turn curve, VACUUM's time-weighted
+  // convergence) need genuine multi-keyframe paths a plain CSS transition
+  // can't express; everything still stays GPU-compositable, same cost class
+  // as the rest of the app's transition-based glides.
+  function animateCelebrationCard(el, plan, viewport, startRect, focalPoint) {
+    const generator = CELEBRATION_KEYFRAME_GENERATORS[plan.behavior];
+    const keyframes = generator(plan, viewport, startRect, focalPoint);
+    el.animate(keyframes, { duration: plan.durationMs, delay: plan.delayMs, easing: plan.easing, fill: 'forwards' });
+  }
+
+  // Captures each foundation pile's REAL top card geometry (not the pile
+  // container's - its own border inset means the two rects don't match,
+  // which is exactly what made the old clone appear to jump) and builds
+  // every clone from that single source of truth: the top card (depthFromTop
+  // 0) gets zero offset, so it lands pixel-for-pixel where the real card
+  // was; cards further down the pile (never individually rendered - only
+  // the top card of a foundation ever has a real DOM element) get a small
+  // offset scaled by *how far they are from the top*, for a "thick deck"
+  // look without displacing the one card that's actually visible.
+  //
+  // Two-frame handoff: clones are built and positioned while the real top
+  // cards are STILL visible; only after that's had a chance to paint
+  // (double rAF) do the real cards hide and the animations actually start -
+  // there's never a frame where the swap itself is visible.
+  function createVictoryCelebration(personality) {
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    viewport.diagonal = Math.hypot(viewport.width, viewport.height);
+
+    const plans = assignCardBehaviors(state.foundations, personality);
+    const plansById = new Map(plans.map(p => [p.cardId, p]));
+
+    celebrationLayer.innerHTML = ''; // defensive - should already be empty
+
+    const realTopEls = [];
+    const built = [];
+
+    state.foundations.forEach((pile) => {
+      if (!pile.length) return;
+      const topCard = pile[pile.length - 1];
+      const topEl = document.querySelector(`.card[data-id="${topCard.id}"]`);
+      if (!topEl) return;
+      const topRect = topEl.getBoundingClientRect(); // the real, single source of truth for this pile's position
+      realTopEls.push(topEl);
+
+      pile.forEach((card) => {
+        const plan = plansById.get(card.id);
+        if (!plan) return;
+
+        const offsetPx = Math.min(plan.depthFromTop, 8) * 0.6;
+        const startRect = {
+          left: topRect.left - offsetPx,
+          top: topRect.top + offsetPx,
+          width: topRect.width,
+          height: topRect.height,
+        };
+
+        const wrapper = document.createElement('div');
+        wrapper.className = plan.needsPerspective ? 'celebration-card celebration-card--3d' : 'celebration-card';
+        wrapper.style.left = `${startRect.left}px`;
+        wrapper.style.top = `${startRect.top}px`;
+        wrapper.style.width = `${startRect.width}px`;
+        wrapper.style.height = `${startRect.height}px`;
+        wrapper.style.zIndex = String(1000 + plan.stackOffsetIndex); // higher = shallower = painted in front, matching a real stack
+
+        const inner = makeCardEl(card, true);
+        inner.classList.add('celebration-card-inner');
+        wrapper.appendChild(inner);
+        celebrationLayer.appendChild(wrapper);
+
+        built.push({ plan, el: inner, startRect });
+      });
+    });
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        realTopEls.forEach(el => { el.style.visibility = 'hidden'; });
+        built.forEach(({ plan, el, startRect }) => {
+          animateCelebrationCard(el, plan, viewport, startRect, personality.focalPoint);
+        });
+      });
+    });
+
+    const maxFinishMs = plans.reduce((max, plan) => Math.max(max, plan.delayMs + plan.durationMs), 0);
+    const messageDelayMs = Math.max(0, maxFinishMs + MESSAGE_REVEAL_BUFFER_MS);
+    celebrationTimer = setTimeout(() => showVictoryMessage(personality.messageEntrance), messageDelayMs);
+  }
+
+  // Reveals the on-felt win message: no modal, just the headline/button/
+  // stats appearing over the now-empty board. pendingWinResult carries the
+  // exact moveCount/elapsed-time snapshot from the instant checkWin() fired,
+  // so the displayed stats can never drift from what was true at the
+  // winning move itself.
+  function showVictoryMessage(entrance) {
+    celebrationLayer.innerHTML = '';
+    winHeadline.textContent = pickHeadline();
+    const result = pendingWinResult || { moveCount, secs: 0 };
+    const timeText = `${Math.floor(result.secs / 60)}:${(result.secs % 60).toString().padStart(2, '0')}`;
+    winStats.textContent = `${timeText} · ${result.moveCount} moves`;
+    winMessage.className = `win-enter-${entrance}`; // replaces "hidden" outright - single source of truth for this element's visual state
+  }
+
+  // Idempotent, DOM/timer-only - never touches button/toolbar state (that's
+  // newGame/restart/undo's job, since the toolbar should stay locked through
+  // the whole won state, not just the celebration's own duration - see
+  // checkWin). Safe to call even when nothing is showing. Called at the top
+  // of newGame()/restart()/undo() so every path back into a live game tears
+  // any in-progress or already-finished celebration down cleanly.
+  function cleanupVictoryCelebration() {
+    if (celebrationTimer) {
+      clearTimeout(celebrationTimer);
+      celebrationTimer = null;
+    }
+    celebrationLayer.innerHTML = '';
+    winMessage.className = 'hidden';
+    document.querySelectorAll('#foundations .card').forEach(el => { el.style.visibility = ''; });
   }
 
   // ---------- dragging ----------
@@ -1906,6 +2406,8 @@ import { shuffle } from './shuffle.js';
     settingsOverlay.classList.remove('hidden');
   });
   settingsCloseBtn.addEventListener('click', () => settingsOverlay.classList.add('hidden'));
+  versionLink.textContent = `v${APP_VERSION}`;
+  versionLink.addEventListener('click', forceWinForTesting);
   settingsOverlay.addEventListener('click', e => {
     if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
   });

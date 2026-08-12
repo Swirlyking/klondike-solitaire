@@ -715,35 +715,183 @@ body {
   transform-origin: bottom center;
 }
 
-#win-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.65);
+/* Feedback: a secondary settings action, not a gameplay preference - set
+   off with its own divider (same rule the Deal Style/Card Back sections
+   already get between each other) rather than living inside a
+   .settings-section, and deliberately quieter than .settings-option
+   (no gold selected-state, no hover scale-up) so it never reads as one
+   more choice to make. */
+#settings-secondary {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255,255,255,0.12);
+}
+
+.settings-feedback-link {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
-  justify-content: center;
-  z-index: 2000;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.05);
+  color: #cde;
+  font-size: 13px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
 }
-#win-overlay.hidden { display: none; }
+.settings-feedback-link:hover {
+  background: rgba(255,255,255,0.1);
+  border-color: rgba(255,255,255,0.24);
+}
+.settings-feedback-link:active { background: rgba(255,255,255,0.14); }
+.settings-feedback-link:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+.settings-feedback-link svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.settings-feedback-link-label { flex: 1; }
+.settings-feedback-link-arrow {
+  opacity: 0.6;
+  font-size: 14px;
+}
 
-#win-card {
-  background: #133;
-  border: 1px solid var(--gold);
-  border-radius: 12px;
-  padding: 32px 40px;
+/* Looks like inert small print, not a control - no pointer cursor, no hover
+   feedback, no button chrome. That's the "hidden" part; it's still a real,
+   focusable <button> underneath for keyboard/screen-reader users. */
+.settings-version {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 4px 0 0;
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.32);
+  font-size: 11px;
   text-align: center;
+  cursor: default;
 }
-#win-card h2 { color: var(--gold); margin: 0 0 8px; }
-#win-card button {
-  margin-top: 16px;
+.settings-version:focus-visible {
+  outline: 1px solid rgba(255,255,255,0.4);
+  outline-offset: 2px;
+}
+
+/* Deliberately no scrim, no boxed card - this sits directly on the visible
+   green felt once the celebration's cards have cleared. The cards are the
+   show; this is the after-credits, kept quiet by comparison. */
+#win-message {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  text-align: center;
+  padding: 24px;
+}
+#win-message.hidden { display: none; }
+
+#winHeadline {
+  margin: 0;
+  color: var(--gold);
+  font-size: clamp(40px, 10vw, 72px);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-shadow: 0 3px 14px rgba(0,0,0,0.55), 0 1px 0 rgba(0,0,0,0.3);
+}
+
+#winNewGameBtn {
   background: var(--gold);
   border: none;
-  color: #222;
-  font-weight: 600;
-  padding: 8px 18px;
-  border-radius: 6px;
+  color: #1a2e22;
+  font-weight: 700;
+  font-size: 16px;
+  padding: 12px 28px;
+  border-radius: 8px;
   cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  transition: filter 0.15s, transform 0.15s;
 }
+#winNewGameBtn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+#winNewGameBtn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+
+#win-stats {
+  margin: 0;
+  color: rgba(255,255,255,0.75);
+  font-size: 14px;
+  text-shadow: 0 1px 6px rgba(0,0,0,0.4);
+}
+
+/* Win-message entrances: five subtle, quick, single-shot treatments -
+   script.js picks one per win (see victory.js's messageEntrance) and adds
+   the matching class to #win-message. All five land at the same at-rest
+   state (opacity:1, transform:none), just via a different path in. */
+@keyframes win-enter-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes win-enter-scale-up {
+  from { opacity: 0; transform: scale(0.85); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes win-enter-drop-settle {
+  from { opacity: 0; transform: translateY(-28px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes win-enter-bounce {
+  0% { opacity: 0; transform: scale(0.7); }
+  60% { opacity: 1; transform: scale(1.06); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes win-enter-rotate-straighten {
+  from { opacity: 0; transform: rotate(-6deg) scale(0.92); }
+  to { opacity: 1; transform: rotate(0deg) scale(1); }
+}
+.win-enter-fade { animation: win-enter-fade 420ms var(--ease-out-smooth) both; }
+.win-enter-scaleUp { animation: win-enter-scale-up 420ms var(--ease-out-smooth) both; }
+.win-enter-dropSettle { animation: win-enter-drop-settle 480ms var(--ease-out-smooth) both; }
+.win-enter-bounce { animation: win-enter-bounce 520ms var(--ease-out-smooth) both; }
+.win-enter-rotateStraighten { animation: win-enter-rotate-straighten 460ms var(--ease-out-smooth) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .win-enter-fade, .win-enter-scaleUp, .win-enter-dropSettle, .win-enter-bounce, .win-enter-rotateStraighten {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Win-celebration clone cards - own layer, own z-index tier (above
+   #drag-layer's 1000, below #win-message's 2000): see script.js's
+   createVictoryCelebration. Wrapper/inner split mirrors .drag-ghost/
+   .drag-visual exactly - position captured once into the (untouched)
+   wrapper, every animated property lives on the inner .card element via
+   the Web Animations API. perspective/preserve-3d are only added (via
+   .celebration-card--3d) for cards whose assigned behavior actually
+   rotates in 3D - cheaper to composite for the other, purely-2D cards. */
+#celebration-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1100;
+}
+.celebration-card {
+  position: fixed;
+  pointer-events: none;
+}
+.celebration-card--3d { perspective: 900px; }
+.celebration-card-inner { transform-origin: 50% 50%; }
+.celebration-card--3d .celebration-card-inner { transform-style: preserve-3d; }
 
 #confirm-overlay {
   position: fixed;
