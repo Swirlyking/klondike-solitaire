@@ -418,6 +418,23 @@ body {
   -webkit-touch-callout: none; /* suppress the long-press save/copy menu on the card image */
 }
 
+/* A click/tap that can't become a move (see bounceCard in script.js) - a
+   quick, small settle-and-recoil rather than a shake, so it reads as "got
+   it, nothing to do" rather than "error". Individual scale/translate
+   properties (not the transform shorthand) match .pile's own convention
+   just above, and stay clear of top/left, which is how tableau cards are
+   actually positioned. */
+@keyframes card-touch-bounce {
+  0% { scale: 1; translate: 0 0; }
+  35% { scale: 0.96; translate: 0 3px; }
+  65% { scale: 1.02; translate: 0 -1.5px; }
+  100% { scale: 1; translate: 0 0; }
+}
+.card.touch-bounce { animation: card-touch-bounce 260ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .card.touch-bounce { animation: none; }
+}
+
 .card img {
   display: block;
   width: 100%;
@@ -784,6 +801,64 @@ body {
   outline-offset: 2px;
 }
 
+/* Stats: one level "into" Settings (see index.html/script.js) - same
+   overlay/card shell as #settings-overlay/#settings-card, just its own ids
+   since both exist in the DOM simultaneously. */
+#stats-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+#stats-overlay.hidden { display: none; }
+
+#stats-card {
+  background: #133;
+  border: 1px solid var(--gold);
+  border-radius: 12px;
+  padding: 24px 28px 28px;
+  width: min(90vw, 380px);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+#stats-mode-toggle {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+/* .settings-option--stack sizes for a preview image above a label (see
+   Deal Style in Settings); these are plain text buttons, so let them size
+   to their row instead of that fixed tile height. */
+#stats-mode-toggle .settings-option--stack {
+  width: auto;
+  height: auto;
+  flex: 1;
+  padding: 10px 0;
+}
+
+.stats-row + .stats-row {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,0.12);
+}
+.stats-row-label {
+  color: #cde;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 4px;
+}
+.stats-row-value {
+  color: var(--gold);
+  font-size: 22px;
+  font-weight: 700;
+}
+
 /* Deliberately no scrim, no boxed card - this sits directly on the visible
    green felt once the celebration's cards have cleared. The cards are the
    show; this is the after-credits, kept quiet by comparison. */
@@ -801,6 +876,14 @@ body {
 }
 #win-message.hidden { display: none; }
 
+/* Emphasis hierarchy top to bottom: winEmoji (small accent) < winRecords
+   (smaller still, quietest) < winResultLine (prominent) < winHeadline
+   (largest/strongest) - see script.js's showVictoryMessage. */
+#winEmoji {
+  font-size: clamp(22px, 5vw, 30px);
+  line-height: 1;
+}
+
 #winHeadline {
   margin: 0;
   color: var(--gold);
@@ -808,6 +891,33 @@ body {
   font-weight: 800;
   letter-spacing: 0.02em;
   text-shadow: 0 3px 14px rgba(0,0,0,0.55), 0 1px 0 rgba(0,0,0,0.3);
+}
+
+#winResultLine {
+  margin: 0;
+  color: #f3ead2;
+  font-size: clamp(18px, 4vw, 22px);
+  font-weight: 600;
+  text-shadow: 0 1px 8px rgba(0,0,0,0.45);
+}
+
+/* The two record lines sit close together as one visual unit (tight own
+   gap), separate from #win-message's own 18px gap around the whole group. */
+#winRecords {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#winRecords.hidden { display: none; }
+#winRecordTime, #winRecordMoves {
+  margin: 0;
+  color: rgba(255,255,255,0.7);
+  font-size: 14px;
+  text-shadow: 0 1px 6px rgba(0,0,0,0.4);
+}
+#winRecordTime.win-record-trophy, #winRecordMoves.win-record-trophy {
+  color: var(--gold);
+  font-weight: 700;
 }
 
 #winNewGameBtn {
@@ -824,13 +934,6 @@ body {
 }
 #winNewGameBtn:hover { filter: brightness(1.08); transform: translateY(-1px); }
 #winNewGameBtn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
-
-#win-stats {
-  margin: 0;
-  color: rgba(255,255,255,0.75);
-  font-size: 14px;
-  text-shadow: 0 1px 6px rgba(0,0,0,0.4);
-}
 
 /* Win-message entrances: five subtle, quick, single-shot treatments -
    script.js picks one per win (see victory.js's messageEntrance) and adds

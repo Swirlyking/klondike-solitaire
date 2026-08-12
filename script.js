@@ -19,6 +19,7 @@ import {
 import { getPreference, setPreference } from './preferences.js';
 import { shuffle } from './shuffle.js';
 import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from './victory.js';
+import { recordWin, getStatsForMode, applyWin } from './stats.js';
 
 (() => {
   const SUITS = [
@@ -61,7 +62,7 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
   // to track features, it's to let you glance at Settings on any given
   // tab/device and immediately tell whether it's running the build you just
   // pushed or a stale cached one from before.
-  const APP_VERSION = '2026.08.12.0956';
+  const APP_VERSION = '2026.08.12.1129';
 
   // Cache-buster on every card image URL, not a build/deploy version -
   // bump this by hand whenever the card art itself changes. It's what
@@ -122,6 +123,9 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
         { id: 'blue', label: 'Blue', previewSrc: () => backImageSrc('blue') },
         { id: 'green', label: 'Green', previewSrc: () => backImageSrc('green') },
         { id: 'purple', label: 'Purple', previewSrc: () => backImageSrc('purple') },
+        { id: 'eye', label: 'Eye', previewSrc: () => backImageSrc('eye') },
+        { id: 'flowers', label: 'Flowers', previewSrc: () => backImageSrc('flowers') },
+        { id: 'rabbit', label: 'Rabbit', previewSrc: () => backImageSrc('rabbit') },
       ],
     },
     {
@@ -162,6 +166,13 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
   // stock click with nothing to keep in sync.
   function getDrawCount() {
     return parseInt(currentPreferenceOption(findPreferenceSection('drawCount')).id, 10);
+  }
+
+  // The key stats.js stores each mode's records under - 'draw1'/'draw3',
+  // read live off the same preference getDrawCount() reads, so the two
+  // never drift out of sync with each other.
+  function currentDrawModeKey() {
+    return `draw${getDrawCount()}`;
   }
 
   // ---------- background image warming ----------
@@ -406,6 +417,12 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
   // be by the time the message actually renders.
   let pendingWinResult = null;
   let celebrationTimer = null;
+  // Set by forceWinForTesting right before it fabricates a solved board, so
+  // the win it triggers (through the exact same checkWin() path a real win
+  // uses) still locks the toolbar and plays the real celebration, but
+  // doesn't inflate the player's actual stats with a result that took zero
+  // real moves to reach. Cleared the instant checkWin() reads it.
+  let skipNextStatsRecord = false;
   // The win message reveals this long relative to the *actual* last card's
   // landing time (computed per-run from the real plan, not
   // personality.chaosDurationMs - that value is only a soft envelope
@@ -435,8 +452,12 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
   const newGameBtn = document.getElementById('newGameBtn');
   const restartBtn = document.getElementById('restartBtn');
   const winMessage = document.getElementById('win-message');
+  const winEmoji = document.getElementById('winEmoji');
   const winHeadline = document.getElementById('winHeadline');
-  const winStats = document.getElementById('win-stats');
+  const winResultLine = document.getElementById('winResultLine');
+  const winRecordTime = document.getElementById('winRecordTime');
+  const winRecordMoves = document.getElementById('winRecordMoves');
+  const winRecords = document.getElementById('winRecords');
   const winNewGameBtn = document.getElementById('winNewGameBtn');
   const celebrationLayer = document.getElementById('celebration-layer');
   const settingsBtn = document.getElementById('settingsBtn');
@@ -444,6 +465,12 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
   const settingsCloseBtn = document.getElementById('settingsCloseBtn');
   const settingsSections = document.getElementById('settings-sections');
   const versionLink = document.getElementById('versionLink');
+  const statsLink = document.getElementById('statsLink');
+  const statsOverlay = document.getElementById('stats-overlay');
+  const statsCloseBtn = document.getElementById('statsCloseBtn');
+  const statsDraw1Btn = document.getElementById('statsDraw1Btn');
+  const statsDraw3Btn = document.getElementById('statsDraw3Btn');
+  const statsRows = document.getElementById('stats-rows');
   const confirmOverlay = document.getElementById('confirm-overlay');
   const confirmTitle = document.getElementById('confirm-title');
   const confirmMessage = document.getElementById('confirm-message');
@@ -866,12 +893,21 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
     }
   }
 
+  // The one place elapsed seconds become an "m:ss" string - used by the
+  // header timer, the victory screen, and the Stats panel, so all three
+  // can never disagree on formatting. No hour rollover (matches this
+  // function's own prior inline behavior in both places it used to be
+  // duplicated) - a solitaire game realistically never runs that long.
+  function formatTime(totalSeconds) {
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  }
+
   function tick() {
     if (won || !startTime) return;
     const secs = Math.floor((Date.now() - startTime) / 1000);
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    timerEl.textContent = `Time: ${m}:${s.toString().padStart(2, '0')}`;
+    timerEl.textContent = `Time: ${formatTime(secs)}`;
   }
 
   // ---------- rendering ----------
@@ -1543,6 +1579,18 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
     glideGhostsTo(targetGhosts, targetOriginRects, destForTargetStack, MOVE_GLIDE_MS, revealTarget);
   }
 
+  // A small "acknowledged, but nowhere to go" nudge for a click/tap that
+  // can't turn into a move - re-triggerable on repeat clicks (forces a
+  // reflow before re-adding the class, since re-adding an already-present
+  // class is a no-op and wouldn't restart a CSS animation on its own).
+  function bounceCard(card) {
+    const el = document.querySelector(`.card[data-id="${card.id}"]`);
+    if (!el) return;
+    el.classList.remove('touch-bounce');
+    void el.offsetWidth;
+    el.classList.add('touch-bounce');
+  }
+
   // Click-to-move: a single click on a movable exposed card sends it to its
   // next legal destination (see resolveClickDestination in game-logic.js
   // for the exact priority order). Reuses the same ghost/glide machinery as
@@ -1550,13 +1598,13 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
   function tryClickMove(card, source, sourceIndex) {
     if (dragCtx) return;
     const stack = getStackFrom(state, source, sourceIndex, card);
-    if (!stack.length) return;
+    if (!stack.length) { bounceCard(card); return; }
     const lead = stack[0];
     const lastTableauDest = source === 'tableau' && tableauClickMemory && tableauClickMemory.cardId === lead.id
       ? tableauClickMemory.destIndex
       : null;
     const dest = resolveClickDestination(state, lead, source, sourceIndex, stack.length, lastTableauDest);
-    if (!dest) return;
+    if (!dest) { bounceCard(lead); return; }
     executeClickMove(stack, source, sourceIndex, dest.type, dest.index);
   }
 
@@ -1612,6 +1660,7 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
       }
       return pile;
     });
+    skipNextStatsRecord = true; // this "win" took zero real moves - see the flag's own declaration
     render();
   }
 
@@ -1627,7 +1676,21 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
     if (total === 52 && !won) {
       won = true;
       const secs = Math.floor((Date.now() - startTime) / 1000);
-      pendingWinResult = { moveCount, secs };
+      // recordWin() lives on the same guarded `!won` branch that already
+      // guarantees this whole block runs exactly once per game, no matter
+      // how many times render()/checkWin() get called afterward - the same
+      // guarantee that already prevents the celebration itself from
+      // double-firing, reused here rather than a second ad-hoc guard.
+      // forceWinForTesting's fabricated win still gets a preview via the
+      // same pure applyWin() the real recordWin() is built on - it just
+      // never persists, so the easter egg shows an honest preview of what
+      // a real win would look like without inflating real stats.
+      const drawModeKey = currentDrawModeKey();
+      const statsResult = skipNextStatsRecord
+        ? applyWin(getStatsForMode(drawModeKey), secs, moveCount)
+        : recordWin(drawModeKey, secs, moveCount);
+      skipNextStatsRecord = false;
+      pendingWinResult = { moveCount, secs, statsResult };
       setAutoFinishControlsDisabled(true);
 
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2028,12 +2091,42 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
   // exact moveCount/elapsed-time snapshot from the instant checkWin() fired,
   // so the displayed stats can never drift from what was true at the
   // winning move itself.
+  // Renders one record row: an ordinary "Fastest: 2:11"-style readout, or -
+  // if this specific win just broke that specific record - a trophy line
+  // instead. Never both for the same record. formattedRecordValue is
+  // already-formatted text (formatTime()'s output, or a plain move count).
+  function renderRecordRow(el, isNewRecord, trophyText, ordinaryLabel, formattedRecordValue) {
+    el.textContent = isNewRecord ? trophyText : `${ordinaryLabel}: ${formattedRecordValue}`;
+    el.classList.toggle('win-record-trophy', isNewRecord);
+  }
+
   function showVictoryMessage(entrance) {
     celebrationLayer.innerHTML = '';
-    winHeadline.textContent = pickHeadline();
-    const result = pendingWinResult || { moveCount, secs: 0 };
-    const timeText = `${Math.floor(result.secs / 60)}:${(result.secs % 60).toString().padStart(2, '0')}`;
-    winStats.textContent = `${timeText} · ${result.moveCount} moves`;
+    winEmoji.textContent = pickHeadline();
+    const result = pendingWinResult || { moveCount, secs: 0, statsResult: null };
+    winResultLine.textContent = `${formatTime(result.secs)} · ${result.moveCount} moves`;
+
+    const stats = result.statsResult;
+    if (stats) {
+      winHeadline.textContent = `WIN #${stats.winNumber}`;
+      // Win #1 has nothing yet to compare against - this game's own result
+      // IS the new baseline, so showing it again as a "record" line right
+      // below the result line would just be a redundant echo.
+      const showRecords = stats.winNumber > 1;
+      winRecords.classList.toggle('hidden', !showRecords);
+      if (showRecords) {
+        renderRecordRow(winRecordTime, stats.isNewFastest, '🏆 NEW FASTEST TIME', 'Fastest', formatTime(stats.stats.fastestTimeSeconds));
+        renderRecordRow(winRecordMoves, stats.isNewFewestMoves, '🏆 NEW FEWEST MOVES', 'Fewest moves', stats.stats.fewestMoves);
+      }
+    } else {
+      // Defensive fallback only - checkWin() always produces a statsResult
+      // (a real recordWin() or, for the forceWinForTesting preview path, an
+      // unsaved applyWin()); this just keeps the screen sane if it's ever
+      // reached some other way.
+      winHeadline.textContent = '';
+      winRecords.classList.add('hidden');
+    }
+
     winMessage.className = `win-enter-${entrance}`; // replaces "hidden" outright - single source of truth for this element's visual state
   }
 
@@ -2442,6 +2535,60 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
   settingsOverlay.addEventListener('click', e => {
     if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
   });
+
+  // ---------- stats panel ----------
+
+  function renderStatRow(label, value) {
+    const row = document.createElement('div');
+    row.className = 'stats-row';
+    const labelEl = document.createElement('div');
+    labelEl.className = 'stats-row-label';
+    labelEl.textContent = label;
+    const valueEl = document.createElement('div');
+    valueEl.className = 'stats-row-value';
+    valueEl.textContent = value;
+    row.appendChild(labelEl);
+    row.appendChild(valueEl);
+    return row;
+  }
+
+  // modeKey is purely a view filter here - selecting Draw 1 while playing
+  // a Draw 3 game (or vice versa) never touches the live drawCount
+  // preference, only which stored records this screen displays. Reads
+  // straight from stats.js's own API (getStatsForMode), never raw
+  // localStorage and never recomputes records itself.
+  function renderStatsPanel(modeKey) {
+    statsDraw1Btn.classList.toggle('selected', modeKey === 'draw1');
+    statsDraw3Btn.classList.toggle('selected', modeKey === 'draw3');
+
+    const modeLabel = modeKey === 'draw1' ? 'Draw 1' : 'Draw 3';
+    const stats = getStatsForMode(modeKey);
+
+    statsRows.innerHTML = '';
+    statsRows.appendChild(renderStatRow(`${modeLabel} Wins`, String(stats.wins)));
+    statsRows.appendChild(renderStatRow('Fastest Time', stats.fastestTimeSeconds != null ? formatTime(stats.fastestTimeSeconds) : '—'));
+    statsRows.appendChild(renderStatRow('Fewest Moves', stats.fewestMoves != null ? String(stats.fewestMoves) : '—'));
+    statsRows.appendChild(renderStatRow('Last Win', stats.lastWin ? `${formatTime(stats.lastWin.timeSeconds)} · ${stats.lastWin.moves} moves` : '—'));
+  }
+
+  // One level "into" Settings, not a separate destination - see index.html.
+  // Opens on whichever mode is currently selected in Settings; from there
+  // the two mode buttons are a pure local view toggle (see renderStatsPanel).
+  statsLink.addEventListener('click', () => {
+    settingsOverlay.classList.add('hidden');
+    renderStatsPanel(currentDrawModeKey());
+    statsOverlay.classList.remove('hidden');
+  });
+  function closeStatsPanel() {
+    statsOverlay.classList.add('hidden');
+    settingsOverlay.classList.remove('hidden');
+  }
+  statsCloseBtn.addEventListener('click', closeStatsPanel);
+  statsOverlay.addEventListener('click', e => {
+    if (e.target === statsOverlay) closeStatsPanel();
+  });
+  statsDraw1Btn.addEventListener('click', () => renderStatsPanel('draw1'));
+  statsDraw3Btn.addEventListener('click', () => renderStatsPanel('draw3'));
 
   // ---------- controls ----------
 

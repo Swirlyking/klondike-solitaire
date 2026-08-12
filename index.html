@@ -88,6 +88,13 @@
       </div>
       <div id="settings-sections"></div>
       <div id="settings-secondary">
+        <!-- Opens #stats-overlay (hides this panel, shows that one - see
+             script.js). Plain in-app navigation, so a "›" rather than
+             Feedback's external-link arrow below. -->
+        <button type="button" id="statsLink" class="settings-feedback-link" aria-label="View your stats">
+          <span class="settings-feedback-link-label">Stats</span>
+          <span class="settings-feedback-link-arrow" aria-hidden="true">&#8250;</span>
+        </button>
         <!-- Message-square icon: Lucide (ISC license), same icon set as
              Undo/Hint above. A plain external link (not a JS click handler)
              so opening it can never touch this page's own game state - the
@@ -108,15 +115,45 @@
     </div>
   </div>
 
+  <!-- One level "into" Settings, not a separate top-level overlay - opening
+       it hides #settings-overlay and shows this instead; its own close
+       button reverses that (see script.js). Reuses #settings-card's exact
+       visual shell (same id intentionally NOT reused, since both need to
+       exist in the DOM at once - see style.css's shared #settings-card,
+       #stats-card rule). -->
+  <div id="stats-overlay" class="hidden">
+    <div id="stats-card">
+      <div id="settings-header">
+        <h2>Your Stats</h2>
+        <button id="statsCloseBtn" aria-label="Back to Settings">&times;</button>
+      </div>
+      <div id="stats-mode-toggle">
+        <button type="button" id="statsDraw1Btn" class="settings-option settings-option--stack">Draw 1</button>
+        <button type="button" id="statsDraw3Btn" class="settings-option settings-option--stack">Draw 3</button>
+      </div>
+      <div id="stats-rows"></div>
+    </div>
+  </div>
+
   <!-- No scrim, no boxed card - once the celebration's cards have cleared,
        this appears directly on the visible green felt. Entrance class is
-       applied by script.js (one of a few random, subtle treatments); the
-       headline text is set from victory.js's pickHeadline() so a future
-       array of alternates needs no markup change. -->
+       applied by script.js (one of a few random, subtle treatments).
+       Hierarchy (see script.js's showVictoryMessage): a small celebratory
+       emoji (from victory.js's pickHeadline(), the seam for future
+       alternates), the win number in the current draw mode (largest),
+       this game's result, then 0 or 2 record lines - each independently
+       either an ordinary "Fastest:"/"Fewest moves:" readout or a trophy
+       line if this win just broke that record. Never both for the same
+       record on the same line. -->
   <div id="win-message" class="hidden">
-    <h1 id="winHeadline">YOU WIN</h1>
+    <div id="winEmoji" aria-hidden="true"></div>
+    <h1 id="winHeadline"></h1>
+    <p id="winResultLine"></p>
+    <div id="winRecords">
+      <p id="winRecordTime"></p>
+      <p id="winRecordMoves"></p>
+    </div>
     <button id="winNewGameBtn">New Game</button>
-    <p id="win-stats"></p>
   </div>
 
   <div id="confirm-overlay" class="hidden">
