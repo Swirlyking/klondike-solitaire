@@ -56,8 +56,12 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
 
   // Displayed at the bottom of Settings (see versionLink) - no build step
   // generates this, so it's a plain hand-bumped constant, same convention
-  // as ASSET_VERSION just below.
-  const APP_VERSION = '1.0.0';
+  // as ASSET_VERSION just below. A timestamp (YYYY.MM.DD.HHmm, bumped to
+  // "now" on every change) rather than a semantic version - the point isn't
+  // to track features, it's to let you glance at Settings on any given
+  // tab/device and immediately tell whether it's running the build you just
+  // pushed or a stale cached one from before.
+  const APP_VERSION = '2026.08.12.0956';
 
   // Cache-buster on every card image URL, not a build/deploy version -
   // bump this by hand whenever the card art itself changes. It's what
@@ -66,7 +70,7 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
   // in a returning player's cache: a version bump mints new URLs, which
   // are cache misses by construction, while every URL that didn't change
   // keeps serving instantly from cache forever.
-  const ASSET_VERSION = 'v2';
+  const ASSET_VERSION = 'v3';
 
   function cardImageSrc(card) {
     const suit = SUITS.find(s => s.key === card.suit);
@@ -946,11 +950,27 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
     }
   }
 
-  function renderFoundation(i) {
+  // peekBehindTop: a foundation pile only ever has one real DOM element (its
+  // top card) - a plain render() can't "reveal the card underneath" once a
+  // drag lifts that element, because state.foundations hasn't actually
+  // changed yet (moves only commit on drop). This renders the *next* card
+  // down instead, as a static, non-interactive preview, so lifting a card
+  // off a foundation shows the pile continuing underneath it rather than
+  // going empty until the drop resolves. Only ever called mid-drag; a
+  // normal render() (peekBehindTop: false) always follows once the drag
+  // resolves, whether committed or cancelled.
+  function renderFoundation(i, { peekBehindTop = false } = {}) {
     const el = document.getElementById(`foundation-${i}`);
     el.innerHTML = '';
     el.dataset.placeholder = 'A'; // any Ace may start any slot — no suit is pinned to a position
     const pile = state.foundations[i];
+    if (peekBehindTop) {
+      if (pile.length < 2) return; // nothing left underneath - correctly empty
+      const cardEl = makeCardEl(pile[pile.length - 2], true);
+      cardEl.classList.add('not-draggable');
+      el.appendChild(cardEl);
+      return;
+    }
     if (pile.length) {
       const card = pile[pile.length - 1];
       const cardEl = makeCardEl(card, true);
@@ -2162,11 +2182,17 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
     if (dragCtx && dragCtx.pointerId !== e.pointerId) return;
     removeDragListeners();
     if (!dragCtx) return;
-    const { ghosts, originEls, hoverTarget, moved } = dragCtx;
+    const { ghosts, originEls, hoverTarget, moved, source, sourceIndex } = dragCtx;
     dragCtx = null;
     if (hoverTarget) hoverTarget.classList.remove('drop-target-active');
     ghosts.wrappers.forEach(w => w.remove());
-    if (moved) originEls.forEach(el => { el.style.visibility = ''; }); // unmoved: origin was never hidden
+    if (moved) {
+      // A foundation's origin element was replaced by the peek-render above,
+      // not just hidden - restoring visibility on it would be a no-op, so
+      // the real top card needs a proper re-render instead.
+      if (source === 'foundation') renderFoundation(sourceIndex);
+      else originEls.forEach(el => { el.style.visibility = ''; });
+    } // unmoved: origin was never hidden
   }
 
   function startDrag(e, card, source, sourceIndex) {
@@ -2231,6 +2257,7 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
       if (dist < DRAG_THRESHOLD_PX) return;
       dragCtx.moved = true;
       dragCtx.originEls.forEach(el => { el.style.visibility = 'hidden'; });
+      if (source === 'foundation') renderFoundation(sourceIndex, { peekBehindTop: true });
       ghosts.visuals.forEach(v => v.classList.add('lifted'));
     }
 
@@ -2305,7 +2332,11 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
       const revealDest = hideDestElements(stack, target, targetIndex, previousTopCard);
       glideGhostsTo(ghosts, originRects, destRects, MOVE_GLIDE_MS, revealDest);
     } else {
-      originEls.forEach(el => { el.style.visibility = ''; });
+      // See onDragCancel's comment: a foundation's origin element was
+      // replaced by the peek-render, not just hidden, so it needs a real
+      // re-render rather than a visibility restore.
+      if (source === 'foundation') renderFoundation(sourceIndex);
+      else originEls.forEach(el => { el.style.visibility = ''; });
       glideGhostsTo(ghosts, originRects, originRects, MOVE_GLIDE_MS);
     }
   }

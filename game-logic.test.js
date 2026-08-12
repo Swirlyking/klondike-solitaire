@@ -1247,14 +1247,15 @@ test('isKingColumnSwap: two King-led columns with no empty column anywhere -> sw
   assert.equal(isKingColumnSwap(s, stack, 'tableau', 0, 1), true);
 });
 
-test('isKingColumnSwap: same two King-led columns, but an empty column exists -> no swap (normal rules apply)', () => {
+test('isKingColumnSwap: same two King-led columns, still allowed even though empty columns exist elsewhere', () => {
   const s = emptyState();
   const kingA = card('spades', 13);
   s.tableau[0] = [kingA, card('hearts', 12), card('clubs', 11)];
   s.tableau[1] = [card('diamonds', 13), card('spades', 12)];
-  // tableau[2..6] left empty - a King has a real legal destination now
+  // tableau[2..6] left empty - legality is scoped to the two columns being
+  // dragged between, not the rest of the board (see isKingColumnSwap).
   const stack = getStackFrom(s, 'tableau', 0, kingA);
-  assert.equal(isKingColumnSwap(s, stack, 'tableau', 0, 1), false);
+  assert.equal(isKingColumnSwap(s, stack, 'tableau', 0, 1), true);
 });
 
 test('isKingColumnSwap: a non-King column dragged onto a King-led column -> no swap', () => {

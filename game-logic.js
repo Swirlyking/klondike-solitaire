@@ -484,17 +484,21 @@ export function applyMove(state, cards, source, sourceIndex, target, targetIndex
 }
 
 // A board-layout convenience, not a real Klondike move: two complete
-// King-led columns can trade positions when neither can otherwise go
-// anywhere (a King only ever legally lands on an empty column, so once
-// none exist, two King-based columns are permanently stuck relative to
-// each other without this). Deliberately never routed through
-// getLegalMoves/MoveCategory - see the swap's caller in script.js for why
-// keeping it a sibling predicate (alongside canPlaceOnFoundation/
-// canPlaceOnTableau) rather than a new move category matters: it must
-// never surface as a Hint, count toward "moves available", or be offered
-// to Auto Finish, and a shared-list entry would need active exclusion in
-// every one of those readers to guarantee that. Kept out of the list
-// entirely, it's excluded by construction instead.
+// King-led columns can always trade positions with each other. Deliberately
+// never routed through getLegalMoves/MoveCategory - see the swap's caller
+// in script.js for why keeping it a sibling predicate (alongside
+// canPlaceOnFoundation/canPlaceOnTableau) rather than a new move category
+// matters: it must never surface as a Hint, count toward "moves available",
+// or be offered to Auto Finish, and a shared-list entry would need active
+// exclusion in every one of those readers to guarantee that. Kept out of
+// the list entirely, it's excluded by construction instead.
+//
+// Deliberately does NOT require the rest of the board to be otherwise stuck
+// (e.g. "no empty column exists anywhere") - an earlier version gated the
+// swap on that, but it made the swap's own availability depend on a column
+// that has nothing to do with the two you're actually dragging between,
+// with no visual explanation when it silently failed. Legality here is
+// fully determined by the two columns involved, nothing else.
 //
 // A face-up King can never have another face-up card beneath it in the
 // same column - it only ever lands on an empty column or starts as a
@@ -514,9 +518,7 @@ export function isKingColumnSwap(state, stack, source, sourceIndex, targetIndex)
   const targetCol = state.tableau[targetIndex];
   if (!targetCol.length) return false; // empty target is the normal King move, not a swap
   const targetBase = targetCol.find(c => c.faceUp);
-  if (!targetBase || targetBase.rank !== 13) return false;
-
-  return state.tableau.every(col => col.length > 0); // only when no empty column exists anywhere
+  return !!targetBase && targetBase.rank === 13;
 }
 
 // Mutates state: exchanges the two tableau columns' full contents outright

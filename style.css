@@ -946,18 +946,22 @@ body {
   outline-offset: 2px;
 }
 
-/* Keep Playing: de-emphasized outline - still gold, just not the fill, so
-   it doesn't compete with the emphasized choice on the other button. */
-#confirmKeepBtn {
+/* Give Up / Shuffle Me a New Game: de-emphasized outline - still gold, just
+   not the fill, so it doesn't compete with the emphasized choice on the
+   other button. */
+#confirmGiveUpBtn {
   background: transparent;
   border: 1px solid rgba(217, 180, 92, 0.6);
   color: var(--gold);
 }
-#confirmKeepBtn:hover { background: rgba(217, 180, 92, 0.12); }
+#confirmGiveUpBtn:hover { background: rgba(217, 180, 92, 0.12); }
 
-/* Give Up / Shuffle Me a New Game: the emphasized, filled choice - same
-   gold-fill treatment as the win card's button. */
-#confirmGiveUpBtn {
+/* Keep Playing: the emphasized, filled choice - same gold-fill treatment as
+   the win card's button. DOM order puts this button last (see index.html),
+   which matters for the mobile column-reverse rule below: it shows the
+   *last* DOM child first/on top, so the emphasized choice stays prominent
+   on phones too, without a separate mobile-only override. */
+#confirmKeepBtn {
   background: var(--gold);
   border: none;
   color: #222;
