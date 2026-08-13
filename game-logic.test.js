@@ -19,6 +19,7 @@ import {
   autoFinishAvailable,
   rankMoves,
   getProgressingMoves,
+  nextAutoFinishMove,
   isKingColumnSwap,
   applyKingColumnSwap,
 } from './game-logic.js';
@@ -1120,6 +1121,55 @@ test('autoFinishAvailable: not available when stock is empty and everything is f
   s.tableau[0] = [card('clubs', 7)];
   s.tableau[1] = [card('spades', 9)];
   assert.equal(autoFinishAvailable(s), false);
+});
+
+test('nextAutoFinishMove: null once no foundation move remains', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('clubs', 7)];
+  assert.equal(nextAutoFinishMove(s), null);
+});
+
+test('nextAutoFinishMove: the only eligible card, regardless of which column it sits in', () => {
+  const s = emptyState();
+  s.foundations[2] = [card('clubs', 1)];
+  s.tableau[5] = [card('clubs', 2)]; // the only playable card, tucked in a late column
+  const move = nextAutoFinishMove(s);
+  assert.equal(move.category, MoveCategory.FOUNDATION_MOVE);
+  assert.equal(move.sourceIndex, 5);
+  assert.equal(move.card.rank, 2);
+});
+
+test('nextAutoFinishMove: among several simultaneously-eligible cards, always the lowest rank - not the leftmost column', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1), card('hearts', 2)]; // hearts needs a 3 next
+  s.foundations[1] = [card('clubs', 1)]; // clubs needs a 2 next
+  s.tableau[0] = [card('hearts', 3)]; // leftmost column - but rank 3, not the lowest eligible
+  s.tableau[4] = [card('clubs', 2)]; // later column - rank 2, the actually-lowest eligible card
+  const move = nextAutoFinishMove(s);
+  assert.equal(move.card.rank, 2);
+  assert.equal(move.sourceIndex, 4);
+});
+
+test('nextAutoFinishMove: a tie at the same rank (two suits both needing it right now) falls back to left-to-right column order', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)]; // hearts needs a 2
+  s.foundations[1] = [card('clubs', 1)]; // clubs needs a 2
+  s.tableau[5] = [card('clubs', 2)]; // later column
+  s.tableau[1] = [card('hearts', 2)]; // earlier column - should win the tie
+  const move = nextAutoFinishMove(s);
+  assert.equal(move.card.rank, 2);
+  assert.equal(move.sourceIndex, 1);
+});
+
+test('nextAutoFinishMove: a waste-sourced card participates in rank ordering exactly like a tableau one', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('hearts', 1)]; // hearts needs a 2
+  s.foundations[1] = [card('clubs', 1)]; // clubs needs a 2
+  s.waste = [card('hearts', 2)];
+  s.tableau[0] = [card('clubs', 3)]; // not yet eligible - clubs foundation is only at rank 1
+  const move = nextAutoFinishMove(s);
+  assert.equal(move.source, 'waste');
+  assert.equal(move.card.rank, 2);
 });
 
 test('Auto Finish: the found foundation move is identical regardless of draw count, since only the resulting waste/tableau position matters', () => {

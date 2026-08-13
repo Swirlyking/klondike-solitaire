@@ -336,6 +336,24 @@ export function rankMoves(state, moves) {
   return [...moves].sort((a, b) => movePriority(state, a) - movePriority(state, b));
 }
 
+// Auto Finish's own move-selection policy - a fifth, narrower layer, used
+// only by runAutoFinish. Among every currently legal foundation move,
+// always plays the lowest-rank card first (Aces, then 2s, then 3s...), so
+// all four foundations climb together in a readable, ascending order.
+// Deliberately not "leftmost tableau column with a playable top card" (the
+// naive alternative) - that jumps the source between whichever distant
+// columns happen to qualify at each instant, with no pattern a viewer can
+// follow, which is exactly what read as erratic. A tie (two different
+// suits both needing the same rank right now) falls back to
+// getLegalMoves' own left-to-right/waste-last order, via
+// Array.prototype.sort's guaranteed stability. Returns null once no
+// foundation move remains.
+export function nextAutoFinishMove(state) {
+  const candidates = getLegalMoves(state).filter(m => m.category === MoveCategory.FOUNDATION_MOVE);
+  if (!candidates.length) return null;
+  return [...candidates].sort((a, b) => a.card.rank - b.card.rank)[0];
+}
+
 // Given the current legal destinations (ascending) and the column this card
 // was sent to last time it was cycled, returns the next one: the smallest
 // legal index greater than lastUsed, or the leftmost again if lastUsed was

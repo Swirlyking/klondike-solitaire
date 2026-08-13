@@ -13,6 +13,7 @@ import {
   autoFinishAvailable,
   rankMoves,
   getProgressingMoves,
+  nextAutoFinishMove,
   isKingColumnSwap,
   applyKingColumnSwap,
 } from './game-logic.js';
@@ -785,7 +786,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   async function runAutoFinish() {
     let i = 0;
     while (!autoFinishStopRequested) {
-      const move = getLegalMoves(state).find(m => m.category === MoveCategory.FOUNDATION_MOVE);
+      const move = nextAutoFinishMove(state);
       if (!move) break;
       const stack = getStackFrom(state, move.source, move.sourceIndex, move.card);
       executeClickMove(stack, move.source, move.sourceIndex, 'foundation', move.targetIndex, { recordHistory: false });
