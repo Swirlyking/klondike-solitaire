@@ -146,6 +146,17 @@ body {
 .controls button:hover { background: rgba(255,255,255,0.18); }
 .controls button:disabled { opacity: 0.4; cursor: default; }
 
+#autoFinishBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+#autoFinishBtn svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
 /* Auto Finish's one-shot start flash - gold, gone in a single pass rather
    than looping, unlike .hint-highlight's continuous pulse below. */
 @keyframes auto-finish-flash {
@@ -154,6 +165,32 @@ body {
 }
 #autoFinishBtn.flash {
   animation: auto-finish-flash 260ms ease-out;
+}
+
+/* Auto Finish's persistent "this is actively happening" state - on for the
+   whole run, not just the instant it started (see .flash above, which
+   still plays its own one-shot pulse on top of this at the very start). A
+   vivid, glowing chartreuse rather than the app's usual gold, so a running
+   Auto Finish reads unmistakably differently from every other toolbar
+   state at a glance. */
+#autoFinishBtn.running {
+  background: rgba(198, 255, 61, 0.12);
+  border-color: #c6ff3d;
+  color: #c6ff3d;
+  animation: auto-finish-running-glow 1.4s ease-in-out infinite;
+}
+#autoFinishBtn.running:hover {
+  background: rgba(198, 255, 61, 0.18);
+}
+@keyframes auto-finish-running-glow {
+  0%, 100% { box-shadow: 0 0 6px 1px rgba(198, 255, 61, 0.5), 0 0 16px 3px rgba(198, 255, 61, 0.3); }
+  50% { box-shadow: 0 0 10px 2px rgba(198, 255, 61, 0.85), 0 0 26px 7px rgba(198, 255, 61, 0.55); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #autoFinishBtn.running {
+    animation: none;
+    box-shadow: 0 0 8px 1px rgba(198, 255, 61, 0.65), 0 0 20px 4px rgba(198, 255, 61, 0.4);
+  }
 }
 
 .controls button.icon-button {

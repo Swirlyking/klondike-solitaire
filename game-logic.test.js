@@ -22,6 +22,8 @@ import {
   nextAutoFinishMove,
   isKingColumnSwap,
   applyKingColumnSwap,
+  isKingLedColumn,
+  computeKingCascade,
 } from './game-logic.js';
 
 let nextId = 0;
@@ -1417,5 +1419,151 @@ test('a King-column swap situation produces zero legal moves for either column -
   assert.equal(autoFinishAvailable(s), false);
   // historyLength > 0 and not won: the only way needsAbandonConfirmation
   // could say true here is if it counted the swap as a real move - it must not.
+  assert.equal(needsAbandonConfirmation(s, 5, false), false);
+});
+
+// ---------- isKingLedColumn / computeKingCascade: tapping an empty column ----------
+
+test('isKingLedColumn: a clean King-led run counts', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('spades', 13), card('hearts', 12), card('clubs', 11)];
+  assert.equal(isKingLedColumn(s, 0), true);
+});
+
+test('isKingLedColumn: an empty column does not count', () => {
+  const s = emptyState();
+  assert.equal(isKingLedColumn(s, 0), false);
+});
+
+test('isKingLedColumn: a buried (face-down) King does not count', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('spades', 13, false), card('hearts', 9)];
+  assert.equal(isKingLedColumn(s, 0), false);
+});
+
+test('isKingLedColumn: a broken/partial sequence above the King does not count', () => {
+  const s = emptyState();
+  // King, Queen (legal), then a same-color card that breaks the alternating
+  // build - the exposed run is not actually one legal King-led cascade.
+  s.tableau[0] = [card('spades', 13), card('hearts', 12), card('diamonds', 11)];
+  assert.equal(isKingLedColumn(s, 0), false);
+});
+
+test('isKingLedColumn: still counts with face-down cards buried beneath the King', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('hearts', 4, false), card('spades', 13), card('hearts', 12)];
+  assert.equal(isKingLedColumn(s, 0), true);
+});
+
+test('isKingLedColumn: a lone King with nothing on top still counts', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('diamonds', 13)];
+  assert.equal(isKingLedColumn(s, 0), true);
+});
+
+test('computeKingCascade: one King column left of the tapped empty column moves right into it', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('spades', 13)];
+  s.tableau[1] = []; // tapped
+  assert.deepEqual(computeKingCascade(s, 1), [{ from: 0, to: 1 }]);
+});
+
+test('computeKingCascade: multiple King columns on the left chain rightward, nearest first', () => {
+  const s = emptyState();
+  s.tableau[1] = [card('spades', 13)];
+  s.tableau[3] = [card('hearts', 13)];
+  s.tableau[4] = []; // tapped
+  s.tableau[6] = [card('clubs', 13)];
+  assert.deepEqual(computeKingCascade(s, 4), [
+    { from: 3, to: 4 },
+    { from: 1, to: 3 },
+  ]);
+});
+
+test('computeKingCascade: King columns on both sides - left is chosen exclusively, right is never touched', () => {
+  const s = emptyState();
+  s.tableau[1] = [card('spades', 13)];
+  s.tableau[3] = [card('hearts', 13)];
+  s.tableau[4] = []; // tapped
+  s.tableau[6] = [card('clubs', 13)];
+  const moves = computeKingCascade(s, 4);
+  assert.ok(!moves.some(m => m.from === 6 || m.to === 6));
+  assert.equal(moves.length, 2);
+});
+
+test('computeKingCascade: no King on the left, King on the right - the right-side King moves left', () => {
+  const s = emptyState();
+  s.tableau[2] = []; // tapped
+  s.tableau[5] = [card('hearts', 13)];
+  assert.deepEqual(computeKingCascade(s, 2), [{ from: 5, to: 2 }]);
+});
+
+test('computeKingCascade: two right-side Kings at different distances - both shift, closest first, chaining outward', () => {
+  const s = emptyState();
+  s.tableau[2] = []; // tapped
+  s.tableau[5] = [card('hearts', 13)];
+  s.tableau[6] = [card('clubs', 13)];
+  assert.deepEqual(computeKingCascade(s, 2), [
+    { from: 5, to: 2 },
+    { from: 6, to: 5 },
+  ]);
+});
+
+test('computeKingCascade: no eligible King columns anywhere - tapping does nothing', () => {
+  const s = emptyState();
+  s.tableau[2] = []; // tapped
+  s.tableau[0] = [card('clubs', 5)];
+  s.tableau[5] = [card('hearts', 9)];
+  assert.deepEqual(computeKingCascade(s, 2), []);
+});
+
+test('computeKingCascade: a buried King on either side is not an eligible candidate', () => {
+  const s = emptyState();
+  s.tableau[1] = [card('spades', 13, false), card('hearts', 9)]; // buried - doesn't count
+  s.tableau[4] = []; // tapped
+  s.tableau[5] = [card('hearts', 13)]; // eligible, to the right
+  assert.deepEqual(computeKingCascade(s, 4), [{ from: 5, to: 4 }]);
+});
+
+test('computeKingCascade: a partial/broken sequence is not an eligible candidate', () => {
+  const s = emptyState();
+  s.tableau[1] = [card('spades', 13), card('clubs', 12)]; // broken - both black, same-color, doesn't count
+  s.tableau[4] = []; // tapped
+  s.tableau[5] = [card('hearts', 13)]; // eligible, to the right
+  assert.deepEqual(computeKingCascade(s, 4), [{ from: 5, to: 4 }]);
+});
+
+test('computeKingCascade: a non-empty tapped column returns no moves', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('spades', 13)];
+  s.tableau[1] = [card('clubs', 5)]; // not empty
+  assert.deepEqual(computeKingCascade(s, 1), []);
+});
+
+test('computeKingCascade: never mutates state - pure', () => {
+  const s = emptyState();
+  s.tableau[1] = [card('spades', 13)];
+  s.tableau[3] = [card('hearts', 13)];
+  s.tableau[4] = [];
+  const before = cloneState(s);
+  computeKingCascade(s, 4);
+  assert.deepEqual(s, before);
+});
+
+test('an empty-column King cascade opportunity produces zero legal moves - Hint, Auto Finish, and stuck-game detection all read getLegalMoves, so the cascade is invisible to every one of them by construction', () => {
+  const s = emptyState();
+  s.tableau[1] = [card('spades', 13)];
+  s.tableau[3] = [card('hearts', 13)];
+  s.tableau[4] = []; // the empty column a player could tap
+  // isolated black filler elsewhere, genuinely zero real moves anywhere
+  s.tableau[0] = [card('clubs', 2)];
+  s.tableau[2] = [card('clubs', 3)];
+  s.tableau[5] = [card('clubs', 4)];
+  s.tableau[6] = [card('clubs', 5)];
+
+  assert.ok(computeKingCascade(s, 4).length > 0); // the cascade genuinely is available...
+  // ...yet none of these see it:
+  assert.equal(getProgressingMoves(s).length, 0);
+  assert.equal(autoFinishAvailable(s), false);
   assert.equal(needsAbandonConfirmation(s, 5, false), false);
 });

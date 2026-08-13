@@ -16,6 +16,7 @@ import {
   nextAutoFinishMove,
   isKingColumnSwap,
   applyKingColumnSwap,
+  computeKingCascade,
 } from './game-logic.js';
 import { getPreference, setPreference } from './preferences.js';
 import { shuffle } from './shuffle.js';
@@ -278,19 +279,49 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     return px;
   }
 
+  // Every one of these values genuinely only changes at a responsive
+  // breakpoint/resize (they resolve fixed CSS custom properties, or a
+  // layout position "fixed by the layout above it" - see colTop's own use
+  // below), but resolveCssLength forces a synchronous layout (DOM
+  // append+measure+remove) every time it runs, and getTableauCol's colTop
+  // read is a forced layout too. Recomputing all of that on every single
+  // render() call - which commitMove() does on every single move - was
+  // cheap enough to miss during ordinary, human-paced clicking, but Auto
+  // Finish fires 20+ moves in a ~4s burst: that same layout-thrashing cost
+  // repeated in a tight loop was long enough, often enough, to compete with
+  // the ghost glide's own animation frames for main-thread time, which is
+  // what actually read as jerky. Cached here instead, invalidated only by
+  // invalidateLayoutCache() on resize/orientationchange - every render()
+  // in between reuses the same numbers for free.
+  let cachedCascadeDown = null;
+  let cachedCascadeUp = null;
+  let cachedCardHeight = null;
+  let cachedSafeAreaBottom = null;
+  let cachedColTop = null;
+  function invalidateLayoutCache() {
+    cachedCascadeDown = null;
+    cachedCascadeUp = null;
+    cachedCardHeight = null;
+    cachedSafeAreaBottom = null;
+    cachedColTop = null;
+  }
+
   // The gap after a tableau card depends on its own face - a back only
   // needs to show a sliver of its top border, while a face needs enough
   // exposed to read the corner's rank and the top of its suit pip.
   function getCascadeDown() {
-    return resolveCssLength('var(--cascade-down)');
+    if (cachedCascadeDown === null) cachedCascadeDown = resolveCssLength('var(--cascade-down)');
+    return cachedCascadeDown;
   }
 
   function getCascadeUp() {
-    return resolveCssLength('var(--cascade-up)');
+    if (cachedCascadeUp === null) cachedCascadeUp = resolveCssLength('var(--cascade-up)');
+    return cachedCascadeUp;
   }
 
   function getCardHeight() {
-    return resolveCssLength('var(--card-h)');
+    if (cachedCardHeight === null) cachedCardHeight = resolveCssLength('var(--card-h)');
+    return cachedCardHeight;
   }
 
   // How much vertical room a tableau column actually has, from its own
@@ -300,8 +331,8 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // breathing room so the bottom card isn't flush against the edge.
   const TABLEAU_BOTTOM_MARGIN_PX = 10;
   function getTableauAvailableHeight(colTop) {
-    const safeBottom = resolveCssLength('env(safe-area-inset-bottom, 0px)');
-    return Math.max(0, window.innerHeight - safeBottom - TABLEAU_BOTTOM_MARGIN_PX - colTop);
+    if (cachedSafeAreaBottom === null) cachedSafeAreaBottom = resolveCssLength('env(safe-area-inset-bottom, 0px)');
+    return Math.max(0, window.innerHeight - cachedSafeAreaBottom - TABLEAU_BOTTOM_MARGIN_PX - colTop);
   }
 
   // The one place a tableau column's per-card vertical offsets are computed
@@ -450,6 +481,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   const hintBtn = document.getElementById('hintBtn');
   const hintMessage = document.getElementById('hint-message');
   const autoFinishBtn = document.getElementById('autoFinishBtn');
+  const autoFinishBtnLabel = document.getElementById('autoFinishBtnLabel');
   const newGameBtn = document.getElementById('newGameBtn');
   const restartBtn = document.getElementById('restartBtn');
   const winMessage = document.getElementById('win-message');
@@ -762,13 +794,24 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 
   let autoFinishRunning = false;
   let autoFinishStopRequested = false;
-  // Eases in over the first few cards, then settles - a purely cosmetic
-  // pacing curve; MOVE_GLIDE_MS (the glide itself, reused unchanged from
-  // click-to-move) isn't touched. executeClickMove doesn't return a
-  // Promise/take a completion callback today, so this is a fixed delay
-  // rather than awaiting the actual animation.
-  const AUTO_FINISH_STEP_MS = [260, 220, 190];
-  const AUTO_FINISH_STEP_MS_FLOOR = 175;
+  // Eases in over the first few cards, then settles into a steady cascade -
+  // a purely cosmetic pacing curve; MOVE_GLIDE_MS (the glide itself, reused
+  // unchanged from click-to-move, 200ms) isn't touched. executeClickMove
+  // doesn't return a Promise/take a completion callback today, so this is a
+  // fixed delay rather than awaiting the actual animation.
+  //
+  // Every value here is deliberately kept *below* MOVE_GLIDE_MS, by a
+  // gap that only ever grows - never crosses back above it. An earlier
+  // version started above the glide duration (a real pause between each
+  // card landing and the next one leaving) and eased down to a floor
+  // *below* it (a card starting before the last one had finished) - the
+  // rhythm flipped partway through a run from stop-start pauses to
+  // continuous overlap, which is what actually read as jerky, not raw
+  // render cost. Starting already-overlapping and only overlapping more
+  // keeps the relationship between consecutive cards' motion consistent
+  // for the whole run: a smooth, monotonically-quickening cascade.
+  const AUTO_FINISH_STEP_MS = [190, 175, 160];
+  const AUTO_FINISH_STEP_MS_FLOOR = 150;
   function autoFinishStepDelay(i) { return AUTO_FINISH_STEP_MS[i] ?? AUTO_FINISH_STEP_MS_FLOOR; }
   function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
@@ -804,8 +847,9 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     pushHistory(); // the one grouped snapshot for the whole run
     autoFinishRunning = true;
     autoFinishStopRequested = false;
-    autoFinishBtn.textContent = 'Stop';
+    autoFinishBtnLabel.textContent = 'Stop';
     autoFinishBtn.classList.add('flash'); // brief one-shot pulse so starting reads as intentional, not sudden
+    autoFinishBtn.classList.add('running'); // persistent glow for the run's whole duration - distinct from the one-shot flash above
     setAutoFinishControlsDisabled(true);
     document.addEventListener('keydown', onAutoFinishKeydown, true);
     hintMessage.textContent = 'Auto Finishing…';
@@ -820,8 +864,9 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   function stopAutoFinish() {
     autoFinishRunning = false;
     autoFinishStopRequested = false;
-    autoFinishBtn.textContent = 'Auto Finish';
+    autoFinishBtnLabel.textContent = 'Auto Finish';
     autoFinishBtn.classList.remove('flash'); // so the next start re-triggers the animation rather than being a no-op class toggle
+    autoFinishBtn.classList.remove('running');
     document.removeEventListener('keydown', onAutoFinishKeydown, true);
     // A run that just ended in victory must NOT hand control back to the
     // toolbar - checkWin() has already locked it (synchronously, the instant
@@ -846,6 +891,71 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     // The common solitaire double-click-a-foundation convention; no-op via
     // the same guards when unavailable or already running.
     el.addEventListener('dblclick', startAutoFinish);
+  });
+
+  // ---------- King-column cascade (tap an empty tableau column) ----------
+  //
+  // A board-rearrangement convenience, not a real Klondike move - see
+  // computeKingCascade in game-logic.js for the full rationale and the
+  // deterministic left-then-right, fully-chained-once-a-side-is-chosen
+  // rule it implements. Everything here just turns that plan into real
+  // moves: one grouped pushHistory()/moveCount for the whole chain, then
+  // each column-move reuses executeClickMove exactly like a normal tableau
+  // move (ghost glide, face-down flip detection, all included for free),
+  // just with recordHistory/countMove both suppressed per step.
+
+  let kingCascadeRunning = false;
+  // Deliberately slower/less overlapping than Auto Finish's own step pacing
+  // (which favors a fast, flowing cascade of individual cards) - this moves
+  // whole columns, and the point is to be easy to track one at a time, so
+  // each step gets roughly a full glide's worth of time before the next
+  // one starts rather than overlapping with it.
+  const KING_CASCADE_STEP_MS = MOVE_GLIDE_MS + 40;
+
+  function runKingCascadeStep(fromIndex, toIndex) {
+    const col = state.tableau[fromIndex];
+    const king = col.find(c => c.faceUp);
+    const stack = getStackFrom(state, 'tableau', fromIndex, king);
+    executeClickMove(stack, 'tableau', fromIndex, 'tableau', toIndex, { recordHistory: false, countMove: false });
+  }
+
+  async function runKingCascade(moves) {
+    for (let i = 0; i < moves.length; i++) {
+      runKingCascadeStep(moves[i].from, moves[i].to);
+      if (i < moves.length - 1) await sleep(KING_CASCADE_STEP_MS);
+    }
+    kingCascadeRunning = false;
+    if (!won) {
+      setAutoFinishControlsDisabled(false);
+      updateMoves();
+    }
+  }
+
+  // The only entry point: a click on a tableau column that is currently
+  // empty. An occupied column's own cards already own pointerdown (see
+  // attachCardInteractions) - this is a plain click on the pile container
+  // itself, which only ever has anything to catch when there's no card
+  // filling it.
+  function triggerKingCascade(emptyIndex) {
+    if (dragCtx || isDrawing || autoFinishRunning || kingCascadeRunning) return;
+    if (state.tableau[emptyIndex].length) return;
+    const moves = computeKingCascade(state, emptyIndex);
+    if (!moves.length) return;
+
+    resetTableauClickMemory();
+    clearHint();
+    expandedColumnIndex = null;
+    pushHistory(); // one grouped snapshot for the whole chain, regardless of length
+    moveCount++; // counts as exactly one move, no matter how many columns shift
+    updateMoves();
+
+    kingCascadeRunning = true;
+    setAutoFinishControlsDisabled(true); // closes the same kind of mid-animation Undo race Auto Finish already had to close
+    runKingCascade(moves);
+  }
+
+  document.querySelectorAll('.pile.column').forEach(el => {
+    el.addEventListener('click', () => triggerKingCascade(parseInt(el.dataset.index, 10)));
   });
 
   // Each entry pairs the state snapshot with moveCount at that instant,
@@ -886,10 +996,11 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   function updateMoves() {
     movesEl.textContent = `Moves: ${moveCount}`;
     // While a run is in progress, undoBtn/autoFinishBtn's disabled state is
-    // owned by startAutoFinish/stopAutoFinish instead - this runs on every
-    // single commitMove, including each individual Auto Finish step, so
+    // owned by startAutoFinish/stopAutoFinish (or triggerKingCascade/
+    // runKingCascade) instead - this runs on every single commitMove,
+    // including each individual Auto Finish or King-cascade step, so
     // without this guard it would silently re-enable Undo mid-run.
-    if (!autoFinishRunning) {
+    if (!autoFinishRunning && !kingCascadeRunning) {
       undoBtn.disabled = history.length === 0;
       autoFinishBtn.disabled = !autoFinishAvailable(state);
     }
@@ -1055,8 +1166,12 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     const el = document.getElementById(`tableau-${i}`);
     el.innerHTML = '';
     const col = state.tableau[i];
-    const colTop = el.getBoundingClientRect().top; // fixed by the layout above it - this compression never moves it
-    const realAvailableHeight = getTableauAvailableHeight(colTop);
+    // Fixed by the layout above it (same for every column, since they all
+    // sit in one row) - this compression never moves it, so it's cached
+    // like the other measurements above rather than force-read via
+    // getBoundingClientRect() on all 7 columns every single render().
+    if (cachedColTop === null) cachedColTop = el.getBoundingClientRect().top;
+    const realAvailableHeight = getTableauAvailableHeight(cachedColTop);
     const faceUpFlags = col.map(c => c.faceUp);
     const compressed = columnWouldCompress(faceUpFlags, realAvailableHeight, cascadeDown, cascadeUp, cardHeight);
     const isExpanded = i === expandedColumnIndex;
@@ -1455,7 +1570,15 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // false for each card in a run after pushing one history entry itself up
   // front, so the whole run undoes as a single grouped action instead of one
   // entry per card - see startAutoFinish/runAutoFinish.
-  function commitMove(cards, source, sourceIndex, target, targetIndex, { recordHistory = true } = {}) {
+  // countMove: false lets a caller commit a state change (with its own
+  // ghost/glide animation, flip-detection, etc. all still applying
+  // normally) without incrementing the move counter - used by the King-
+  // cascade feature (see triggerKingCascade) so a multi-column chain
+  // reaction still counts as exactly one move overall, with the actual
+  // increment happening once, up front, by the caller. updateMoves() still
+  // runs regardless, so toolbar state (Undo, Auto Finish availability)
+  // stays live at every intermediate step either way.
+  function commitMove(cards, source, sourceIndex, target, targetIndex, { recordHistory = true, countMove = true } = {}) {
     resetTableauClickMemory();
     clearHint();
     // A card leaving or landing in the expanded column means whatever's
@@ -1469,7 +1592,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     if (recordHistory) pushHistory();
     const cardToFlip = peekCardToFlip(source, sourceIndex, cards);
     applyMove(state, cards, source, sourceIndex, target, targetIndex);
-    moveCount++;
+    if (countMove) moveCount++;
     updateMoves();
     render();
     if (cardToFlip) animateTableauFlip(cardToFlip);
@@ -2619,8 +2742,11 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
       if (dragCtx || isDrawing || autoFinishRunning) return;
       // A resize/rotation recalculates every column's compression from
       // scratch - an expanded column's "should this fit at normal spacing"
-      // premise no longer holds once the viewport itself has changed.
+      // premise no longer holds once the viewport itself has changed. The
+      // cached layout measurements (see invalidateLayoutCache) are exactly
+      // as stale as that premise, for the same reason - clear them too.
       expandedColumnIndex = null;
+      invalidateLayoutCache();
       render();
       if (hintMoves) showHintMove(hintMoves[hintIndex]);
     }, 120);

@@ -550,6 +550,74 @@ export function applyKingColumnSwap(state, sourceIndex, targetIndex) {
   state.tableau[targetIndex] = a;
 }
 
+// Is this tableau column, in full, a legally-movable King-led run? Unlike
+// isKingColumnSwap's own base check (which only confirms the base card is a
+// King), this also walks the entire exposed run confirming every
+// consecutive pair is a legal alternating/descending build - a King
+// followed by a same-color or non-consecutive card doesn't count, even
+// though its base is technically a King. Kept as its own function (not a
+// refactor of isKingColumnSwap, which stays untouched) so this change can't
+// affect that already-shipped feature's behavior.
+export function isKingLedColumn(state, colIndex) {
+  const col = state.tableau[colIndex];
+  if (!col.length) return false;
+  const base = col.find(c => c.faceUp);
+  if (!base || base.rank !== 13) return false;
+  const baseIdx = col.indexOf(base);
+  for (let i = baseIdx; i < col.length - 1; i++) {
+    const below = col[i];
+    const above = col[i + 1];
+    if (above.color === below.color || above.rank !== below.rank - 1) return false;
+  }
+  return true;
+}
+
+// The tableau-rearrangement convenience triggered by tapping an empty
+// column - a board-layout tool, not a real Klondike move (same rationale as
+// isKingColumnSwap just above: deliberately never routed through
+// getLegalMoves/MoveCategory, so it's excluded from Hint/"moves available"/
+// Auto Finish by construction, not by filtering).
+//
+// Direction is chosen exactly once, against the tapped column's original
+// position, and never switches sides mid-chain:
+//   - If any King-led column sits to the left, the whole cascade sources
+//     exclusively from the left, nearest-first, chaining until no King-led
+//     column remains to the left of the *current* hole. This is the
+//     preferred direction (Kings end up further right).
+//   - Only if there is no King-led column anywhere to the left does the
+//     cascade source from the right instead - but it chains there exactly
+//     the same way (nearest-first, fully exhausting that side), not just a
+//     single "last resort" move. The asymmetry is which side gets tried
+//     first, not how far a chosen side is allowed to run.
+// consumedSources prevents a column already used as a source this cascade
+// from ever being reconsidered, so a chain can never double back on itself
+// once a King has already moved.
+//
+// Returns an ordered [{ from, to }, ...] list (empty if nothing eligible).
+// Pure - never mutates state.
+export function computeKingCascade(state, emptyIndex) {
+  if (state.tableau[emptyIndex] == null || state.tableau[emptyIndex].length) return [];
+
+  const consumedSources = new Set();
+  const nearestEligible = (holeIndex, step) => {
+    for (let i = holeIndex + step; i >= 0 && i < state.tableau.length; i += step) {
+      if (!consumedSources.has(i) && isKingLedColumn(state, i)) return i;
+    }
+    return -1;
+  };
+
+  const step = nearestEligible(emptyIndex, -1) !== -1 ? -1 : 1;
+  const moves = [];
+  let hole = emptyIndex;
+  let source;
+  while ((source = nearestEligible(hole, step)) !== -1) {
+    moves.push({ from: source, to: hole });
+    consumedSources.add(source);
+    hole = source;
+  }
+  return moves;
+}
+
 export function cloneState(state) {
   return JSON.parse(JSON.stringify(state));
 }
