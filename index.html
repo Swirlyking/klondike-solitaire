@@ -37,6 +37,10 @@
           <path d="M9 14 4 9l5-5" />
           <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" />
         </svg>
+        <!-- Hidden everywhere except the iPhone-portrait bottom toolbar
+             (see .btn-label--new in style.css) - desktop/tablet stay
+             icon-only, unchanged. -->
+        <span class="btn-label btn-label--new">Undo</span>
       </button>
       <button id="hintBtn" class="icon-button" aria-label="Hint" title="Hint">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -44,6 +48,7 @@
           <path d="M9 18h6" />
           <path d="M10 22h4" />
         </svg>
+        <span class="btn-label btn-label--new">Hint</span>
       </button>
       <!-- fast-forward icon: Lucide (ISC license), same icon set as Undo/
            Hint above. Label lives in its own span - script.js swaps its
@@ -53,11 +58,36 @@
           <polygon points="13 19 22 12 13 5 13 19" />
           <polygon points="2 19 11 12 2 5 2 19" />
         </svg>
-        <span id="autoFinishBtnLabel">Auto Finish</span>
+        <span id="autoFinishBtnLabel" class="btn-label">Auto Finish</span>
       </button>
-      <button id="newGameBtn">New Game</button>
-      <button id="restartBtn">Restart</button>
-      <button id="settingsBtn" class="icon-button" aria-label="Settings">&#9881;</button>
+      <!-- shuffle icon: Lucide (ISC license), same icon set as above -
+           hidden everywhere except the portrait toolbar, same as Undo/
+           Hint/Settings' new labels; desktop/tablet keep today's
+           text-only button untouched. -->
+      <button id="newGameBtn">
+        <svg class="btn-icon--new" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m18 14 4 4-4 4" />
+          <path d="m18 2 4 4-4 4" />
+          <path d="M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22" />
+          <path d="M2 6h1.972a4 4 0 0 1 3.6 2.2" />
+          <path d="M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45" />
+        </svg>
+        <span class="btn-label">New Game</span>
+      </button>
+      <!-- rotate-ccw icon: Lucide (ISC license), same icon set as above -
+           same portrait-only treatment as New Game's shuffle icon just
+           above. -->
+      <button id="restartBtn">
+        <svg class="btn-icon--new" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+          <path d="M3 3v5h5" />
+        </svg>
+        <span class="btn-label">Restart</span>
+      </button>
+      <button id="settingsBtn" class="icon-button" aria-label="Settings">
+        <span class="settings-gear" aria-hidden="true">&#9881;</span>
+        <span class="btn-label btn-label--new">Settings</span>
+      </button>
     </div>
   </header>
 

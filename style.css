@@ -39,12 +39,22 @@ html, body {
 }
 
 /* Only while a tableau column is in its temporary expanded/inspection
-   state (see toggleColumnExpanded, which toggles this on <body>) - height:
-   100% caps the document and clips anything past it from ever being
-   scrollable, so this swaps to min-height for just that window, letting
-   the page grow enough to scroll to an expanded column's overflowing
-   bottom card. Reverts to the normal fixed-viewport, no-scroll layout the
-   instant it's collapsed - never a permanent change to page height. */
+   state (see toggleColumnExpanded, which toggles this class on both <html>
+   and <body>) - height:100% caps the document and clips anything past it
+   from ever being scrollable, so this swaps to min-height for just that
+   window, letting the page grow enough to scroll to an expanded column's
+   overflowing bottom card. Reverts to the normal fixed-viewport, no-scroll
+   layout the instant it's collapsed - never a permanent change to page
+   height.
+   Both elements need this, not just body: document.scrollingElement is
+   <html> (confirmed - this is the element whose own height actually
+   governs how far the page can scroll), so leaving it pinned to height:100%
+   while only body grows underneath it meant content could overflow body
+   without ever becoming reachable by scrolling at all - the "scroll down
+   to see the rest" promise this class exists for didn't actually hold once
+   an expanded column needed more room than min-height:100% alone (i.e. the
+   viewport) could show for it. */
+html.tableau-inspecting,
 body.tableau-inspecting {
   height: auto;
   min-height: 100%;
@@ -197,6 +207,30 @@ body {
   }
 }
 
+/* .running: actively mid-run, not just available - a visibly stronger
+   version of .ready's glow (solid-er fill, brighter border/text, wider
+   glow) rather than a different color, so the two states read as "more
+   of the same thing" instead of unrelated. Still just a class alongside
+   .ready (not a replacement for it - see startAutoFinish/stopAutoFinish),
+   so this layers on top in every toolbar context (top row or any bottom
+   toolbar) without needing its own per-layout rules. */
+#autoFinishBtn.running {
+  background: rgba(198, 255, 61, 0.24);
+  border-color: #d9ff70;
+  color: #eaffb8;
+  animation: auto-finish-running-glow 1.1s ease-in-out infinite;
+}
+@keyframes auto-finish-running-glow {
+  0%, 100% { box-shadow: 0 0 8px 2px rgba(198, 255, 61, 0.45), 0 0 22px 5px rgba(198, 255, 61, 0.3); }
+  50% { box-shadow: 0 0 14px 3px rgba(198, 255, 61, 0.75), 0 0 34px 10px rgba(198, 255, 61, 0.5); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #autoFinishBtn.running {
+    animation: none;
+    box-shadow: 0 0 12px 2px rgba(198, 255, 61, 0.6), 0 0 26px 6px rgba(198, 255, 61, 0.4);
+  }
+}
+
 .controls button.icon-button {
   display: inline-flex;
   align-items: center;
@@ -213,6 +247,12 @@ body {
   width: 18px;
   height: 18px;
 }
+
+/* --new: added for the iPhone-portrait bottom toolbar (see the
+   max-width:480px/orientation:portrait block near the end of this file) -
+   hidden everywhere else so desktop/tablet/landscape stay exactly as they
+   were: Undo/Hint/Settings icon-only, New Game/Restart text-only. */
+.btn-label--new, .btn-icon--new { display: none; }
 
 #hint-message {
   display: flex;
@@ -1171,4 +1211,236 @@ body {
      side-by-side pair - a 44px+ tap height on each. */
   #confirm-actions { flex-direction: column-reverse; }
   #confirm-actions button { padding: 14px 18px; font-size: 15px; }
+}
+
+/* ---------- Bottom-toolbar touch layouts ----------
+   Three separate device targets share the same underlying idea (vertical
+   space is precious and the device is primarily touch-based, so pull the
+   controls out of #topbar's flow and into a fixed bottom strip instead),
+   but need different sizing/distribution to actually look right:
+     - iPhone portrait: narrow width, plenty of height - six controls
+       stretch to fill the width, icon-over-label, tallest touch targets.
+     - iPhone landscape: generous width, almost no height - the toolbar
+       itself has to be as short as possible, so icon+label sit side by
+       side in a single compact row instead of stacked.
+     - iPad portrait: generous width AND height - six controls stretching
+       edge to edge across 750-1000+px would look absurd, so they stay a
+       comfortable fixed size, centered in the strip, with room to spare.
+   iPad landscape and desktop are deliberately untouched - neither matches
+   any of these three.
+
+   pointer:coarse gates the landscape and iPad rules specifically, since
+   their width/height ranges alone could otherwise also match a resized
+   desktop browser window (e.g. a short-and-wide or tall-and-narrow Chrome
+   window) - a real mouse/trackpad reports pointer:fine and never matches,
+   regardless of window shape. The existing iPhone-portrait rule below
+   predates this and doesn't need it: nothing resizes a desktop window to
+   480px wide in normal use, so it was never actually at risk. */
+
+/* Shared visual language across all three - one continuous dark strip,
+   not six outlined buttons: transparent/borderless buttons take their
+   look entirely from the strip's own background, icons stay full-strength
+   while labels sit visually secondary, and env(safe-area-inset-bottom) is
+   handled once here so no per-breakpoint block below can forget it.
+   Structural per-breakpoint bits (button width/height, icon size, stack
+   vs row, font sizes) stay in each block separately - they differ enough
+   between a cramped landscape phone and a spacious iPad that trying to
+   share them would fight itself. */
+@media (max-width: 480px) and (orientation: portrait),
+       (max-height: 480px) and (orientation: landscape) and (pointer: coarse),
+       (min-width: 481px) and (max-width: 1024px) and (orientation: portrait) and (pointer: coarse) {
+  .btn-label--new, .btn-icon--new { display: block; }
+
+  /* The six existing controls, physically unchanged (same elements, same
+     script.js references, same disabled/.ready/.running/.flash state
+     management) - just repositioned and restyled here and in the
+     per-breakpoint blocks below. Moving .controls out of #topbar's flex
+     flow via position:fixed is what shrinks the header to one row;
+     nothing else needed to change there. */
+  .controls {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 400; /* above tableau cards, below drag-layer's 1000 and every overlay */
+    display: flex;
+    background: rgba(6, 22, 15, 0.94);
+    border-top: 1px solid rgba(255,255,255,0.1);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .controls button,
+  .controls button.icon-button {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    color: #eee;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Press feedback instead of :hover (meaningless on touch, and would stay
+     "stuck" on after a tap on some browsers) - the one place these buttons
+     get any visible fill at all, confirming a tap landed. */
+  .controls button:active,
+  .controls button.icon-button:active {
+    background: rgba(255,255,255,0.12);
+  }
+  .controls button:disabled,
+  .controls button.icon-button:disabled {
+    opacity: 0.38;
+  }
+  .controls button svg,
+  .controls button.icon-button svg {
+    display: block;
+    flex-shrink: 0;
+  }
+  .controls .btn-label {
+    text-align: center;
+    color: rgba(238, 238, 238, 0.7); /* secondary to the icon - the icon alone should read first */
+    font-weight: 500;
+    white-space: nowrap;
+  }
+}
+
+/* ---------- iPhone portrait ---------- */
+@media (max-width: 480px) and (orientation: portrait) {
+  :root {
+    --board-pad: 4px;
+    --pile-gap: 3px;
+  }
+
+  #topbar { padding: 5px 14px; gap: 10px; }
+  #topbar h1 { font-size: 16px; }
+  .stats { font-size: 12px; gap: 10px; }
+
+  #top-row { margin-bottom: 10px; }
+
+  .controls { gap: 2px; padding: 6px 4px; }
+  .controls button,
+  .controls button.icon-button {
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 48px;
+    padding: 4px 2px;
+    font-size: 9.5px;
+    line-height: 1.05;
+  }
+  .controls button svg,
+  .controls button.icon-button svg { width: 19px; height: 19px; }
+  .controls .settings-gear { font-size: 17px; line-height: 1; }
+}
+
+/* ---------- iPhone landscape ----------
+   The height budget is brutal (as little as ~375px total on the smallest
+   current devices), so unlike portrait's stacked icon-over-label, icon and
+   label sit side by side in one compact row - shorter than a stacked
+   layout at the same font/icon size, which is the entire point here: this
+   only earns its keep if the toolbar itself stays thin enough that moving
+   it off the top produces a real net gain underneath. min-height stays at
+   Apple's actual 44px floor rather than the 48px used elsewhere - still a
+   generous touch target, just not spending height it can't spare. */
+@media (max-height: 480px) and (orientation: landscape) and (pointer: coarse) {
+  :root {
+    --board-pad: 6px;
+    --pile-gap: 5px;
+    /* Filling the available WIDTH edge to edge (like every other mobile
+       breakpoint) is wrong here specifically: width is never the tight
+       constraint in landscape, height is, and a wider viewport only makes
+       cards taller at the same aspect ratio - directly fighting the one
+       thing actually scarce. On a wide-enough landscape phone this let a
+       deep starting column's last card (compression already at its
+       legibility floor - see computeTableauTops in script.js) render
+       partway under the fixed toolbar, confirmed by measurement. The
+       second min() term caps card width by a height budget instead: chrome
+       (header + top-row's own card height + toolbar + margins) plus the
+       tableau's worst realistic case (one card height + up to 6 collapsed
+       face-down gaps) both have to fit in 100vh, solved for card width.
+       Whichever formula is smaller wins, so this only ever pulls cards
+       *down* from the width-fill size, never up past it. */
+    --card-w: min(
+      calc((100vw - 2 * var(--board-pad) - 6 * var(--pile-gap)) / 7),
+      calc(16.7vh + 30px)
+    );
+    --card-h: calc(var(--card-w) * 122 / 84);
+    --cascade-down: calc(var(--card-w) * 0.119);
+    --cascade-up: calc(var(--card-w) * 0.286);
+  }
+  #board { padding: var(--board-pad) var(--board-pad) 0; }
+  #topbar { padding: 4px 14px; gap: 10px; }
+  #topbar h1 { font-size: 15px; }
+  .stats { font-size: 11px; gap: 8px; }
+  #top-row { margin-bottom: 6px; }
+  .column { min-height: 160px; }
+
+  .controls {
+    gap: 2px;
+    padding: 3px 8px;
+    transition: transform 180ms ease-in-out, opacity 180ms ease-in-out;
+  }
+  .controls button,
+  .controls button.icon-button {
+    flex: 1 1 0;
+    flex-direction: row;
+    gap: 5px;
+    min-height: 44px;
+    padding: 4px 6px;
+    font-size: 10px;
+  }
+  .controls button svg,
+  .controls button.icon-button svg { width: 16px; height: 16px; }
+  .controls .settings-gear { font-size: 15px; line-height: 1; }
+
+  /* Expanding a compressed cascade for inspection (see toggleColumnExpanded
+     in script.js) is the one time this toolbar gets out of the way
+     entirely, rather than just staying compact - landscape's height budget
+     is tight enough that even the legibility floor computeTableauTops
+     already enforces can outgrow it (confirmed: an extreme 13-card,
+     mostly-face-up column overlapped the toolbar by 237px before this).
+     Sliding/fading out instead of just vanishing is what keeps it reading
+     as "the toolbar stepped aside for this" rather than a glitch.
+     pointer-events:none is set instantly (not part of the transition) so
+     it can never be tapped mid-fade, and getToolbarReservedHeight() in
+     script.js reads this exact property to know the moment it's inert -
+     see that function's own comment. body.tableau-inspecting itself is
+     already existing, pre-inspection-mode machinery (render() toggles it
+     purely from expandedColumnIndex) - nothing new to wire up here beyond
+     this one rule reacting to it. */
+  body.tableau-inspecting .controls {
+    transform: translateY(100%);
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+/* ---------- iPad portrait ----------
+   Width/height are both generous here, so the six controls stay a
+   comfortable fixed size and sit centered in the strip - stretching them
+   edge to edge across 750-1000+px would look stretched and thin, not like
+   a toolbar. --card-w/--pile-gap/--board-pad are untouched: iPad's
+   existing min-width:721px sizing (a clamped, generous formula) already
+   applies at every real iPad width here and doesn't need to change - only
+   the controls' position does. */
+@media (min-width: 481px) and (max-width: 1024px) and (orientation: portrait) and (pointer: coarse) {
+  .controls {
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 20px;
+  }
+  .controls button,
+  .controls button.icon-button {
+    flex: 0 0 auto;
+    flex-direction: column;
+    width: 88px;
+    gap: 4px;
+    min-height: 56px;
+    padding: 8px 6px;
+    font-size: 12px;
+  }
+  .controls button svg,
+  .controls button.icon-button svg { width: 23px; height: 23px; }
+  .controls .settings-gear { font-size: 21px; line-height: 1; }
 }

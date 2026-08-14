@@ -307,12 +307,20 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   let cachedCardHeight = null;
   let cachedSafeAreaBottom = null;
   let cachedColTop = null;
+  let cachedToolbarReservedHeight = null;
+  // Tracks expandedColumnIndex !== null as of the last render() - lets
+  // render() detect the exact moment that flips (see its own use of this)
+  // without needing every one of the many places that set
+  // expandedColumnIndex = ... to separately remember to invalidate the
+  // toolbar-height cache themselves.
+  let lastRenderedInspecting = false;
   function invalidateLayoutCache() {
     cachedCascadeDown = null;
     cachedCascadeUp = null;
     cachedCardHeight = null;
     cachedSafeAreaBottom = null;
     cachedColTop = null;
+    cachedToolbarReservedHeight = null;
   }
 
   // The gap after a tableau card depends on its own face - a back only
@@ -339,7 +347,41 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // viewport - past the home-indicator/notch safe area, with a little
   // breathing room so the bottom card isn't flush against the edge.
   const TABLEAU_BOTTOM_MARGIN_PX = 10;
+
+  // On the iPhone-portrait breakpoint .controls becomes a fixed bottom
+  // toolbar (see style.css) instead of living in #topbar's normal flow -
+  // reads its real rendered height directly rather than duplicating that
+  // breakpoint's pixel values here, so this stays correct automatically if
+  // those numbers ever change. Anywhere else .controls is still in normal
+  // flow (position !== 'fixed'), contributing nothing here - the existing
+  // safe-area-bottom handling below is what applies instead.
+  function getToolbarReservedHeight() {
+    if (cachedToolbarReservedHeight === null) {
+      const controlsEl = document.querySelector('.controls');
+      const isFixedToolbar = controlsEl && getComputedStyle(controlsEl).position === 'fixed';
+      // iPhone landscape only: while a column is expanded for inspection,
+      // the toolbar hides itself entirely (see body.tableau-inspecting in
+      // style.css) so the expanded cascade - and every other column's own
+      // compression, computed from this same function - can use the space
+      // it would otherwise reserve. pointer-events is set as an instant,
+      // non-transitioning marker of "hidden" (unlike opacity/transform,
+      // which are still mid-animation for a beat) - checking it here can
+      // never read a half-hidden toolbar as still reserving space.
+      const isHiddenForInspection = isFixedToolbar && getComputedStyle(controlsEl).pointerEvents === 'none';
+      cachedToolbarReservedHeight = isFixedToolbar && !isHiddenForInspection
+        ? controlsEl.getBoundingClientRect().height
+        : 0;
+    }
+    return cachedToolbarReservedHeight;
+  }
+
   function getTableauAvailableHeight(colTop) {
+    // The toolbar's own bottom padding already includes
+    // safe-area-inset-bottom (see style.css) - its rendered height alone
+    // is the full reserved amount. Subtracting cachedSafeAreaBottom too
+    // would double-count that inset.
+    const toolbarHeight = getToolbarReservedHeight();
+    if (toolbarHeight > 0) return Math.max(0, window.innerHeight - toolbarHeight - TABLEAU_BOTTOM_MARGIN_PX - colTop);
     if (cachedSafeAreaBottom === null) cachedSafeAreaBottom = resolveCssLength('env(safe-area-inset-bottom, 0px)');
     return Math.max(0, window.innerHeight - cachedSafeAreaBottom - TABLEAU_BOTTOM_MARGIN_PX - colTop);
   }
@@ -920,6 +962,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     autoFinishBtnLabel.textContent = 'Stop';
     autoFinishBtn.classList.add('flash'); // brief one-shot pulse so starting reads as intentional, not sudden
     autoFinishBtn.classList.add('ready'); // already on from being available pre-click (see updateAutoFinishReady) - set again defensively so a run always has the glow regardless of how it was started
+    autoFinishBtn.classList.add('running'); // a visibly stronger treatment than .ready alone - actively happening, not just available
     setAutoFinishControlsDisabled(true);
     document.addEventListener('keydown', onAutoFinishKeydown, true);
     runAutoFinish();
@@ -934,6 +977,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     autoFinishStopRequested = false;
     autoFinishBtnLabel.textContent = 'Auto Finish';
     autoFinishBtn.classList.remove('flash'); // so the next start re-triggers the animation rather than being a no-op class toggle
+    autoFinishBtn.classList.remove('running');
     document.removeEventListener('keydown', onAutoFinishKeydown, true);
     // Resolves disabled/.ready for the button itself regardless of won -
     // unlike undoBtn/newGameBtn/restartBtn/hintBtn below, autoFinishBtn was
@@ -1208,11 +1252,29 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     const cascadeDown = getCascadeDown();
     const cascadeUp = getCascadeUp();
     const cardHeight = getCardHeight();
-    for (let i = 0; i < 7; i++) renderTableauCol(i, cascadeDown, cascadeUp, cardHeight);
+    // Set *before* the column loop below, not after: on iPhone landscape
+    // this class is what makes the bottom toolbar hide itself (see
+    // style.css), and renderTableauCol's own getTableauAvailableHeight call
+    // needs to see that change on this exact render pass, not the next one.
+    // Toggling expandedColumnIndex doesn't go through a resize/orientation
+    // event, so the normal cache (invalidated only by those - see
+    // invalidateLayoutCache) would otherwise keep returning whatever the
+    // toolbar's reserved height was before inspection started right up
+    // until the next resize happened to come along.
+    const isInspecting = expandedColumnIndex !== null;
+    if (isInspecting !== lastRenderedInspecting) {
+      lastRenderedInspecting = isInspecting;
+      cachedToolbarReservedHeight = null;
+    }
     // Lets the page scroll far enough to reach an expanded column's
-    // overflowing bottom card (see the body.tableau-inspecting rule) -
-    // only while one is actually expanded, never otherwise.
-    document.body.classList.toggle('tableau-inspecting', expandedColumnIndex !== null);
+    // overflowing bottom card (see the html/body.tableau-inspecting rule) -
+    // only while one is actually expanded, never otherwise. Both html and
+    // body need the class: document.scrollingElement is html, so it has to
+    // grow too, not just body, or an expanded column can still overflow
+    // past what's actually reachable by scrolling.
+    document.documentElement.classList.toggle('tableau-inspecting', isInspecting);
+    document.body.classList.toggle('tableau-inspecting', isInspecting);
+    for (let i = 0; i < 7; i++) renderTableauCol(i, cascadeDown, cascadeUp, cardHeight);
     checkWin();
   }
 
@@ -1365,6 +1427,18 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
       }
       el.appendChild(cardEl);
     });
+    // Absolutely-positioned cards (every card here) contribute nothing to
+    // a normal-flow ancestor's height on their own - min-height alone
+    // can't grow to fit them, regardless of how far past it their `top`
+    // pushes them. Explicitly sizing the expanded column itself to its
+    // real extent is what gives html/body.tableau-inspecting's own
+    // height:auto (see style.css) something genuine to grow around further
+    // up the tree - without this, an expanded column's overflowing bottom
+    // card renders past the fold but is never actually reachable by
+    // scrolling, confirmed by measurement. Reset for every other column
+    // (including one that was expanded a moment ago and just collapsed),
+    // so nothing but the currently-expanded column ever carries this.
+    el.style.height = isExpanded ? `${tops[tops.length - 1] + cardHeight}px` : '';
     el.classList.toggle('expanded', isExpanded);
     if (compressed) el.appendChild(createExpandToggle(i, isExpanded));
   }
