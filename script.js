@@ -964,7 +964,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     el.addEventListener('dblclick', startAutoFinish);
   });
 
-  // ---------- King-column cascade (tap an empty tableau column) ----------
+  // ---------- King-column cascade (press-and-hold an empty tableau column) ----------
   //
   // A board-rearrangement convenience, not a real Klondike move - see
   // computeKingCascade in game-logic.js for the full rationale and the
@@ -976,12 +976,22 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // just with recordHistory/countMove both suppressed per step.
 
   let kingCascadeRunning = false;
-  // Deliberately slower/less overlapping than Auto Finish's own step pacing
-  // (which favors a fast, flowing cascade of individual cards) - this moves
-  // whole columns, and the point is to be easy to track one at a time, so
-  // each step gets roughly a full glide's worth of time before the next
-  // one starts rather than overlapping with it.
-  const KING_CASCADE_STEP_MS = MOVE_GLIDE_MS + 40;
+  // A gentle, jittered ramp rather than a flat interval - moves.length is
+  // known exactly upfront (computeKingCascade already returned the whole
+  // plan), so this is index-through-a-known-total, not a running estimate
+  // like Auto Finish's own cadence. Kept deliberately calmer than Auto
+  // Finish (which favors a fast, flowing cascade of many individual cards):
+  // this moves whole columns, and chains are typically short (2-4), so the
+  // point is still to read as one column at a time, just without the dead-
+  // flat, metronomic beat a single fixed constant produced.
+  const KING_CASCADE_STEP_START_MS = MOVE_GLIDE_MS + 60;
+  const KING_CASCADE_STEP_END_MS = MOVE_GLIDE_MS - 20;
+  const KING_CASCADE_STEP_JITTER_MS = 10;
+  function kingCascadeStepDelay(index, total) {
+    const progress = total > 1 ? Math.min(index / (total - 1), 1) : 1;
+    const base = KING_CASCADE_STEP_START_MS - progress * (KING_CASCADE_STEP_START_MS - KING_CASCADE_STEP_END_MS);
+    return base + (Math.random() * 2 - 1) * KING_CASCADE_STEP_JITTER_MS;
+  }
 
   function runKingCascadeStep(fromIndex, toIndex) {
     const col = state.tableau[fromIndex];
@@ -993,7 +1003,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   async function runKingCascade(moves) {
     for (let i = 0; i < moves.length; i++) {
       runKingCascadeStep(moves[i].from, moves[i].to);
-      if (i < moves.length - 1) await sleep(KING_CASCADE_STEP_MS);
+      if (i < moves.length - 1) await sleep(kingCascadeStepDelay(i, moves.length));
     }
     kingCascadeRunning = false;
     if (!won) {
@@ -1002,11 +1012,10 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     }
   }
 
-  // The only entry point: a click on a tableau column that is currently
-  // empty. An occupied column's own cards already own pointerdown (see
-  // attachCardInteractions) - this is a plain click on the pile container
-  // itself, which only ever has anything to catch when there's no card
-  // filling it.
+  // Called once a press-and-hold on an empty column completes - see the
+  // pointerdown/hold gesture below, the only path that ever calls this.
+  // Guards stay here too (not just at hold-start) since board state could
+  // in principle change over the hold's own ~450ms window.
   function triggerKingCascade(emptyIndex) {
     if (dragCtx || isDrawing || autoFinishRunning || kingCascadeRunning) return;
     if (state.tableau[emptyIndex].length) return;
@@ -1025,8 +1034,90 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     runKingCascade(moves);
   }
 
+  // ---------- King-cascade press-and-hold gesture ----------
+  //
+  // A plain tap used to trigger the cascade instantly - easy to fire by
+  // accident (a stray brush against an empty column reads identically to a
+  // deliberate one, and gives zero warning either way). Holding instead:
+  // the column visibly lights up (.cascade-charging, see style.css) over
+  // KING_CASCADE_HOLD_MS, only committing if the hold survives the whole
+  // window without releasing or moving away - an accidental touch almost
+  // never lasts that long, and even when it does, the glow gives a clear
+  // "something is about to happen" beat to back out of. Pointerdown/move/
+  // up/cancel, matching how card dragging already distinguishes a tap from
+  // a drag (see startDrag) - never a native 'click' for this feature.
+  const KING_CASCADE_HOLD_MS = 450; // keep in sync with .pile.cascade-charging's transition duration in style.css
+  // Looser than DRAG_THRESHOLD_PX on purpose - a still finger naturally
+  // drifts more over a 450ms hold than over a quick tap's press-release, so
+  // reusing that tighter threshold here would cancel genuine holds from
+  // ordinary hand tremor.
+  const KING_CASCADE_HOLD_CANCEL_PX = 12;
+
+  let kingCascadeHoldPointerId = null;
+  let kingCascadeHoldTimer = null;
+  let kingCascadeHoldEl = null;
+  let kingCascadeHoldEligible = false; // false: tracking a plain tap for reject-bounce feedback, not actually charging
+  let kingCascadeHoldStartX = 0;
+  let kingCascadeHoldStartY = 0;
+
+  function cancelKingCascadeHold() {
+    if (kingCascadeHoldTimer) { clearTimeout(kingCascadeHoldTimer); kingCascadeHoldTimer = null; }
+    if (kingCascadeHoldEl) kingCascadeHoldEl.classList.remove('cascade-charging');
+    kingCascadeHoldEl = null;
+    kingCascadeHoldPointerId = null;
+    window.removeEventListener('pointermove', onKingCascadeHoldMove);
+    window.removeEventListener('pointerup', onKingCascadeHoldEnd);
+    window.removeEventListener('pointercancel', cancelKingCascadeHold);
+  }
+
+  function onKingCascadeHoldMove(e) {
+    if (e.pointerId !== kingCascadeHoldPointerId) return;
+    const dist = Math.hypot(e.clientX - kingCascadeHoldStartX, e.clientY - kingCascadeHoldStartY);
+    if (dist > KING_CASCADE_HOLD_CANCEL_PX) cancelKingCascadeHold(); // drifted away - not a deliberate hold (or tap) anymore
+  }
+
+  function onKingCascadeHoldEnd(e) {
+    if (e.pointerId !== kingCascadeHoldPointerId) return;
+    const el = kingCascadeHoldEl;
+    const wasReject = el && !kingCascadeHoldEligible;
+    cancelKingCascadeHold(); // released before the timer fired either way - no cascade
+    if (wasReject) bounceEmptyColumn(el); // a genuine tap with nothing eligible still gets acknowledged
+  }
+
+  function bounceEmptyColumn(el) {
+    el.classList.remove('touch-bounce');
+    void el.offsetWidth; // force reflow so re-adding the class restarts the animation
+    el.classList.add('touch-bounce');
+  }
+
+  function onKingCascadePointerDown(e, emptyIndex, el) {
+    if (dragCtx || isDrawing || autoFinishRunning || kingCascadeRunning || kingCascadeHoldPointerId !== null) return;
+    if (e.button !== undefined && e.button !== 0) return;
+    if (state.tableau[emptyIndex].length) return;
+    e.preventDefault();
+
+    kingCascadeHoldPointerId = e.pointerId;
+    kingCascadeHoldStartX = e.clientX;
+    kingCascadeHoldStartY = e.clientY;
+    kingCascadeHoldEl = el;
+    kingCascadeHoldEligible = computeKingCascade(state, emptyIndex).length > 0;
+    window.addEventListener('pointermove', onKingCascadeHoldMove);
+    window.addEventListener('pointerup', onKingCascadeHoldEnd);
+    window.addEventListener('pointercancel', cancelKingCascadeHold);
+
+    if (kingCascadeHoldEligible) {
+      el.classList.add('cascade-charging');
+      kingCascadeHoldTimer = setTimeout(() => {
+        cancelKingCascadeHold();
+        triggerKingCascade(emptyIndex);
+      }, KING_CASCADE_HOLD_MS);
+    }
+    // Not eligible: no timer, no glow - just tracked so a genuine tap-and-
+    // release (not a drift-away) can still bounce, in onKingCascadeHoldEnd.
+  }
+
   document.querySelectorAll('.pile.column').forEach(el => {
-    el.addEventListener('click', () => triggerKingCascade(parseInt(el.dataset.index, 10)));
+    el.addEventListener('pointerdown', e => onKingCascadePointerDown(e, parseInt(el.dataset.index, 10), el));
   });
 
   // Each entry pairs the state snapshot with moveCount at that instant,
@@ -2529,7 +2620,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   }
 
   function startDrag(e, card, source, sourceIndex) {
-    if (dragCtx || autoFinishRunning) return;
+    if (dragCtx || autoFinishRunning || kingCascadeHoldPointerId !== null) return;
     if (e.button !== undefined && e.button !== 0) return;
     const stack = getStackFrom(state, source, sourceIndex, card);
     if (!stack.length) return;

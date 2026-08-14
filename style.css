@@ -471,9 +471,27 @@ body {
   65% { scale: 1.02; translate: 0 -1.5px; }
   100% { scale: 1; translate: 0 0; }
 }
-.card.touch-bounce { animation: card-touch-bounce 260ms ease-out; }
+.card.touch-bounce, .pile.touch-bounce { animation: card-touch-bounce 260ms ease-out; }
 @media (prefers-reduced-motion: reduce) {
-  .card.touch-bounce { animation: none; }
+  .card.touch-bounce, .pile.touch-bounce { animation: none; }
+}
+
+/* The King-cascade press-and-hold's own feedback (see triggerKingCascade's
+   pointerdown handler in script.js) - the empty column gradually lights up
+   over the hold, so an accidental brush never completes it (releasing or
+   moving away early just lets .pile's own base 150ms transition ease this
+   back off) and a deliberate hold has a clear "something is about to
+   happen" cue before anything actually moves. The transition duration
+   below must match KING_CASCADE_HOLD_MS in script.js, so the glow finishes
+   building at the exact instant the hold completes - same convention as
+   FLIP_MS/.flip-inner staying in sync elsewhere in this file. Reuses the
+   same gold as .hint-highlight/.drop-target-active, since it means the
+   same thing: look here. */
+.pile.cascade-charging {
+  transition: filter 450ms ease-out, box-shadow 450ms ease-out, scale 450ms ease-out;
+  filter: brightness(1.22);
+  box-shadow: 0 0 0 2px rgba(217, 180, 92, 0.9), 0 0 26px 6px rgba(217, 180, 92, 0.55);
+  scale: 1.015;
 }
 
 .card img {
