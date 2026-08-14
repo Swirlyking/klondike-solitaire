@@ -249,6 +249,15 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // the ~180-220ms range that reads as a quick, snappy slide rather than a
   // slow float.
   const MOVE_GLIDE_MS = 200;
+  // The actual glide duration of whichever move most recently committed -
+  // read by checkWin() so the post-win pause always waits out the real
+  // animation instead of assuming MOVE_GLIDE_MS, which stopped being a safe
+  // assumption once Auto Finish can pass its own (shorter, accelerating)
+  // duration for its final cards. Set right before every commitMove() call
+  // that could possibly complete the game (executeClickMove and the direct
+  // drag-drop path both set it); King swap/cascade never touch a
+  // foundation, so they can never be the winning move and don't need to.
+  let lastMoveGlideMs = MOVE_GLIDE_MS;
   const MAX_ROTATE_DEG = 1.6;
   const ROTATE_VELOCITY_PX_MS = 1.6; // pointer speed (px/ms) that reaches MAX_ROTATE_DEG
   const FLIP_MS = 260; // keep in sync with .flip-inner's transition duration in style.css - the whole dealt packet flips together, in place, over this long
@@ -735,13 +744,8 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     document.querySelectorAll('.hint-highlight').forEach(el => el.classList.remove('hint-highlight'));
     hintMoves = null;
     hintIndex = 0;
-    // commitMove calls this on every move, including each Auto Finish step -
-    // while a run is in progress the status bar is showing "Auto
-    // Finishing…", owned by startAutoFinish/stopAutoFinish, not the hint.
-    if (!autoFinishRunning) {
-      hintMessage.classList.add('hidden');
-      hintMessage.textContent = '';
-    }
+    hintMessage.classList.add('hidden');
+    hintMessage.textContent = '';
   }
 
   function showHintMove(move) {
@@ -794,25 +798,85 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 
   let autoFinishRunning = false;
   let autoFinishStopRequested = false;
-  // Eases in over the first few cards, then settles into a steady cascade -
-  // a purely cosmetic pacing curve; MOVE_GLIDE_MS (the glide itself, reused
-  // unchanged from click-to-move, 200ms) isn't touched. executeClickMove
-  // doesn't return a Promise/take a completion callback today, so this is a
-  // fixed delay rather than awaiting the actual animation.
+
+  // Auto Finish's own per-card motion shape: gentle release -> strong,
+  // dominant acceleration -> a very short, soft landing. No single
+  // cubic-bezier can hold near-max velocity for most of the journey and
+  // still land in a short, non-abrupt stop (a bezier's deceleration phase
+  // is inherently proportional to how sharp it is - it either lands slowly
+  // or stops dead). Built instead as evenly time-spaced sample points
+  // (offset -> distance-fraction of the straight-line travel) that
+  // glideGhostsTo turns into real WAAPI keyframes at animate time,
+  // multiplying by each card's actual pixel delta - the same dense-
+  // position-sampling technique victory.js already uses for paths a single
+  // easing curve can't express, not a new pattern. AUTO_FINISH_LANDING_T
+  // samples are close enough together (a few ms apart at these durations)
+  // that linear interpolation between them reads as smooth, so this never
+  // depends on per-keyframe CSS easing support - safer for Mobile Safari.
+  const AUTO_FINISH_LANDING_T = 0.87;   // accelerating phase covers this fraction of TIME...
+  const AUTO_FINISH_LANDING_D = 0.97;   // ...and this fraction of DISTANCE; the rest is the short landing
+  const AUTO_FINISH_ACCEL_POWER = 2.3;  // higher = gentler start, more of the distance saved for late in the accelerating phase
+  const AUTO_FINISH_MOVE_SAMPLES = 12;
+  function autoFinishDistanceAt(t) {
+    if (t <= AUTO_FINISH_LANDING_T) {
+      const u = t / AUTO_FINISH_LANDING_T;
+      return AUTO_FINISH_LANDING_D * Math.pow(u, AUTO_FINISH_ACCEL_POWER); // ease-in: gentle release -> strong acceleration
+    }
+    const u = (t - AUTO_FINISH_LANDING_T) / (1 - AUTO_FINISH_LANDING_T);
+    return AUTO_FINISH_LANDING_D + (1 - AUTO_FINISH_LANDING_D) * (1 - (1 - u) * (1 - u)); // ease-out-quad: brief, soft settle
+  }
+  const AUTO_FINISH_MOVE_PROFILE = Array.from({ length: AUTO_FINISH_MOVE_SAMPLES + 1 }, (_, i) => {
+    const offset = i / AUTO_FINISH_MOVE_SAMPLES;
+    return { offset, distance: offset === 1 ? 1 : autoFinishDistanceAt(offset) };
+  });
+
+  // Glide duration jitters ±AUTO_FINISH_GLIDE_JITTER_MS per card so
+  // consecutive glides don't read as mechanically identical; deliberately
+  // *not* a function of run progress - that's cadence's job below. Manual
+  // click-to-move, drag, King swap, and King cascade are all untouched,
+  // still MOVE_GLIDE_MS and the plain-transition path, since none of them
+  // pass duration/moveProfile through options.
+  const AUTO_FINISH_GLIDE_MS = 200;
+  const AUTO_FINISH_GLIDE_JITTER_MS = 10;
+  function autoFinishGlideDuration() {
+    return AUTO_FINISH_GLIDE_MS + (Math.random() * 2 - 1) * AUTO_FINISH_GLIDE_JITTER_MS;
+  }
+
+  // Cadence: the delay between move *starts* - independent of the glide
+  // duration above. A continuous curve over how far through the run we are
+  // (exact, not estimated: totalMoves is every card not yet on a
+  // foundation the instant a run starts, and since Auto Finish only ever
+  // starts once the whole tableau is face-up with an empty stock, every one
+  // of those cards is guaranteed to eventually move - see
+  // autoFinishAvailable in game-logic.js). ^EASE_POWER biases the curve to
+  // stay near INTERVAL_START_MS through the opening cards, then fall away
+  // faster toward INTERVAL_END_MS in roughly the last handful - "calm, then
+  // flowing, then a quick final run" - rather than a linear ramp or
+  // discrete steps.
   //
-  // Every value here is deliberately kept *below* MOVE_GLIDE_MS, by a
-  // gap that only ever grows - never crosses back above it. An earlier
-  // version started above the glide duration (a real pause between each
-  // card landing and the next one leaving) and eased down to a floor
-  // *below* it (a card starting before the last one had finished) - the
-  // rhythm flipped partway through a run from stop-start pauses to
-  // continuous overlap, which is what actually read as jerky, not raw
-  // render cost. Starting already-overlapping and only overlapping more
-  // keeps the relationship between consecutive cards' motion consistent
-  // for the whole run: a smooth, monotonically-quickening cascade.
-  const AUTO_FINISH_STEP_MS = [190, 175, 160];
-  const AUTO_FINISH_STEP_MS_FLOOR = 150;
-  function autoFinishStepDelay(i) { return AUTO_FINISH_STEP_MS[i] ?? AUTO_FINISH_STEP_MS_FLOOR; }
+  // The interval starts *above* AUTO_FINISH_GLIDE_MS and ends *well below*
+  // it, by design: early on each card visibly finishes settling with a
+  // small gap before the next leaves; late in the run several cards can be
+  // mid-glide simultaneously (interval ~115ms vs a ~200ms glide), which is
+  // what turns the tail into a flowing, layered cascade rather than a
+  // strict move-stop-move-stop sequence - no separate overlap mechanism
+  // needed, it falls straight out of this one relationship. (An earlier
+  // version of this pacing curve stayed permanently below the glide
+  // duration and only ever got more overlapped - crossing that threshold
+  // via a hardcoded step table read as a jerky rhythm flip. This crosses it
+  // too, but via one continuous curve, which is what actually reads as
+  // smooth: a single easing relationship, not an abrupt table lookup.)
+  const AUTO_FINISH_INTERVAL_START_MS = 238;
+  const AUTO_FINISH_INTERVAL_END_MS = 115;
+  const AUTO_FINISH_INTERVAL_JITTER_MS = 6;
+  const AUTO_FINISH_INTERVAL_EASE_POWER = 2.5;
+  function autoFinishInterval(completedMoves, totalMoves) {
+    const progress = totalMoves > 1 ? Math.min(completedMoves / (totalMoves - 1), 1) : 1;
+    const eased = Math.pow(progress, AUTO_FINISH_INTERVAL_EASE_POWER);
+    const base = AUTO_FINISH_INTERVAL_START_MS - eased * (AUTO_FINISH_INTERVAL_START_MS - AUTO_FINISH_INTERVAL_END_MS);
+    return base + (Math.random() * 2 - 1) * AUTO_FINISH_INTERVAL_JITTER_MS;
+  }
+
   function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
   function setAutoFinishControlsDisabled(disabled) {
@@ -827,13 +891,19 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   }
 
   async function runAutoFinish() {
+    // Exact, not estimated - see autoFinishInterval's own comment above.
+    const totalMoves = 52 - state.foundations.reduce((a, p) => a + p.length, 0);
     let i = 0;
     while (!autoFinishStopRequested) {
       const move = nextAutoFinishMove(state);
       if (!move) break;
       const stack = getStackFrom(state, move.source, move.sourceIndex, move.card);
-      executeClickMove(stack, move.source, move.sourceIndex, 'foundation', move.targetIndex, { recordHistory: false });
-      await sleep(autoFinishStepDelay(i++));
+      executeClickMove(stack, move.source, move.sourceIndex, 'foundation', move.targetIndex, {
+        recordHistory: false,
+        duration: autoFinishGlideDuration(),
+        moveProfile: AUTO_FINISH_MOVE_PROFILE,
+      });
+      await sleep(autoFinishInterval(i++, totalMoves));
     }
     stopAutoFinish();
   }
@@ -849,11 +919,9 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     autoFinishStopRequested = false;
     autoFinishBtnLabel.textContent = 'Stop';
     autoFinishBtn.classList.add('flash'); // brief one-shot pulse so starting reads as intentional, not sudden
-    autoFinishBtn.classList.add('running'); // persistent glow for the run's whole duration - distinct from the one-shot flash above
+    autoFinishBtn.classList.add('ready'); // already on from being available pre-click (see updateAutoFinishReady) - set again defensively so a run always has the glow regardless of how it was started
     setAutoFinishControlsDisabled(true);
     document.addEventListener('keydown', onAutoFinishKeydown, true);
-    hintMessage.textContent = 'Auto Finishing…';
-    hintMessage.classList.remove('hidden');
     runAutoFinish();
   }
 
@@ -866,8 +934,13 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     autoFinishStopRequested = false;
     autoFinishBtnLabel.textContent = 'Auto Finish';
     autoFinishBtn.classList.remove('flash'); // so the next start re-triggers the animation rather than being a no-op class toggle
-    autoFinishBtn.classList.remove('running');
     document.removeEventListener('keydown', onAutoFinishKeydown, true);
+    // Resolves disabled/.ready for the button itself regardless of won -
+    // unlike undoBtn/newGameBtn/restartBtn/hintBtn below, autoFinishBtn was
+    // never part of the win-lock (setAutoFinishControlsDisabled doesn't
+    // touch it), and a just-won board always has autoFinishAvailable(state)
+    // === false anyway, so this always resolves to "off" there.
+    updateAutoFinishReady();
     // A run that just ended in victory must NOT hand control back to the
     // toolbar - checkWin() has already locked it (synchronously, the instant
     // the winning move committed) specifically to close the window where a
@@ -877,10 +950,8 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     // newGame()/restart()/undo().
     if (!won) {
       setAutoFinishControlsDisabled(false);
-      updateMoves(); // re-derives undoBtn.disabled and autoFinishBtn's own disabled state
+      updateMoves(); // re-derives undoBtn.disabled and Moves text
     }
-    hintMessage.classList.add('hidden');
-    hintMessage.textContent = '';
   }
 
   autoFinishBtn.addEventListener('click', () => {
@@ -993,6 +1064,18 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     render();
   }
 
+  // The button glows (.ready) any time it's enabled - not just while a run
+  // is actually in progress - so it reads as an invitation the instant Auto
+  // Finish becomes possible, before the player has touched it. Also called
+  // unconditionally at the end of a run (see stopAutoFinish) since a won
+  // game skips updateMoves() entirely, and disabled/.ready still need to
+  // resolve to "off" in that case (autoFinishAvailable(state) is false once
+  // there's nothing left to move).
+  function updateAutoFinishReady() {
+    autoFinishBtn.disabled = !autoFinishAvailable(state);
+    autoFinishBtn.classList.toggle('ready', !autoFinishBtn.disabled);
+  }
+
   function updateMoves() {
     movesEl.textContent = `Moves: ${moveCount}`;
     // While a run is in progress, undoBtn/autoFinishBtn's disabled state is
@@ -1002,7 +1085,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     // without this guard it would silently re-enable Undo mid-run.
     if (!autoFinishRunning && !kingCascadeRunning) {
       undoBtn.disabled = history.length === 0;
-      autoFinishBtn.disabled = !autoFinishAvailable(state);
+      updateAutoFinishReady();
     }
   }
 
@@ -1745,13 +1828,24 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 
     const destRects = computeDestRects(target, targetIndex, stack.length);
     const previousTopCard = target === 'foundation' ? currentFoundationTop(targetIndex) : null;
+    // Auto Finish passes its own {duration, moveProfile} for a gentler,
+    // less mechanical glide over a long run - see AUTO_FINISH_MOVE_PROFILE
+    // and autoFinishGlideDuration(). Every other caller (manual
+    // click-to-move, King cascade) passes neither, so both fall back to the
+    // values every other glide in the game already uses. Recorded into
+    // lastMoveGlideMs *before* commitMove, since checkWin() (called
+    // synchronously inside commitMove's render()) reads it to know how long
+    // to wait for this exact move's glide before starting the victory
+    // pause/celebration.
+    const glideMs = options?.duration ?? MOVE_GLIDE_MS;
+    lastMoveGlideMs = glideMs;
     commitMove(stack, source, sourceIndex, target, targetIndex, options); // clears tableauClickMemory — re-set below if this continues a cycle
     if (source === 'tableau' && target === 'tableau') {
       tableauClickMemory = { cardId: stack[0].id, destIndex: targetIndex };
     }
     const revealDest = hideDestElements(stack, target, targetIndex, previousTopCard);
 
-    glideGhostsTo(ghosts, originRects, destRects, MOVE_GLIDE_MS, revealDest);
+    glideGhostsTo(ghosts, originRects, destRects, glideMs, revealDest, undefined, options?.moveProfile);
   }
 
   // Bottom-of-Settings easter egg (see versionLink): instantly overwrites
@@ -1820,10 +1914,13 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       const personality = generateVictoryPersonality(reducedMotion);
-      // MOVE_GLIDE_MS + 30 matches glideGhostsTo's own ghost-removal buffer -
-      // the winning move's card must have visually landed before the
-      // celebration captures any positions or hides any real card.
-      const glideSettleMs = MOVE_GLIDE_MS + 30;
+      // lastMoveGlideMs + 30 matches glideGhostsTo's own ghost-removal buffer
+      // for *this exact move's* actual duration - the winning move's card
+      // must have visually landed before the celebration captures any
+      // positions or hides any real card. Reading the tracked duration
+      // rather than assuming MOVE_GLIDE_MS matters now that Auto Finish's
+      // final, accelerating cards can glide faster than that default.
+      const glideSettleMs = lastMoveGlideMs + 30;
       celebrationTimer = setTimeout(() => runVictoryCelebrationSequence(personality), glideSettleMs + personality.pauseMs);
     }
   }
@@ -2310,16 +2407,25 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   }
 
   // Glides ghosts from baseRects to destRects: a clean, flat position
-  // slide with a natural ease-out - the only thing that animates is
-  // position. Any lift/scale/tilt a ghost picked up while actively held
-  // (see .lifted, and the live velocity-rotation in processDragFrame)
-  // settles back to rest *instantly*, before the position glide starts -
-  // never eased alongside it, so unlifting can never read as part of the
-  // card's travel (an arc, bounce, or grow). A programmatic glide
-  // (click-to-move, Auto Finish, King-swap's own un-dragged ghost) was
-  // never lifted in the first place, so this reset is a harmless no-op
-  // there - one glide implementation for every trigger.
-  function glideGhostsTo(ghosts, baseRects, destRects, ms, onDone) {
+  // slide - the only thing that animates is position. Any lift/scale/tilt a
+  // ghost picked up while actively held (see .lifted, and the live
+  // velocity-rotation in processDragFrame) settles back to rest *instantly*,
+  // before the position glide starts - never eased alongside it, so
+  // unlifting can never read as part of the card's travel (an arc, bounce,
+  // or grow). A programmatic glide (click-to-move, Auto Finish, King-swap's
+  // own un-dragged ghost) was never lifted in the first place, so this
+  // reset is a harmless no-op there - one glide implementation for every
+  // trigger.
+  //
+  // moveProfile (Auto Finish only - every other caller omits it and gets
+  // the plain CSS-transition path below, unchanged) is an array of
+  // {offset, distance} sample points - see AUTO_FINISH_MOVE_PROFILE - used
+  // to build real WAAPI keyframes here, multiplying each sample's distance
+  // fraction by this specific card's actual pixel delta. A single
+  // cubic-bezier transition can't express "gentle release, dominant
+  // acceleration, then a short soft landing" - the WAAPI path is the one
+  // place that shape is actually assembled from the profile.
+  function glideGhostsTo(ghosts, baseRects, destRects, ms, onDone, easing = 'var(--ease-out-smooth)', moveProfile = null) {
     const { wrappers, visuals } = ghosts;
     visuals.forEach(visual => {
       visual.style.transition = 'none';
@@ -2329,8 +2435,17 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
       visual.style.transition = '';
     });
     wrappers.forEach((wrapper, i) => {
-      wrapper.style.transition = `translate ${ms}ms var(--ease-out-smooth)`;
-      wrapper.style.translate = `${destRects[i].left - baseRects[i].left}px ${destRects[i].top - baseRects[i].top}px`;
+      const dx = destRects[i].left - baseRects[i].left;
+      const dy = destRects[i].top - baseRects[i].top;
+      if (moveProfile) {
+        wrapper.animate(
+          moveProfile.map(p => ({ offset: p.offset, translate: `${dx * p.distance}px ${dy * p.distance}px` })),
+          { duration: ms, fill: 'forwards' },
+        );
+      } else {
+        wrapper.style.transition = `translate ${ms}ms ${easing}`;
+        wrapper.style.translate = `${dx}px ${dy}px`;
+      }
     });
     setTimeout(() => {
       wrappers.forEach(w => w.remove());
@@ -2546,6 +2661,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
       }
       const destRects = computeDestRects(target, targetIndex, stack.length);
       const previousTopCard = target === 'foundation' ? currentFoundationTop(targetIndex) : null;
+      lastMoveGlideMs = MOVE_GLIDE_MS; // see its declaration - this drag-drop is the other path (besides executeClickMove) that can complete a win
       commitMove(stack, source, sourceIndex, target, targetIndex);
       const revealDest = hideDestElements(stack, target, targetIndex, previousTopCard);
       glideGhostsTo(ghosts, originRects, destRects, MOVE_GLIDE_MS, revealDest);
