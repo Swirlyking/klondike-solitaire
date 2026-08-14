@@ -1540,6 +1540,29 @@ test('computeKingCascade: a non-empty tapped column returns no moves', () => {
   assert.deepEqual(computeKingCascade(s, 1), []);
 });
 
+test('computeKingCascade: a chain stops at a column whose King run has a card buried beneath it, even if another eligible King exists further along', () => {
+  const s = emptyState();
+  // col1's King run sits on top of a buried face-down card - a legal
+  // single move (it reveals that card, exactly as intended), but moving it
+  // away does NOT leave col1 empty, so the chain must not continue past it
+  // even though col0 is otherwise eligible.
+  s.tableau[0] = [card('clubs', 13)];
+  s.tableau[1] = [card('hearts', 4, false), card('spades', 13)];
+  s.tableau[3] = []; // tapped
+  assert.deepEqual(computeKingCascade(s, 3), [{ from: 1, to: 3 }]);
+});
+
+test('computeKingCascade: a lone King with nothing buried beneath it - and nothing else eligible - still chains through cleanly', () => {
+  const s = emptyState();
+  s.tableau[1] = [card('spades', 13)]; // nothing buried - genuinely empties col1
+  s.tableau[0] = [card('clubs', 13)];
+  s.tableau[3] = []; // tapped
+  assert.deepEqual(computeKingCascade(s, 3), [
+    { from: 1, to: 3 },
+    { from: 0, to: 1 },
+  ]);
+});
+
 test('computeKingCascade: never mutates state - pure', () => {
   const s = emptyState();
   s.tableau[1] = [card('spades', 13)];

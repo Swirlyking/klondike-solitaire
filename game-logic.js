@@ -613,6 +613,15 @@ export function computeKingCascade(state, emptyIndex) {
   while ((source = nearestEligible(hole, step)) !== -1) {
     moves.push({ from: source, to: hole });
     consumedSources.add(source);
+    // isKingLedColumn deliberately allows a King run sitting on a buried
+    // face-down card - moving the run away is still a legal single move
+    // (it reveals that card, same as any other tableau move would), but
+    // the column it leaves behind is NOT empty, so the chain can't
+    // continue through it as a new hole. Without this check the loop
+    // would keep going and shove a second King run directly on top of
+    // whatever card just flipped face-up - a real, observed corruption,
+    // not just a hypothetical one.
+    if (!state.tableau[source][0].faceUp) break;
     hole = source;
   }
   return moves;
