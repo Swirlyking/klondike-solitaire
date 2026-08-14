@@ -2946,7 +2946,24 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     if (reflowHandle) clearTimeout(reflowHandle);
     reflowHandle = setTimeout(() => {
       reflowHandle = null;
-      if (dragCtx || isDrawing || autoFinishRunning) return;
+      // A resize/rotation can interrupt an in-progress drag or King-cascade
+      // hold in ways iOS doesn't always report cleanly - onDragCancel's own
+      // comment already notes pointercancel isn't guaranteed when iOS
+      // decides a gesture belongs to it instead (which a physical rotation
+      // very much can). Left unhandled, a drag stuck mid-air here means its
+      // ghost never gets swept and, for a foundation source, the pile stays
+      // frozen on its "card underneath" peek-render (see renderFoundation's
+      // peekBehindTop) - permanently, since nothing else ever calls back in
+      // to finish that gesture. Rather than hope every drag/hold resolves
+      // itself before the viewport reshapes under it, force both closed
+      // unconditionally on every reflow - cheap and idempotent when neither
+      // was actually active, and the render() below (when it runs) rebuilds
+      // the foundation/tableau fresh from state either way, correcting any
+      // peek-render or hidden-origin staleness a cancelled drag leaves behind.
+      cancelActiveDrag();
+      cancelKingCascadeHold();
+      clearGhosts();
+      if (isDrawing || autoFinishRunning || kingCascadeRunning) return;
       // A resize/rotation recalculates every column's compression from
       // scratch - an expanded column's "should this fit at normal spacing"
       // premise no longer holds once the viewport itself has changed. The
