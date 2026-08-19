@@ -29,6 +29,25 @@
 html, body {
   margin: 0;
   height: 100%;
+  /* 100% alone can compute shorter than the true visual viewport in iOS
+     standalone (home-screen) mode specifically - a documented mismatch
+     between the layout viewport percentage-height math resolves against
+     and the actual safe-area-inclusive rendered surface. The gap between
+     the two shows as a strip of iOS's own default white, not this page's
+     felt, wherever html/body's box ends short of the real bottom edge.
+     100dvh (dynamic viewport height) is the unit built specifically to
+     close that gap - falls back to the 100% above in any browser that
+     doesn't recognize it, since an invalid value is ignored, not applied. */
+  height: 100dvh;
+  /* Confirmed on a real device that 100dvh alone wasn't enough in this
+     app's standalone mode specifically - --app-vh (see the inline script
+     in index.html's <head>) is window.innerHeight itself, the same value
+     getTableauAvailableHeight() in script.js already relies on
+     successfully for toolbar-avoidance, so it's already proven accurate in
+     this exact runtime rather than a second guess at a CSS unit. Falls
+     back to the 100dvh above until that inline script runs (effectively
+     immediately, and before first paint). */
+  height: var(--app-vh, 100dvh);
   background: radial-gradient(ellipse at top, var(--felt), var(--felt-dark));
   color: #eee;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
@@ -58,6 +77,11 @@ html.tableau-inspecting,
 body.tableau-inspecting {
   height: auto;
   min-height: 100%;
+  /* Same iOS-standalone mismatch the base html/body rule above addresses -
+     min-height needs the same floor, or an expanded column in standalone
+     mode could stop just short of the true bottom edge. */
+  min-height: 100dvh;
+  min-height: var(--app-vh, 100dvh);
 }
 
 /* Standalone iOS home-screen mode (viewport-fit=cover in index.html) lets
@@ -709,17 +733,22 @@ body {
 }
 
 #settings-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin: -24px -28px 12px;
+  padding: 24px 28px 12px;
+  background: #133;
 }
 #settings-header h2 {
   color: var(--gold);
   margin: 0;
   font-size: 18px;
 }
-#settingsCloseBtn {
+#settingsCloseBtn, #statsCloseBtn {
   background: none;
   border: none;
   color: #eee;
@@ -729,7 +758,7 @@ body {
   opacity: 0.7;
   padding: 0;
 }
-#settingsCloseBtn:hover { opacity: 1; }
+#settingsCloseBtn:hover, #statsCloseBtn:hover { opacity: 1; }
 
 .settings-section + .settings-section {
   margin-top: 20px;

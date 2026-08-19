@@ -394,32 +394,78 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // out of the DOM via getBoundingClientRect() rather than recomputing it,
   // so it automatically inherits whatever this function decided.
   //
-  // Two-phase accordion, cheapest concession first:
+  // Two-tier accordion, cheapest concession first - reordered and
+  // POSITION-WEIGHTED relative to an earlier version of this function:
   // 1. Normal spacing, if the whole column already fits top to bottom -
   //    true for every desktop/portrait/short-column case.
-  // 2. Otherwise, compress face-down gaps first, toward MIN_DOWN_GAP - they
-  //    carry no information, so they're the only thing allowed to give
-  //    much ground. Face-up gaps only ever shrink toward READABLE_UP_GAP,
-  //    a floor measured against the actual card art (see below) rather
-  //    than an arbitrary pixel value - in practice that floor sits *above*
-  //    cascadeUp's own normal value, so this tier is a no-op almost always,
-  //    which is the point: legibility comes first, face-down compression
-  //    absorbs the room instead.
-  // Within a tier every gap shrinks by the same amount, so a column
-  // compresses evenly instead of some cards staying spaced while others
-  // jump straight to minimum.
+  // 2. Otherwise, compress FACE-UP gaps first (not face-down), weighted by
+  //    position within the face-up run: the gap right after the first
+  //    face-up card, and the last few gaps near the bottom, get a floor at
+  //    full legibility (READABLE_UP_FRACTION, same value this function
+  //    always used) - that's what protects "what's the first exposed
+  //    card" and "what's immediately playable" regardless of how deep the
+  //    compression gets. Gaps deep in the middle of the run get a much
+  //    lower floor (MIDDLE_MIN_GAP - "almost stacked" is explicitly fine
+  //    there). The falloff between the two is a smooth curve by distance
+  //    from the nearest edge of the face-up run (see faceUpGapMiddleness),
+  //    not a hard cutoff, so compression concentrates in the true middle
+  //    first and only spreads outward as more room is needed. All face-up
+  //    gaps then shrink PROPORTIONALLY toward their own floor at once - a
+  //    gap with more slack (a middle gap, with a much lower floor)
+  //    automatically absorbs more of the reduction, with no separate
+  //    "is this the middle" branch needed.
+  // 3. Only if that still isn't enough, compress face-down gaps toward
+  //    MIN_DOWN_GAP - deliberately LAST, not first: face-down cards need
+  //    to stay COUNTABLE AT A GLANCE (not merely technically distinguishable
+  //    pixel-by-pixel), and that outranks both generous spacing in a
+  //    face-up middle nobody can read once it's compressed anyway, and
+  //    fitting an extreme column without the expand toggle - see this
+  //    tier's own priority note below.
   //
-  // MIN_DOWN_GAP/READABLE_UP_GAP are hard floors, never crossed. Cropping
-  // the actual card art (Ace/2/10/King, all four suits) at increasing
-  // reveal heights found that cascadeUp's own current value (~19.7% of
-  // card height) already only shows a sliver of the suit pip under the
-  // rank; 25% comfortably shows the whole pip. READABLE_UP_FRACTION splits
-  // the difference with a little margin. That means a column with more
-  // cards than even this allows accepts the bottom card extending past the
-  // ideal boundary rather than shrinking a face-up card past legibility -
-  // see the expand/collapse toggle for that case.
-  const MIN_DOWN_GAP = 4;
+  // Every floor here is a hard floor, never crossed. Cropping the actual
+  // card art (Ace/2/10/King, all four suits) at increasing reveal heights
+  // found that cascadeUp's own normal value (~19.7% of card height) only
+  // shows a sliver of the suit pip under the rank; 25% comfortably shows
+  // the whole pip. READABLE_UP_FRACTION splits the difference with a
+  // little margin - in practice it sits *above* cascadeUp's own normal
+  // value, so edge gaps are a no-op almost always. If excess remains once
+  // both tiers are fully floored, the column overflows the ideal boundary
+  // rather than eroding legibility further - see the expand/collapse
+  // toggle for that case. That tradeoff is deliberate for face-down gaps
+  // specifically: an extreme column failing to fit and falling back to the
+  // toggle is preferable to a face-down run compressed past being
+  // glanceable - see MIN_DOWN_GAP's own value below.
+  //
+  // 9px, not the 6px an earlier version used: visually tested 2-6 face-down
+  // cards on iPad at both 6px and 9px. At 6px, 5-6 cards read as "a small
+  // stack" rather than a countable number without deliberately counting
+  // individual slivers; 9px was the point where each one reads as a
+  // distinct card at a glance, even at 6, without needing to count
+  // carefully. This is now the single highest-priority floor in the whole
+  // function, by design - see the tier ordering above.
+  const MIN_DOWN_GAP = 9;
   const READABLE_UP_FRACTION = 0.28;
+  // The tightest a face-up gap may ever get, deep in a column's middle.
+  const MIDDLE_MIN_GAP = 3;
+  // How quickly the floor falls from READABLE_UP_FRACTION (at either edge
+  // of the face-up run) toward MIDDLE_MIN_GAP (dead center) - >1 keeps
+  // most of the run close to fully readable and concentrates the drop into
+  // a narrower band right at the middle, rather than a linear ramp the
+  // whole way across.
+  const MIDDLE_FALLOFF_POWER = 2;
+
+  // 0 at either edge of the face-up run (protected, full legibility), 1
+  // dead center (maximally compressible). faceUpGapIndex/faceUpGapCount
+  // are both 0-based/counted among ONLY the face-up gaps, not every gap in
+  // the column.
+  function faceUpGapMiddleness(faceUpGapIndex, faceUpGapCount) {
+    if (faceUpGapCount <= 1) return 0; // nothing to call "the middle" with 0 or 1 gaps - both ends are the same gap
+    const edgeDistance = Math.min(faceUpGapIndex, faceUpGapCount - 1 - faceUpGapIndex);
+    const maxEdgeDistance = Math.floor((faceUpGapCount - 1) / 2);
+    const t = maxEdgeDistance > 0 ? edgeDistance / maxEdgeDistance : 0;
+    return Math.pow(t, MIDDLE_FALLOFF_POWER);
+  }
+
   function computeTableauTops(faceUpFlags, availableHeight, cascadeDown, cascadeUp, cardHeight) {
     const n = faceUpFlags.length;
     if (n === 0) return [];
@@ -432,25 +478,36 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
       let excess = naturalGapSum - Math.max(0, availableHeight - cardHeight);
 
       const minDown = Math.min(cascadeDown, Math.max(MIN_DOWN_GAP, cascadeDown * 0.25));
-      const minUp = Math.max(cascadeUp, cardHeight * READABLE_UP_FRACTION);
+      const edgeUpFloor = Math.max(cascadeUp, cardHeight * READABLE_UP_FRACTION);
+      const middleUpFloor = Math.min(edgeUpFloor, MIDDLE_MIN_GAP);
 
       const downIdx = [], upIdx = [];
       faceUpFlags.slice(0, n - 1).forEach((faceUp, i) => (faceUp ? upIdx : downIdx).push(i));
 
-      // Shrinks every gap in `idx` toward `floor` by an equal amount,
-      // absorbing as much of `excess` as that tier's slack allows.
-      const shrinkTier = (idx, floor) => {
+      // Shrinks every gap in `idx` toward its own floor (from `floorOf`,
+      // called with each gap's position within `idx`) proportionally, all
+      // at once - a gap with more slack absorbs more of `excess`
+      // automatically, rather than every gap losing an equal flat amount.
+      // downIdx's floor is flat (ignores its position argument), so this
+      // degenerates to a plain equal-shrink there, same as before.
+      const shrinkProportional = (idx, floorOf) => {
         if (excess <= 0 || !idx.length) return;
-        const slack = idx.reduce((a, i) => a + (gaps[i] - floor), 0);
-        const used = Math.min(excess, slack);
-        if (used <= 0) return;
-        const perGap = used / idx.length;
-        idx.forEach(i => { gaps[i] -= perGap; });
-        excess -= used;
+        const slacks = idx.map((i, k) => Math.max(0, gaps[i] - floorOf(k)));
+        const totalSlack = slacks.reduce((a, b) => a + b, 0);
+        if (totalSlack <= 0) return;
+        const fraction = Math.min(1, excess / totalSlack);
+        idx.forEach((i, k) => { gaps[i] -= fraction * slacks[k]; });
+        excess -= fraction * totalSlack;
       };
 
-      shrinkTier(downIdx, minDown);
-      shrinkTier(upIdx, minUp);
+      // Face-up first (see this function's header comment for why),
+      // position-weighted toward the middle of the face-up run.
+      shrinkProportional(upIdx, (k) => {
+        const middleness = faceUpGapMiddleness(k, upIdx.length);
+        return edgeUpFloor - middleness * (edgeUpFloor - middleUpFloor);
+      });
+      // Face-down only if the face-up middle wasn't enough on its own.
+      shrinkProportional(downIdx, () => minDown);
       // No further fallback beyond this point - if excess remains, every
       // gap is already sitting at its hard floor. The column overflows the
       // ideal boundary rather than erasing the gaps that make it a cascade

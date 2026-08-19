@@ -15,6 +15,25 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Mike's Solitaire">
+<!-- Sets --app-vh from window.innerHeight, the same value
+     getTableauAvailableHeight() in script.js already relies on
+     successfully - a documented iOS standalone-mode gap between 100%/
+     100dvh and the true safe-area-inclusive rendered surface can leave a
+     strip of iOS's own white exposed below html/body's box otherwise (see
+     style.css's html,body rule, which falls back to 100dvh/100% if this
+     never runs). Inline and synchronous, ahead of style.css, so the
+     custom property exists before first paint rather than flashing the
+     fallback first. Kept minimal and dependency-free on purpose - this is
+     a correctness fix for the app shell itself, not deferrable to the
+     module script below. -->
+<script>
+(function () {
+  function setAppVh() { document.documentElement.style.setProperty('--app-vh', window.innerHeight + 'px'); }
+  setAppVh();
+  window.addEventListener('resize', setAppVh);
+  window.addEventListener('orientationchange', setAppVh);
+})();
+</script>
 </head>
 <body>
   <div id="update-bar" class="hidden">
