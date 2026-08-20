@@ -198,14 +198,16 @@
        applied by script.js (one of a few random, subtle treatments).
        Hierarchy (see script.js's showVictoryMessage): a small celebratory
        emoji (from victory.js's pickHeadline(), the seam for future
-       alternates), the win number in the current draw mode (largest),
-       this game's result, then 0 or 2 record lines - each independently
-       either an ordinary "Fastest:"/"Fewest moves:" readout or a trophy
-       line if this win just broke that record. Never both for the same
-       record on the same line. -->
+       alternates), the win number in the current draw mode (largest), how
+       many times this draw mode has been played in total (always shown,
+       never a record - just a count), this game's result, then 0 or 2
+       record lines - each independently either an ordinary "Fastest:"/
+       "Fewest moves:" readout or a trophy line if this win just broke
+       that record. Never both for the same record on the same line. -->
   <div id="win-message" class="hidden">
     <div id="winEmoji" aria-hidden="true"></div>
     <h1 id="winHeadline"></h1>
+    <p id="winPlaysLine"></p>
     <p id="winResultLine"></p>
     <div id="winRecords">
       <p id="winRecordTime"></p>

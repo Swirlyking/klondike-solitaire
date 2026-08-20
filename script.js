@@ -596,6 +596,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   const winEmoji = document.getElementById('winEmoji');
   const winHeadline = document.getElementById('winHeadline');
   const winResultLine = document.getElementById('winResultLine');
+  const winPlaysLine = document.getElementById('winPlaysLine');
   const winRecordTime = document.getElementById('winRecordTime');
   const winRecordMoves = document.getElementById('winRecordMoves');
   const winRecords = document.getElementById('winRecords');
@@ -2131,7 +2132,11 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
         ? applyWin(getStatsForMode(drawModeKey), secs, moveCount)
         : recordWin(drawModeKey, secs, moveCount);
       skipNextStatsRecord = false;
-      pendingWinResult = { moveCount, secs, statsResult };
+      // drawModeKey is snapshotted here (not re-read from the live
+      // preference later) for the same reason moveCount/secs are - Settings
+      // stays reachable through the celebration, so the draw-mode preference
+      // could change before showVictoryMessage renders otherwise.
+      pendingWinResult = { moveCount, secs, statsResult, drawModeKey };
       setAutoFinishControlsDisabled(true);
 
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2553,6 +2558,11 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     const stats = result.statsResult;
     if (stats) {
       winHeadline.textContent = `WIN #${stats.winNumber}`;
+      // Same mode-label convention as renderStatsPanel's own "Draw 1/3
+      // Plays" row - reused as plain text here rather than a shared
+      // helper, since it's a one-line expression either way.
+      const modeLabel = result.drawModeKey === 'draw1' ? 'Draw 1' : 'Draw 3';
+      winPlaysLine.textContent = `${modeLabel} Plays: ${stats.stats.plays}`;
       // Win #1 has nothing yet to compare against - this game's own result
       // IS the new baseline, so showing it again as a "record" line right
       // below the result line would just be a redundant echo.
@@ -2568,6 +2578,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
       // unsaved applyWin()); this just keeps the screen sane if it's ever
       // reached some other way.
       winHeadline.textContent = '';
+      winPlaysLine.textContent = '';
       winRecords.classList.add('hidden');
     }
 

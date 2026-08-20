@@ -1046,6 +1046,16 @@ body {
   text-shadow: 0 1px 8px rgba(0,0,0,0.45);
 }
 
+/* Same quiet tier as the two record lines below - it's a plain count, not
+   a record, so it always shows (never gated by winNumber > 1 like those
+   are) but never gets their trophy treatment either. */
+#winPlaysLine {
+  margin: 0;
+  color: rgba(255,255,255,0.7);
+  font-size: 14px;
+  text-shadow: 0 1px 6px rgba(0,0,0,0.4);
+}
+
 /* The two record lines sit close together as one visual unit (tight own
    gap), separate from #win-message's own 18px gap around the whole group. */
 #winRecords {
