@@ -726,12 +726,29 @@ body {
   background: #133;
   border: 1px solid var(--gold);
   border-radius: 12px;
-  padding: 24px 28px 28px;
+  padding: 0 28px 28px; /* top padding lives on #settings-header itself - see its own comment */
   width: min(90vw, 380px);
   max-height: 85vh;
   overflow-y: auto;
 }
 
+/* Sticky within the card's own scroll area, so the close button stays
+   reachable no matter how far a short viewport (e.g. iPhone landscape)
+   needs to scroll to reach Stats/Feedback - see the settings-modal short-
+   viewport fix this was added for. Deliberately no margin/negative-margin
+   trick to reach the card's own edges: an earlier version used
+   `margin: -24px -28px 12px` to escape #settings-card's padding, but
+   position: sticky combined with a negative top margin measurably
+   miscalculates how much flow-space this reserves in WebKit - confirmed
+   on-device (iPad, both orientations) as a ~12px overlap where the very
+   next element (Stats' Draw 1/Draw 3 toggle) rendered up under the
+   header's own box. Removing #settings-card's own top padding and letting
+   this handle its own top inset via padding-top instead sidesteps that
+   entirely - no negative margins, no cross-element math, just a normal
+   sticky box with normal padding. Its background doesn't need to reach
+   the card's outer edges either: everything that scrolls past it already
+   sits inside the same 28px side inset this padding provides, so nothing
+   would ever show through in that gutter regardless. */
 #settings-header {
   position: sticky;
   top: 0;
@@ -739,8 +756,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: -24px -28px 12px;
-  padding: 24px 28px 12px;
+  padding-top: 24px;
+  padding-bottom: 12px;
   background: #133;
 }
 #settings-header h2 {
@@ -947,7 +964,7 @@ body {
   background: #133;
   border: 1px solid var(--gold);
   border-radius: 12px;
-  padding: 24px 28px 28px;
+  padding: 0 28px 28px; /* top padding lives on #settings-header itself - see its own comment */
   width: min(90vw, 380px);
   max-height: 85vh;
   overflow-y: auto;
