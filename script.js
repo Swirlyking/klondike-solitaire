@@ -2132,11 +2132,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
         ? applyWin(getStatsForMode(drawModeKey), secs, moveCount)
         : recordWin(drawModeKey, secs, moveCount);
       skipNextStatsRecord = false;
-      // drawModeKey is snapshotted here (not re-read from the live
-      // preference later) for the same reason moveCount/secs are - Settings
-      // stays reachable through the celebration, so the draw-mode preference
-      // could change before showVictoryMessage renders otherwise.
-      pendingWinResult = { moveCount, secs, statsResult, drawModeKey };
+      pendingWinResult = { moveCount, secs, statsResult };
       setAutoFinishControlsDisabled(true);
 
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2558,11 +2554,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     const stats = result.statsResult;
     if (stats) {
       winHeadline.textContent = `WIN #${stats.winNumber}`;
-      // Same mode-label convention as renderStatsPanel's own "Draw 1/3
-      // Plays" row - reused as plain text here rather than a shared
-      // helper, since it's a one-line expression either way.
-      const modeLabel = result.drawModeKey === 'draw1' ? 'Draw 1' : 'Draw 3';
-      winPlaysLine.textContent = `${modeLabel} Plays: ${stats.stats.plays}`;
+      winPlaysLine.textContent = `${stats.stats.plays} Plays`;
       // Win #1 has nothing yet to compare against - this game's own result
       // IS the new baseline, so showing it again as a "record" line right
       // below the result line would just be a redundant echo.
@@ -3119,6 +3111,22 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   }
   window.addEventListener('resize', scheduleTableauReflow);
   window.addEventListener('orientationchange', scheduleTableauReflow);
+
+  // Defense in depth against iOS Safari's elastic/rubber-band bounce,
+  // alongside style.css's overflow: hidden on html/body (see that rule's
+  // own comment) - a touch that starts on empty felt, not a card (the drag
+  // system's own preventDefault only ever covers card pointerdowns), has
+  // nothing else stopping it from nudging the whole document a few px,
+  // which is exactly enough to expose real iOS white beyond html/body's
+  // background. Left permissive inside the two places a touch is actually
+  // supposed to scroll something: an expanded tableau column (document-
+  // level scroll - see toggleColumnExpanded) and the settings/stats
+  // modal's own scrollable card.
+  document.addEventListener('touchmove', (e) => {
+    if (document.documentElement.classList.contains('tableau-inspecting')) return;
+    if (e.target.closest('#settings-card, #stats-card')) return;
+    e.preventDefault();
+  }, { passive: false });
 
   newGame();
   backgroundPreloadRemaining(); // only schedules idle-time work - the board above is already rendered and interactive

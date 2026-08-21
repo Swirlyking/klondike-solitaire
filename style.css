@@ -51,7 +51,20 @@ html, body {
   background: radial-gradient(ellipse at top, var(--felt), var(--felt-dark));
   color: #eee;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  overflow-x: hidden;
+  /* Was overflow-x: hidden only - the page never legitimately scrolls
+     vertically either, outside the one deliberate exception just below, so
+     there's nothing overscroll-behavior: none should ever need to chain
+     past. But iOS Safari's elastic/rubber-band bounce isn't reliably
+     stopped by overscroll-behavior alone: a touch that starts on empty
+     felt (not a card - the drag system's own preventDefault only covers
+     card pointerdowns) can still bounce the whole document a few px, which
+     is exactly enough to expose real iOS white beyond html/body's own
+     background at the top or bottom. overflow: hidden removes the
+     scrollable range that bounce needs in the first place, at the CSS
+     layer rather than trying to catch every gesture in JS - confirmed
+     against user reports of a white bar appearing mid-play from what felt
+     like an accidental drag, not just at standalone launch. */
+  overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
   overscroll-behavior: none;
@@ -82,6 +95,10 @@ body.tableau-inspecting {
      mode could stop just short of the true bottom edge. */
   min-height: 100dvh;
   min-height: var(--app-vh, 100dvh);
+  /* The one deliberate exception to the base rule's overflow: hidden -
+     this is the single case where the document is actually meant to
+     scroll (down to an expanded column's overflowing bottom card). */
+  overflow-y: auto;
 }
 
 /* Standalone iOS home-screen mode (viewport-fit=cover in index.html) lets
@@ -1048,9 +1065,14 @@ body {
 
 /* Same quiet tier as the two record lines below - it's a plain count, not
    a record, so it always shows (never gated by winNumber > 1 like those
-   are) but never gets their trophy treatment either. */
+   are) but never gets their trophy treatment either. Sits closer to
+   winHeadline specifically than #win-message's own 18px flex gap gives
+   every pair by default - a negative margin-top here pulls it toward the
+   headline without touching the gap on either side of it (winEmoji-to-
+   headline above, or this-to-winResultLine below stay at the full 18px). */
 #winPlaysLine {
   margin: 0;
+  margin-top: -9px;
   color: rgba(255,255,255,0.7);
   font-size: 14px;
   text-shadow: 0 1px 6px rgba(0,0,0,0.4);
