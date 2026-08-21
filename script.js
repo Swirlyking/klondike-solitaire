@@ -3112,22 +3112,6 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   window.addEventListener('resize', scheduleTableauReflow);
   window.addEventListener('orientationchange', scheduleTableauReflow);
 
-  // Defense in depth against iOS Safari's elastic/rubber-band bounce,
-  // alongside style.css's overflow: hidden on html/body (see that rule's
-  // own comment) - a touch that starts on empty felt, not a card (the drag
-  // system's own preventDefault only ever covers card pointerdowns), has
-  // nothing else stopping it from nudging the whole document a few px,
-  // which is exactly enough to expose real iOS white beyond html/body's
-  // background. Left permissive inside the two places a touch is actually
-  // supposed to scroll something: an expanded tableau column (document-
-  // level scroll - see toggleColumnExpanded) and the settings/stats
-  // modal's own scrollable card.
-  document.addEventListener('touchmove', (e) => {
-    if (document.documentElement.classList.contains('tableau-inspecting')) return;
-    if (e.target.closest('#settings-card, #stats-card')) return;
-    e.preventDefault();
-  }, { passive: false });
-
   newGame();
   backgroundPreloadRemaining(); // only schedules idle-time work - the board above is already rendered and interactive
 })();
