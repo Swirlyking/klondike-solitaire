@@ -33,29 +33,47 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   const RANK_LABELS = ['', 'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
   const RANK_FILES = ['', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'jack', 'queen', 'king'];
 
-  // Two pre-rendered art tiers ship on disk (assets/cards/mobile at
-  // ~175x250, assets/cards/full at the original 350x500, both WebP) so a
-  // phone never has to download or decode pixels many times larger than
-  // it can actually show. Decided once, here, from whatever the viewport
-  // happens to be at load - and never recomputed - so an in-progress
-  // game can't have cards change resolution out from under it on
-  // rotation/resize. Keys off the same 720px breakpoint style.css uses
-  // for its own mobile layout (so --card-w already reflects it), then
-  // double-checks the actual physical pixel need against the mobile
-  // tier's native resolution - this is what keeps a landscape-rotated
-  // phone (viewport width > 720 despite being a phone) safely on the
-  // full tier instead of upscaling a too-small mobile asset.
-  // --card-w is itself a calc()-with-100vw expression on mobile (see
-  // resolveCssLength below, defined later in this file but hoisted -
-  // function declarations are available to code above them in the same
-  // scope), so it's resolved through a real element rather than parsed
-  // as text.
+  // Read once, at load, from whatever the viewport happens to be - never
+  // recomputed after this. Both ASSET_TIER and FACE_SET below key off this
+  // same single measurement (avoiding a second forced-layout DOM probe),
+  // and both inherit the same "decided once, frozen for the session"
+  // guarantee for the same reason: an in-progress game can't have cards
+  // change appearance out from under it on rotation/resize. --card-w is
+  // itself a calc()-with-100vw expression on mobile (see resolveCssLength
+  // below, defined later in this file but hoisted - function declarations
+  // are available to code above them in the same scope), so it's resolved
+  // through a real element rather than parsed as text.
+  const RENDERED_CARD_W_PX = resolveCssLength('var(--card-w)') || 84;
+
+  // Two pre-rendered resolution tiers ship on disk for the regular faces
+  // (assets/cards/mobile at ~175x250, assets/cards/full at the original
+  // 350x500, both WebP) so a phone never has to download or decode pixels
+  // many times larger than it can actually show. Keys off the same 720px
+  // breakpoint style.css uses for its own mobile layout, then double-
+  // checks the actual physical pixel need against the mobile tier's native
+  // resolution - this is what keeps a landscape-rotated phone (viewport
+  // width > 720 despite being a phone) safely on the full tier instead of
+  // upscaling a too-small mobile asset.
   const ASSET_TIER = (() => {
-    const cardWpx = resolveCssLength('var(--card-w)') || 84;
-    const neededPhysicalPx = cardWpx * (window.devicePixelRatio || 1);
+    const neededPhysicalPx = RENDERED_CARD_W_PX * (window.devicePixelRatio || 1);
     const MOBILE_TIER_NATIVE_PX = 175;
     return (window.innerWidth <= 720 && neededPhysicalPx <= MOBILE_TIER_NATIVE_PX) ? 'mobile' : 'full';
   })();
+
+  // A second, orthogonal axis from ASSET_TIER above: which ARTWORK to use,
+  // not which resolution of it. assets/cards/small/ is a distinct card-face
+  // design (not a downscaled copy of the regular faces - full native
+  // 700x1015 art, always) purpose-built to stay readable at genuinely small
+  // rendered sizes, where the regular faces' corner rank/suit becomes hard
+  // to read. 65px sits in the middle of a wide, clean gap measured across
+  // every real breakpoint this game ships: only iPhone-portrait-class
+  // widths render cards around 50-52px; every other case (iPad either
+  // orientation ~86-140px, iPhone landscape ~90-95px, all desktop sizes
+  // 84-170px) sits comfortably at 84px+, with nothing in between - so this
+  // threshold has wide margin on both sides rather than sitting close to
+  // any real device's actual width.
+  const SMALL_FACE_THRESHOLD_PX = 65;
+  const FACE_SET = RENDERED_CARD_W_PX <= SMALL_FACE_THRESHOLD_PX ? 'small' : 'regular';
 
   // Displayed at the bottom of Settings (see versionLink) - no build step
   // generates this, so it's a plain hand-bumped constant, same convention
@@ -68,16 +86,20 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 
   // Cache-buster on every card image URL, not a build/deploy version -
   // bump this by hand whenever the card art itself changes. It's what
-  // lets Netlify give assets/cards/{mobile,full}/* a year-long immutable
-  // Cache-Control (see netlify.toml) without a stale deck getting stuck
-  // in a returning player's cache: a version bump mints new URLs, which
-  // are cache misses by construction, while every URL that didn't change
-  // keeps serving instantly from cache forever.
+  // lets Netlify give assets/cards/{mobile,full,small}/*.webp a year-long
+  // immutable Cache-Control (see netlify.toml) without a stale deck
+  // getting stuck in a returning player's cache: a version bump mints new
+  // URLs, which are cache misses by construction, while every URL that
+  // didn't change keeps serving instantly from cache forever.
   const ASSET_VERSION = 'v3';
 
+  // FACE_SET picks the folder for card FACES only - card backs (below)
+  // are untouched by it, always following ASSET_TIER alone, since the new
+  // small-card art is a faces-only replacement.
   function cardImageSrc(card) {
     const suit = SUITS.find(s => s.key === card.suit);
-    return `assets/cards/${ASSET_TIER}/${suit.file}_${RANK_FILES[card.rank]}.webp?v=${ASSET_VERSION}`;
+    const folder = FACE_SET === 'small' ? 'small' : ASSET_TIER;
+    return `assets/cards/${folder}/${suit.file}_${RANK_FILES[card.rank]}.webp?v=${ASSET_VERSION}`;
   }
 
   function backImageSrc(colorId) {
@@ -87,10 +109,15 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // The original full-resolution PNGs stay on disk as a graceful
   // fallback target - untiered and unversioned, so they're guaranteed to
   // exist regardless of ASSET_TIER or a WebP request failing/being
-  // unsupported. See attachImageFallback for where these get wired up.
+  // unsupported. assets/cards/small/ carries its own such fallback (same
+  // art, same idea) rather than falling through to the regular design's
+  // PNG, so even a WebP-decode failure on a tiny phone still shows the
+  // right artwork, not just a working one. See attachImageFallback for
+  // where these get wired up.
   function cardPngFallbackSrc(card) {
     const suit = SUITS.find(s => s.key === card.suit);
-    return `assets/cards/${suit.file}_${RANK_FILES[card.rank]}.png`;
+    const base = FACE_SET === 'small' ? 'assets/cards/small' : 'assets/cards';
+    return `${base}/${suit.file}_${RANK_FILES[card.rank]}.png`;
   }
 
   function backPngFallbackSrc(colorId) {
