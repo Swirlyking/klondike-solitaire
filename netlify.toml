@@ -11,26 +11,36 @@
 # Card art is fetched through cache-busted URLs (?v=... in script.js's
 # ASSET_VERSION), so it's safe to cache for a year and never revalidate -
 # a future art change mints a new URL rather than relying on this cache
-# ever expiring. Scoped to just the tiered directories, not the untiered
-# original PNGs at assets/cards/*.png (those are only a fallback target
-# and aren't versioned), and not index.html/script.js/style.css, which
-# aren't versioned either and need to keep revalidating normally.
+# ever expiring. Scoped to just the versioned WebP directories, never the
+# untiered PNG fallbacks living alongside them (those aren't versioned and
+# need to keep revalidating normally), and not index.html/script.js/
+# style.css, which aren't versioned either.
 [[headers]]
-  for = "/assets/cards/mobile/*"
+  for = "/assets/cards/backs/hi/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 
 [[headers]]
-  for = "/assets/cards/full/*"
+  for = "/assets/cards/backs/lo/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 
-# Scoped to just .webp here, not the whole /assets/cards/small/* directory -
-# that folder's .png files are the small-face-set's own fallback target
-# (see cardPngFallbackSrc in script.js) and, like the untiered PNGs above,
-# aren't versioned, so they need to keep revalidating normally rather than
-# being cached immutably forever.
 [[headers]]
-  for = "/assets/cards/small/*.webp"
+  for = "/assets/cards/worn/standard/hi/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/assets/cards/worn/standard/lo/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Scoped to just .webp here, not the whole /assets/cards/worn/mobile/*
+# directory - that folder's .png files are Mobile-size's own fallback
+# target (see cardPngFallbackSrc in script.js) and, like the untiered PNGs
+# above, aren't versioned, so they need to keep revalidating normally
+# rather than being cached immutably forever.
+[[headers]]
+  for = "/assets/cards/worn/mobile/*.webp"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
