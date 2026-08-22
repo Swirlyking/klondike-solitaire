@@ -44,3 +44,18 @@
   for = "/assets/cards/worn/mobile/*.webp"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/assets/cards/clean/standard/hi/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/assets/cards/clean/standard/lo/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/assets/cards/clean/mobile/*.webp"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

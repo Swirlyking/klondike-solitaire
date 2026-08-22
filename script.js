@@ -48,19 +48,37 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 
   // Every card-face collection this game knows about, each pointing at its
   // two CARD_SIZE variants' base directory on disk. Adding a future
-  // collection (e.g. 'regular') means adding one entry here plus its two
-  // asset folders - nothing else in this file needs to change, since every
-  // call site below only ever asks CARD_COLLECTIONS[activeCollection][...]
-  // for a base path, never a hard-coded directory name. No picker exists
-  // yet; 'worn' is simply the only collection that exists today. Card
-  // backs are deliberately NOT part of this registry - see BACKS_BASE.
+  // collection means adding one entry here, its two asset folders, and one
+  // more option in PREFERENCE_SECTIONS' 'cardStyle' section below - nothing
+  // else in this file needs to change, since every call site only ever asks
+  // CARD_COLLECTIONS[getActiveCollection()][...] for a base path, never a
+  // hard-coded directory name. Card backs are deliberately NOT part of this
+  // registry - see BACKS_BASE.
   const CARD_COLLECTIONS = {
     worn: {
       standard: 'assets/cards/worn/standard',
       mobile: 'assets/cards/worn/mobile',
     },
+    clean: {
+      standard: 'assets/cards/clean/standard',
+      mobile: 'assets/cards/clean/mobile',
+    },
   };
-  const activeCollection = 'worn';
+  const DEFAULT_COLLECTION = 'worn';
+
+  // Read live off the 'cardStyle' preference (see PREFERENCE_SECTIONS)
+  // rather than a frozen constant - unlike RESOLUTION_TIER/CARD_SIZE above,
+  // which are real per-session viewport measurements that can't change
+  // mid-game without the board visibly jumping, which collection to draw
+  // from is a pure skin choice with nothing physical backing it, so there's
+  // no reason it can't apply the instant the player picks it. Falls back to
+  // the default for a stale/unknown stored id, same defensive pattern
+  // currentPreferenceOption uses below - a bad value here can never break
+  // rendering.
+  function getActiveCollection() {
+    const id = getPreference('cardStyle', DEFAULT_COLLECTION);
+    return CARD_COLLECTIONS[id] ? id : DEFAULT_COLLECTION;
+  }
 
   // Card backs aren't collection-specific artwork the way faces are -
   // every collection shares the same set of back designs, so they live in
@@ -118,22 +136,77 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // a returning player's cache: a version bump mints new URLs, which are
   // cache misses by construction, while every URL that didn't change keeps
   // serving instantly from cache forever.
-  const ASSET_VERSION = 'v4';
+  const ASSET_VERSION = 'v5';
 
   // CARD_SIZE picks the collection folder for card FACES only - card backs
   // (below) are untouched by it, always following RESOLUTION_TIER alone
   // against the shared BACKS_BASE, since backs aren't collection- or
   // size-specific the way faces are. Standard-size faces get a further
   // RESOLUTION_TIER subfolder; Mobile-size faces don't (single native res).
-  function cardImageSrc(card) {
+  // collectionId defaults to the live active collection - every real call
+  // site wants that. The optional override exists solely for
+  // preloadForCollectionSwitch, which needs to resolve URLs for the
+  // collection the player is about to switch TO, before the preference
+  // (and therefore getActiveCollection()) actually changes.
+  function cardImageSrc(card, collectionId = getActiveCollection()) {
     const suit = SUITS.find(s => s.key === card.suit);
-    const base = CARD_COLLECTIONS[activeCollection][CARD_SIZE];
+    const base = CARD_COLLECTIONS[collectionId][CARD_SIZE];
     const tierDir = CARD_SIZE === 'standard' ? `/${RESOLUTION_TIER}` : '';
     return `${base}${tierDir}/${suit.file}_${RANK_FILES[card.rank]}.webp?v=${ASSET_VERSION}`;
   }
 
-  function backImageSrc(colorId) {
-    return `${BACKS_BASE}/${RESOLUTION_TIER}/back-${colorId}.webp?v=${ASSET_VERSION}`;
+  // Every selectable card-back DESIGN this game knows about, keyed by the
+  // same id the 'cardBack' preference is stored as - e.g. 'parlor_red',
+  // never 'parlor_red_worn'. Which actual artwork that resolves to is a
+  // second, independent question (see backImageSrc) driven by the active
+  // face collection - the two axes only ever combine at the resolver,
+  // mirroring how CARD_COLLECTIONS and CARD_SIZE stay separate too. Adding
+  // a future design means adding one entry here (plus its clean/worn
+  // asset files) - PREFERENCE_SECTIONS' 'cardBack' options are generated
+  // from this, not hand-listed.
+  const CARD_BACKS = {
+    lovebirds: 'Lovebirds',
+    mod_pop: 'Mod Pop',
+    north_star_blue: 'North Star Blue',
+    north_star_red: 'North Star Red',
+    mesmer: 'Mesmer',
+    parlor_blue: 'Parlor Blue',
+    parlor_red: 'Parlor Red',
+    fireflower_blue: 'Fireflower Blue',
+    fireflower_red: 'Fireflower Red',
+    flower: 'Flower',
+    eye: 'Eye',
+    blue: 'Blue',
+    red: 'Red',
+  };
+
+  // Which back-art "condition" (clean or worn) a given face collection
+  // uses. Not every future collection is guaranteed its own worn-specific
+  // back set, so anything unlisted here falls back to 'clean' - the same
+  // thing a genuinely new collection with no back art of its own yet
+  // would need anyway.
+  const BACK_CONDITION_BY_COLLECTION = { worn: 'worn', clean: 'clean' };
+
+  function backCondition(collectionId) {
+    return BACK_CONDITION_BY_COLLECTION[collectionId] || 'clean';
+  }
+
+  // A resolved worn back has no dedicated debug/label surface in the game
+  // today, but if one is ever added, describe it as e.g. "Parlor Red
+  // (worn)" via CARD_BACKS[designId] + this suffix - never in the Card
+  // Back picker itself, which only ever shows the plain design name (see
+  // PREFERENCE_SECTIONS below).
+  function backConditionSuffix(collectionId) {
+    return backCondition(collectionId) === 'worn' ? '-worn' : '';
+  }
+
+  // collectionId defaults to the live active collection, same pattern as
+  // cardImageSrc - the optional override exists for the same reason:
+  // resolving a URL for the collection the player is about to switch TO,
+  // before the preference actually changes (see the settings click
+  // handler's preload step).
+  function backImageSrc(designId, collectionId = getActiveCollection()) {
+    return `${BACKS_BASE}/${RESOLUTION_TIER}/back-${designId}${backConditionSuffix(collectionId)}.webp?v=${ASSET_VERSION}`;
   }
 
   // The original PNGs stay on disk as a graceful fallback target -
@@ -143,14 +216,14 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // its own collection folder, so even a WebP-decode failure still shows
   // the right artwork, not just a working one. See attachImageFallback for
   // where these get wired up.
-  function cardPngFallbackSrc(card) {
+  function cardPngFallbackSrc(card, collectionId = getActiveCollection()) {
     const suit = SUITS.find(s => s.key === card.suit);
-    const base = CARD_COLLECTIONS[activeCollection][CARD_SIZE];
+    const base = CARD_COLLECTIONS[collectionId][CARD_SIZE];
     return `${base}/${suit.file}_${RANK_FILES[card.rank]}.png`;
   }
 
-  function backPngFallbackSrc(colorId) {
-    return `${BACKS_BASE}/back-${colorId}.png`;
+  function backPngFallbackSrc(designId, collectionId = getActiveCollection()) {
+    return `${BACKS_BASE}/back-${designId}${backConditionSuffix(collectionId)}.png`;
   }
 
   // Falls back exactly once per <img> - the dataset flag stops a failing
@@ -167,24 +240,38 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // Every user-choosable preference, driving both the Settings panel's UI
   // (built generically from this array - see renderSettingsPanel) and how
   // the board itself reads the choice back (see getCardBackSrc). Adding a
-  // future preference (table surface, card face style, ...) should only
-  // ever mean adding another entry here, an appearance-reading helper
-  // like getCardBackSrc, and the render-time call sites that use it -
-  // never new settings-panel plumbing.
+  // future preference (table surface, ...) should only ever mean adding
+  // another entry here, an appearance-reading helper like getCardBackSrc,
+  // and the render-time call sites that use it - never new settings-panel
+  // plumbing. 'cardStyle' is the one exception with extra wiring beyond
+  // that: see the special-cased preload in renderSettingsPanel's click
+  // handler, needed only because switching it can require new network
+  // fetches an instant color/deal-style change never does.
   const PREFERENCE_SECTIONS = [
+    {
+      key: 'cardStyle',
+      label: 'Cards',
+      default: DEFAULT_COLLECTION,
+      variant: 'text', // plain text segmented control - no card art preview, unlike every other image-backed section
+      options: [
+        { id: 'worn', label: 'Worn' },
+        { id: 'clean', label: 'New' },
+      ],
+    },
     {
       key: 'cardBack',
       label: 'Card Back',
       default: 'red',
-      options: [
-        { id: 'red', label: 'Red', previewSrc: () => backImageSrc('red') },
-        { id: 'blue', label: 'Blue', previewSrc: () => backImageSrc('blue') },
-        { id: 'green', label: 'Green', previewSrc: () => backImageSrc('green') },
-        { id: 'purple', label: 'Purple', previewSrc: () => backImageSrc('purple') },
-        { id: 'eye', label: 'Eye', previewSrc: () => backImageSrc('eye') },
-        { id: 'flowers', label: 'Flowers', previewSrc: () => backImageSrc('flowers') },
-        { id: 'rabbit', label: 'Rabbit', previewSrc: () => backImageSrc('rabbit') },
-      ],
+      // Generated from CARD_BACKS rather than hand-listed, so a future
+      // design only ever needs adding there. previewSrc is pinned to
+      // 'clean' regardless of the live active collection - the picker is
+      // choosing a DESIGN, not a wear condition, and should read the same
+      // whether the player is currently on Worn or Clean faces.
+      options: Object.entries(CARD_BACKS).map(([id, label]) => ({
+        id,
+        label,
+        previewSrc: () => backImageSrc(id, 'clean'),
+      })),
     },
     {
       key: 'drawCount',
@@ -202,20 +289,42 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     return PREFERENCE_SECTIONS.find(s => s.key === key);
   }
 
-  // Falls back to the section's first option if a stored value doesn't
-  // match any current option (e.g. an option was renamed/removed in a
-  // later update) - never lets a stale preference break rendering.
+  // Falls back to the section's own declared default (not just whichever
+  // option happens to be listed first) if a stored value doesn't match any
+  // current option - e.g. a retired card-back design with no modern
+  // equivalent. Falling back to options[0] instead of the real default
+  // would silently depend on default always happening to be first in the
+  // array, which stopped being true once Card Back's default ('red')
+  // wasn't its first listed design - never lets a stale preference break
+  // rendering OR land on the wrong design.
   function currentPreferenceOption(section) {
     const chosenId = getPreference(section.key, section.default);
-    return section.options.find(o => o.id === chosenId) ?? section.options[0];
+    return section.options.find(o => o.id === chosenId)
+      ?? section.options.find(o => o.id === section.default)
+      ?? section.options[0];
   }
 
-  function getCardBackColorId() {
+  // A couple of retired card-back ids get one-time-migrated to their
+  // modern equivalent, silently, on load - so a returning player who had
+  // one selected keeps the same design under its new id rather than
+  // reverting to the default. Every other retired id (green, purple,
+  // rabbit) has no equivalent in the current 13 designs and is
+  // deliberately left alone here: it already falls back safely to
+  // 'cardBack's declared default via currentPreferenceOption above.
+  const LEGACY_CARD_BACK_IDS = { flowers: 'flower' };
+  (() => {
+    const stored = getPreference('cardBack', null);
+    if (stored && LEGACY_CARD_BACK_IDS[stored]) {
+      setPreference('cardBack', LEGACY_CARD_BACK_IDS[stored]);
+    }
+  })();
+
+  function getCardBackDesignId() {
     return currentPreferenceOption(findPreferenceSection('cardBack')).id;
   }
 
   function getCardBackSrc() {
-    return backImageSrc(getCardBackColorId());
+    return backImageSrc(getCardBackDesignId());
   }
 
   // Read live from the preference on every draw rather than cached in a
@@ -1412,7 +1521,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     } else {
       img.src = getCardBackSrc();
       img.alt = 'face-down card';
-      attachImageFallback(img, backPngFallbackSrc(getCardBackColorId()));
+      attachImageFallback(img, backPngFallbackSrc(getCardBackDesignId()));
     }
     el.appendChild(img);
     return el;
@@ -1586,7 +1695,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     frontImg.decoding = 'sync';
     frontImg.src = getCardBackSrc();
     frontImg.alt = 'face-down card';
-    attachImageFallback(frontImg, backPngFallbackSrc(getCardBackColorId()));
+    attachImageFallback(frontImg, backPngFallbackSrc(getCardBackDesignId()));
     front.appendChild(frontImg);
 
     const back = document.createElement('div');
@@ -3068,14 +3177,13 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // ---------- settings panel ----------
 
   function renderPreferenceOptionPreview(option) {
-    // Image-backed options (card back, and presumably card face style
-    // later) show the actual asset, scaled down by CSS; a future
-    // non-image preference (table surface color?) can supply
-    // previewColor instead and get a flat swatch - renderSettingsPanel
-    // itself never needs to know which kind a given section uses.
-    // previewSrc is a function rather than a plain string so it's read
-    // lazily here (when the panel actually renders) rather than at
-    // PREFERENCE_SECTIONS definition time - this is also the only place
+    // Image-backed options (card back, card style) show the actual asset,
+    // scaled down by CSS; a future non-image preference (table surface
+    // color?) can supply previewColor instead and get a flat swatch -
+    // renderSettingsPanel itself never needs to know which kind a given
+    // section uses. previewSrc is a function rather than a plain string so
+    // it's read lazily here (when the panel actually renders) rather than
+    // at PREFERENCE_SECTIONS definition time - this is also the only place
     // in the app that fetches the three unselected card-back colors, and
     // only because the player opened Settings.
     if (option.previewSrc) {
@@ -3083,6 +3191,15 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
       img.src = option.previewSrc();
       img.alt = option.label;
       img.draggable = false;
+      // A real on-board card gets its background from .card.face-up/
+      // .card.face-down (#ded9ca - see those rules' own comments on why),
+      // which this preview button isn't. Most card art only needs that for
+      // a thin sliver around its own rounded corners, invisible either way,
+      // but several Clean-condition face and back designs leave much more
+      // of their own background transparent, relying on exactly this fill
+      // - true for both sections that use previewSrc today (Cards, Card
+      // Back), and any future one that's also real card art.
+      img.classList.add('settings-option-card-preview');
       return img;
     }
     // Deal Style's preview: a small fan of N card backs (reusing whichever
@@ -3110,6 +3227,41 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     return swatch;
   }
 
+  // Every card currently showing face-up on the board - exactly the set
+  // render() is about to redraw, and therefore exactly (and only) what
+  // needs to be warm in a newly chosen collection to switch Cards with no
+  // blank-card flash. Deliberately NOT the full 52-card deck: this game
+  // supports more collections over time, and eagerly warming an entire
+  // inactive collection on every switch (let alone every session) would
+  // scale badly once there are more than two. Covered tableau cards and
+  // whatever's left in the stock stay cold in the new collection until
+  // something actually reveals them, same as they were cold in the
+  // original collection at the start of this session - switching Cards
+  // doesn't change that contract, it only means "on demand" now also
+  // covers cards that happen to already be face-up.
+  function visibleFaceUpCards() {
+    const cards = [];
+    state.waste.slice(Math.max(0, state.waste.length - 3)).forEach(c => cards.push(c));
+    state.foundations.forEach(pile => { if (pile.length) cards.push(pile[pile.length - 1]); });
+    state.tableau.forEach(col => col.forEach(c => { if (c.faceUp) cards.push(c); }));
+    return cards;
+  }
+
+  // Resolves once every given URL has either loaded and decoded, or
+  // failed - never rejects, so a single broken fetch can't hang a switch
+  // (render()'s own attachImageFallback covers a real failure the same
+  // way it always does). Used only to bridge the instant between picking
+  // a new Cards/Card Back option and applying it, so that instant never
+  // shows a blank card mid-load.
+  function preloadUrls(urls) {
+    return Promise.all(urls.map(url => new Promise(resolve => {
+      const img = new Image();
+      img.onload = img.onerror = resolve;
+      img.src = url;
+      if (img.decode) img.decode().then(resolve, resolve);
+    })));
+  }
+
   // Rebuilds the whole panel from PREFERENCE_SECTIONS every time it's
   // opened or a choice changes - cheap (a handful of small buttons), and
   // means a newly added section just appears with no other code to
@@ -3134,17 +3286,60 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
         optionBtn.type = 'button';
         optionBtn.className = 'settings-option';
         optionBtn.classList.toggle('settings-option--stack', section.variant === 'stack');
+        optionBtn.classList.toggle('settings-option--text', section.variant === 'text');
         optionBtn.classList.toggle('selected', option.id === current.id);
         optionBtn.setAttribute('aria-label', option.label);
-        optionBtn.appendChild(renderPreferenceOptionPreview(option));
-        if (section.variant === 'stack') {
-          const label = document.createElement('span');
-          label.className = 'settings-option-label';
-          label.textContent = option.label;
-          optionBtn.appendChild(label);
+        if (section.variant === 'text') {
+          // No card art here - Cards is the one section where the choice
+          // itself (Worn vs New) is the whole point, not a design being
+          // compared visually, so a plain label reads more clearly than a
+          // small king-of-spades sample would.
+          optionBtn.textContent = option.label;
+        } else {
+          optionBtn.appendChild(renderPreferenceOptionPreview(option));
+          if (section.variant === 'stack') {
+            const label = document.createElement('span');
+            label.className = 'settings-option-label';
+            label.textContent = option.label;
+            optionBtn.appendChild(label);
+          }
         }
         optionBtn.addEventListener('click', () => {
           if (option.id === current.id) return;
+          if (section.key === 'cardStyle') {
+            // Switching collections is different from every other
+            // preference here: it's the entire visible board's worth of
+            // faces, plus the selected back's condition, in art the
+            // browser may never have fetched before (a Settings preview
+            // only ever warms the CLEAN back - see the cardBack section's
+            // previewSrc - so the worn variant of whatever's selected is
+            // still cold the first time a player switches to Worn).
+            // Waiting for exactly that (visibleFaceUpCards + the one back
+            // URL, not the whole deck) to be decode-ready before flipping
+            // the preference over is what keeps this from reading as a
+            // blank-card flash. See preloadUrls for the "never hangs"
+            // guarantee.
+            const urls = visibleFaceUpCards().map(card => cardImageSrc(card, option.id));
+            urls.push(backImageSrc(getCardBackDesignId(), option.id));
+            preloadUrls(urls).then(() => {
+              setPreference(section.key, option.id);
+              renderSettingsPanel();
+              render();
+            });
+            return;
+          }
+          if (section.key === 'cardBack') {
+            // Same gap as above, from the other direction: this design's
+            // preview tile was only ever fetched as CLEAN art, so if the
+            // player is currently on Worn faces, its worn variant is still
+            // cold the instant they pick it. One image, not the whole set.
+            preloadUrls([backImageSrc(option.id, getActiveCollection())]).then(() => {
+              setPreference(section.key, option.id);
+              renderSettingsPanel();
+              render();
+            });
+            return;
+          }
           setPreference(section.key, option.id);
           renderSettingsPanel(); // move the selected-highlight
           render(); // apply immediately - e.g. face-down cards pick up the new back right away
