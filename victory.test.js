@@ -10,7 +10,6 @@ import {
   MESSAGE_ENTRANCES,
   HEADLINES,
   BEHAVIOR_PROFILES,
-  CHAOS_DURATION_RANGE_MS,
   PAUSE_RANGE_MS,
   WEIRD_EVENT_PROBABILITY,
   REDUCED_MOTION_PAUSE_MS,
@@ -64,7 +63,7 @@ test('generateVictoryPersonality(true): reduced-motion shape is minimal and has 
     // celebration clones from this shape.
     for (const field of ['mode', 'primaryBehaviors', 'rebelBehaviors', 'rebelProbability',
       'gravityDirectionDeg', 'rotationAmountTurns', 'staggerRangeMs', 'staggerShape',
-      'focalPoint', 'chaosOnsetFraction', 'chaosDurationMs', 'arcLaunch', 'weirdEvent']) {
+      'focalPoint', 'chaosOnsetFraction', 'weirdEvent']) {
       assert.equal(p[field], undefined, `reduced-motion personality must not carry "${field}"`);
     }
   }
@@ -91,8 +90,6 @@ test('generateVictoryPersonality(false): every field stays within its documented
       assert.ok(p.focalPoint.yFrac >= 0 && p.focalPoint.yFrac <= 1);
     }
     assert.ok(p.chaosOnsetFraction >= 0 && p.chaosOnsetFraction <= 1);
-    assert.ok(p.chaosDurationMs >= CHAOS_DURATION_RANGE_MS[0] && p.chaosDurationMs <= CHAOS_DURATION_RANGE_MS[1]);
-    assert.equal(typeof p.arcLaunch, 'boolean');
     assert.ok(p.weirdEvent === null || WEIRD_EVENTS.includes(p.weirdEvent));
     assert.ok(p.pauseMs >= PAUSE_RANGE_MS[0] && p.pauseMs <= PAUSE_RANGE_MS[1]);
     assert.ok(MESSAGE_ENTRANCES.includes(p.messageEntrance));
@@ -126,9 +123,12 @@ test('assignCardBehaviors: every card in a 52-card fixture gets exactly one vali
       assert.ok(plan.depthFromTop >= 0 && plan.depthFromTop <= 12);
       assert.equal(typeof plan.isRebel, 'boolean');
       assert.ok(plan.delayMs >= 0);
-      assert.ok(plan.durationMs >= 0);
-      assert.ok(plan.delayMs + plan.durationMs <= personality.chaosDurationMs,
-        `card ${plan.cardId} (${plan.behavior}) finishes at ${plan.delayMs + plan.durationMs}ms, after chaosDurationMs ${personality.chaosDurationMs}ms`);
+      // No global cap anymore (see assignCardBehaviors) - the real
+      // invariant is that a card's duration always stays within its OWN
+      // behavior's declared natural range.
+      const [durMin, durMax] = BEHAVIOR_PROFILES[plan.behavior].durationMs;
+      assert.ok(plan.durationMs >= durMin && plan.durationMs <= durMax,
+        `card ${plan.cardId} (${plan.behavior}) duration ${plan.durationMs}ms outside its own profile range [${durMin},${durMax}]`);
 
       if (plan.inward) {
         assert.equal(plan.exitAngleDeg, null);
@@ -143,7 +143,6 @@ test('assignCardBehaviors: every card in a 52-card fixture gets exactly one vali
       assert.equal(typeof plan.fadeOut, 'boolean');
       assert.equal(typeof plan.needsPerspective, 'boolean');
       assert.equal(typeof plan.inward, 'boolean');
-      assert.equal(typeof plan.arc, 'boolean');
       assert.ok(plan.signA === 1 || plan.signA === -1);
       assert.ok(plan.signB === 1 || plan.signB === -1);
       assert.ok(plan.secondaryFactor >= 0 && plan.secondaryFactor <= 1);
@@ -247,10 +246,10 @@ test('rebel behaviors are drawn roughly 15-30% of the time, primary the rest (co
 });
 
 test('cards that leave later in the celebration get calmer: less rotation and lower rebel odds than early cards', () => {
-  // Bucket every generated plan by how far into its own celebration's
-  // timeline it starts (delayMs / chaosDurationMs), pooled across many
-  // trials/modes so mode-specific rotation ranges wash out - only the
-  // late-vs-early skew within the same pool of plans is being asserted.
+  // Bucket every generated plan by how far into its own trial's start-time
+  // spread it begins (delayMs / that trial's own max delayMs), pooled
+  // across many trials/modes so mode-specific rotation ranges wash out -
+  // only the late-vs-early skew within the same pool of plans is asserted.
   const foundations = makeFoundationsFixture();
   const early = [];
   const late = [];
@@ -284,7 +283,7 @@ test('cards that leave later in the celebration get calmer: less rotation and lo
     `late-starting cards should defect to a rebel behavior less often (early ${earlyRebelRate}, late ${lateRebelRate})`);
 });
 
-test('tableTip mode: SLIDE-dominant, low rebel rate, and every card still finishes within chaosDurationMs', () => {
+test('tableTip mode: SLIDE-dominant, low rebel rate', () => {
   const foundations = makeFoundationsFixture();
   let found = null;
   for (let i = 0; i < 3000 && !found; i++) {
@@ -299,9 +298,6 @@ test('tableTip mode: SLIDE-dominant, low rebel rate, and every card still finish
   assert.equal(plans.length, 52);
   const slideCount = plans.filter(p => p.behavior === 'SLIDE').length;
   assert.ok(slideCount / plans.length > 0.6, `expected SLIDE to dominate tableTip, got ${slideCount}/52`);
-  for (const plan of plans) {
-    assert.ok(plan.delayMs + plan.durationMs <= found.chaosDurationMs);
-  }
 });
 
 test('weird events only ever adjust existing personality fields - never add new ones', () => {

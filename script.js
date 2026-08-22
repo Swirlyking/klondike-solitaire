@@ -584,21 +584,27 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // be by the time the message actually renders.
   let pendingWinResult = null;
   let celebrationTimer = null;
+  // Every currently-in-flight celebration-card Animation object (from
+  // el.animate() - see animateCelebrationCard), tracked purely so
+  // cleanupVictoryCelebration can immediately .cancel() every one of them
+  // on New Game/Restart/Undo, no matter how far into their own (now
+  // multi-second) run they are. Never read for any other purpose - the
+  // cards' actual motion is entirely self-contained in each Animation.
+  let activeCelebrationAnimations = [];
   // Set by forceWinForTesting right before it fabricates a solved board, so
   // the win it triggers (through the exact same checkWin() path a real win
   // uses) still locks the toolbar and plays the real celebration, but
   // doesn't inflate the player's actual stats with a result that took zero
   // real moves to reach. Cleared the instant checkWin() reads it.
   let skipNextStatsRecord = false;
-  // The win message reveals this long relative to the *actual* last card's
-  // landing time (computed per-run from the real plan, not
-  // personality.chaosDurationMs - that value is only a soft envelope
-  // victory.js uses to bound individual durations during generation, and
-  // the realized max finish time is routinely well under it, which used to
-  // leave an awkward dead pause before the message showed up). Negative on
-  // purpose: the message now arrives while the last card or two are still
-  // gently settling, not after every last pixel has stopped moving.
-  const MESSAGE_REVEAL_BUFFER_MS = -880;
+  // The win message no longer waits for the cards to finish at all - the
+  // flying cards ARE the celebration, not an intro blocking the message.
+  // This is a short, fixed delay from the moment the celebration actually
+  // begins (createVictoryCelebration's own invocation), independent of how
+  // long individual cards go on to animate for afterward. Tuned by feel: it
+  // needs to clear the double-rAF handoff plus give the very first cards a
+  // beat to actually be visibly moving before text appears on top of them.
+  const MESSAGE_DELAY_AFTER_CELEBRATION_START_MS = 1300;
 
   // Remembers, per tableau card/sequence, which column a click-cycle last
   // sent it to — so the next click on the same card advances to the next
@@ -2263,33 +2269,39 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // Explosive: most of the distance is covered in the FRONT of the
   // duration (front-loaded keyframes), minimal rotation ("mostly straight
   // trajectory"), short overall duration already comes from
-  // BEHAVIOR_PROFILES.LAUNCH's own low duration range. In fountain mode
-  // (plan.arc), an up-then-over-then-down parabolic arc replaces the
-  // straight shot - a genuinely different path, not a parameter tweak.
+  // BEHAVIOR_PROFILES.LAUNCH's own low duration range - "shoots violently
+  // offscreen almost immediately." TOSS below is the slower, arcing
+  // cousin this used to double as (via an arcLaunch flag) - now its own
+  // behavior with its own duration range, so LAUNCH itself can stay fast.
   function createLaunchKeyframes(plan, viewport) {
     const rad = (plan.exitAngleDeg ?? 270) * Math.PI / 180;
     const dist = viewport.diagonal * (1.1 + plan.distanceFactor);
     const dxEnd = Math.cos(rad) * dist;
     const dyEnd = Math.sin(rad) * dist;
     const rotEnd = plan.rotationTurns * 360 * 0.35;
-
-    if (plan.arc) {
-      // Up first (steeper than the base angle), then arcs over and falls -
-      // a real parabola: a peak keyframe well above the final resting dy,
-      // reached early, followed by the ballistic fall to dxEnd/dyEnd.
-      const peakDy = -viewport.height * (0.5 + plan.distanceFactor * 0.3);
-      const peakDx = dxEnd * 0.3;
-      return [
-        kf(0, 0, 0, 'z', 1, undefined, 0),
-        kf(peakDx, peakDy, rotEnd * 0.3, 'z', 1, undefined, 0.35),
-        kf(dxEnd * 0.7, peakDy * 0.2, rotEnd * 0.7, 'z', 1, undefined, 0.7),
-        kf(dxEnd, dyEnd, rotEnd, 'z', 1, undefined, 1),
-      ];
-    }
-
     return [
       kf(0, 0, 0, 'z', 1, undefined, 0),
       kf(dxEnd * 0.72, dyEnd * 0.72, rotEnd * 0.6, 'z', 1, undefined, 0.28),
+      kf(dxEnd, dyEnd, rotEnd, 'z', 1, undefined, 1),
+    ];
+  }
+
+  // TOSS: a real up-then-over-then-down parabola - a peak keyframe well
+  // above the final resting dy, reached early, followed by the ballistic
+  // fall to dxEnd/dyEnd. Powers fountain mode; genuinely longer-lived than
+  // LAUNCH (see BEHAVIOR_PROFILES.TOSS), not just a slower version of it.
+  function createTossKeyframes(plan, viewport) {
+    const rad = (plan.exitAngleDeg ?? 270) * Math.PI / 180;
+    const dist = viewport.diagonal * (1.1 + plan.distanceFactor);
+    const dxEnd = Math.cos(rad) * dist;
+    const dyEnd = Math.sin(rad) * dist;
+    const rotEnd = plan.rotationTurns * 360 * 0.5;
+    const peakDy = -viewport.height * (0.55 + plan.distanceFactor * 0.35);
+    const peakDx = dxEnd * 0.3;
+    return [
+      kf(0, 0, 0, 'z', 1, undefined, 0),
+      kf(peakDx, peakDy, rotEnd * 0.3, 'z', 1, undefined, 0.4),
+      kf(dxEnd * 0.7, peakDy * 0.15, rotEnd * 0.7, 'z', 1, undefined, 0.75),
       kf(dxEnd, dyEnd, rotEnd, 'z', 1, undefined, 1),
     ];
   }
@@ -2453,6 +2465,64 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     ];
   }
 
+  // Lazy, near-weightless wander - the longest-lived behavior by design
+  // ("5-8 seconds" per BEHAVIOR_PROFILES.DRIFT). Barely any rotation
+  // (a real float doesn't tumble); a gentle multi-point meander rather
+  // than a straight line, ending in a fade since a genuinely lazy drift
+  // may not travel far enough to clear the viewport on its own.
+  function createDriftKeyframes(plan, viewport) {
+    const netDx = viewport.width * 0.5 * plan.distanceFactor * plan.signA;
+    const netDy = viewport.height * (0.4 + plan.distanceFactor * 0.5);
+    const wander = viewport.width * 0.08 * (0.5 + plan.secondaryFactor);
+    const rotEnd = plan.rotationTurns * 90;
+    return [
+      kf(0, 0, 0, 'z', 1, 1, 0),
+      kf(wander * plan.signB, netDy * 0.2, rotEnd * 0.2, 'z', 1, 1, 0.25),
+      kf(-wander * plan.signB * 0.7, netDy * 0.45, rotEnd * 0.45, 'z', 1, 1, 0.5),
+      kf(wander * plan.signB * 0.5, netDy * 0.75, rotEnd * 0.75, 'z', 1, 1, 0.8),
+      kf(netDx, netDy, rotEnd, 'z', 1, 0, 1),
+    ];
+  }
+
+  // Falls, hits an implied floor, bounces back up part of the way, falls
+  // again, continues off the bottom - a genuine non-monotonic down/up/down
+  // silhouette (WAAPI keyframes are just timed snapshots, not a physics
+  // engine, so nothing stops dy from going down-up-down across the
+  // sequence), not a single monotonic fall like FALL/TUMBLE.
+  function createBounceKeyframes(plan, viewport) {
+    const dxEnd = viewport.width * 0.18 * plan.distanceFactor * plan.signA;
+    const floorDy = viewport.height * (0.78 + plan.distanceFactor * 0.15);
+    const bounceUpDy = floorDy * 0.72;
+    const finalDy = viewport.height * (1.15 + plan.distanceFactor * 0.4);
+    const rotEnd = plan.rotationTurns * 360 * 0.6;
+    return [
+      kf(0, 0, 0, 'z', 1, undefined, 0),
+      kf(dxEnd * 0.3, floorDy, rotEnd * 0.35, 'z', 1, undefined, 0.42),
+      kf(dxEnd * 0.55, bounceUpDy, rotEnd * 0.55, 'z', 1, undefined, 0.62),
+      kf(dxEnd * 0.8, floorDy * 1.05, rotEnd * 0.8, 'z', 1, undefined, 0.8),
+      kf(dxEnd, finalDy, rotEnd, 'z', 1, undefined, 1),
+    ];
+  }
+
+  // Paper-like: an irregular side-to-side ROCK on the way down, not a
+  // continuous spin - rotation is expressed directly in degrees of sway
+  // (alternating sign each waypoint) rather than accumulating turns, so it
+  // reads as tipping back and forth rather than spinning while falling.
+  // plan.rotationTurns only scales the rock's amplitude here.
+  function createFlutterKeyframes(plan, viewport) {
+    const dyEnd = viewport.height * (0.85 + plan.distanceFactor * 0.5);
+    const sway = viewport.width * 0.12 * (0.6 + plan.secondaryFactor);
+    const rock = (10 + Math.abs(plan.rotationTurns) * 40) * plan.signB;
+    return [
+      kf(0, 0, 0, 'z', 1, undefined, 0),
+      kf(sway * plan.signA, dyEnd * 0.18, rock, 'z', 1, undefined, 0.15),
+      kf(-sway * plan.signA * 0.8, dyEnd * 0.38, -rock, 'z', 1, undefined, 0.35),
+      kf(sway * plan.signA * 0.9, dyEnd * 0.58, rock * 0.9, 'z', 1, undefined, 0.55),
+      kf(-sway * plan.signA * 0.6, dyEnd * 0.8, -rock * 0.8, 'z', 1, undefined, 0.78),
+      kf(sway * plan.signA * 0.3, dyEnd, rock * 0.5, 'z', 1, undefined, 1),
+    ];
+  }
+
   const CELEBRATION_KEYFRAME_GENERATORS = {
     FALL: createFallKeyframes,
     FRISBEE: createFrisbeeKeyframes,
@@ -2465,6 +2535,10 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     SPIRAL: createSpiralKeyframes,
     VACUUM: createVacuumKeyframes,
     SLIDE: createSlideKeyframes,
+    TOSS: createTossKeyframes,
+    DRIFT: createDriftKeyframes,
+    BOUNCE: createBounceKeyframes,
+    FLUTTER: createFlutterKeyframes,
   };
 
   // The only place a card plan's normalized (angle/distance-factor/turns)
@@ -2475,10 +2549,25 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // convergence) need genuine multi-keyframe paths a plain CSS transition
   // can't express; everything still stays GPU-compositable, same cost class
   // as the rest of the app's transition-based glides.
+  // Tracks the returned Animation in activeCelebrationAnimations (so
+  // cleanupVictoryCelebration can cancel it immediately, whenever it's
+  // called) and removes this card's own wrapper element the moment ITS
+  // animation naturally finishes - no coordinated "celebration over" event,
+  // every card just cleans up after itself on its own clock. If the
+  // animation is cancelled instead (cleanup ran first), .finished rejects
+  // and this is a no-op - cleanup already handles the DOM/array teardown
+  // in that case.
   function animateCelebrationCard(el, plan, viewport, startRect, focalPoint) {
     const generator = CELEBRATION_KEYFRAME_GENERATORS[plan.behavior];
     const keyframes = generator(plan, viewport, startRect, focalPoint);
-    el.animate(keyframes, { duration: plan.durationMs, delay: plan.delayMs, easing: plan.easing, fill: 'forwards' });
+    const animation = el.animate(keyframes, { duration: plan.durationMs, delay: plan.delayMs, easing: plan.easing, fill: 'forwards' });
+    activeCelebrationAnimations.push(animation);
+    animation.finished
+      .then(() => {
+        activeCelebrationAnimations = activeCelebrationAnimations.filter(a => a !== animation);
+        el.parentElement?.remove(); // the wrapper (.celebration-card) - el itself is the inner card
+      })
+      .catch(() => {});
   }
 
   // Captures each foundation pile's REAL top card geometry (not the pile
@@ -2553,16 +2642,26 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
       });
     });
 
-    const maxFinishMs = plans.reduce((max, plan) => Math.max(max, plan.delayMs + plan.durationMs), 0);
-    const messageDelayMs = Math.max(0, maxFinishMs + MESSAGE_REVEAL_BUFFER_MS);
-    celebrationTimer = setTimeout(() => showVictoryMessage(personality.messageEntrance), messageDelayMs);
+    // Fixed, short delay from right here (celebration start) - deliberately
+    // NOT derived from plans' own delay/duration in any way. The cards are
+    // the celebration, not an intro gating the message; whatever's still
+    // mid-flight (most of the deck, typically, given BEHAVIOR_PROFILES'
+    // multi-second durations) just keeps going undisturbed behind/around
+    // the message - see showVictoryMessage's own comment for why it never
+    // touches celebrationLayer.
+    celebrationTimer = setTimeout(() => showVictoryMessage(personality.messageEntrance), MESSAGE_DELAY_AFTER_CELEBRATION_START_MS);
   }
 
   // Reveals the on-felt win message: no modal, just the headline/button/
-  // stats appearing over the now-empty board. pendingWinResult carries the
-  // exact moveCount/elapsed-time snapshot from the instant checkWin() fired,
-  // so the displayed stats can never drift from what was true at the
-  // winning move itself.
+  // stats appearing on top of the STILL-RUNNING card celebration (deliberately
+  // - see createVictoryCelebration's own comment on why this is scheduled
+  // early rather than after the cards finish). Never touches
+  // celebrationLayer - #win-message (z-index 2000) already renders above
+  // #celebration-layer (z-index 1100) with no background of its own, so the
+  // cards stay fully visible behind/around the text without any extra work
+  // here. pendingWinResult carries the exact moveCount/elapsed-time snapshot
+  // from the instant checkWin() fired, so the displayed stats can never
+  // drift from what was true at the winning move itself.
   // Renders one record row: an ordinary "Fastest: 2:11"-style readout, or -
   // if this specific win just broke that specific record - a trophy line
   // instead. Never both for the same record. formattedRecordValue is
@@ -2573,7 +2672,6 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   }
 
   function showVictoryMessage(entrance) {
-    celebrationLayer.innerHTML = '';
     winEmoji.textContent = pickHeadline();
     const result = pendingWinResult || { moveCount, secs: 0, statsResult: null };
     winResultLine.textContent = `${formatTime(result.secs)} · ${result.moveCount} moves`;
@@ -2604,17 +2702,28 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
     winMessage.className = `win-enter-${entrance}`; // replaces "hidden" outright - single source of truth for this element's visual state
   }
 
-  // Idempotent, DOM/timer-only - never touches button/toolbar state (that's
-  // newGame/restart/undo's job, since the toolbar should stay locked through
-  // the whole won state, not just the celebration's own duration - see
-  // checkWin). Safe to call even when nothing is showing. Called at the top
-  // of newGame()/restart()/undo() so every path back into a live game tears
-  // any in-progress or already-finished celebration down cleanly.
+  // The single authoritative teardown path - the only place anything
+  // celebration-related actually gets cancelled/removed. Idempotent,
+  // DOM/timer/animation-only - never touches button/toolbar state (that's
+  // newGame/restart/undo's job, since the toolbar should stay locked
+  // through the whole won state, not just the celebration's own duration -
+  // see checkWin). Safe to call even when nothing is showing. Called at the
+  // top of newGame()/restart()/undo() so every path back into a live game
+  // tears any in-progress or already-finished celebration down cleanly and
+  // *immediately* - deliberately not waiting for anything to finish first,
+  // since cards can now genuinely still be mid-flight (up to ~8s in) when
+  // this runs. Cancelling every tracked Animation (rather than just
+  // clearing the DOM out from under them) is what guarantees no orphaned
+  // callback from THIS run's cards can fire during the next game -
+  // animateCelebrationCard's own .finished handler treats a cancelled
+  // animation as a no-op (see its .catch there).
   function cleanupVictoryCelebration() {
     if (celebrationTimer) {
       clearTimeout(celebrationTimer);
       celebrationTimer = null;
     }
+    activeCelebrationAnimations.forEach(animation => animation.cancel());
+    activeCelebrationAnimations = [];
     celebrationLayer.innerHTML = '';
     winMessage.className = 'hidden';
     document.querySelectorAll('#foundations .card').forEach(el => { el.style.visibility = ''; });
