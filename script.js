@@ -136,7 +136,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
   // a returning player's cache: a version bump mints new URLs, which are
   // cache misses by construction, while every URL that didn't change keeps
   // serving instantly from cache forever.
-  const ASSET_VERSION = 'v5';
+  const ASSET_VERSION = 'v6';
 
   // CARD_SIZE picks the collection folder for card FACES only - card backs
   // (below) are untouched by it, always following RESOLUTION_TIER alone
