@@ -36,6 +36,29 @@
 </script>
 </head>
 <body>
+  <!-- OPENING INTRO - mirrors Mike's Mahjong's intro architecture beat-for-
+       beat (same #intro-mike/#intro-apostrophe layer split, same timing,
+       same JS lifecycle in script.js's initIntro()): three independent
+       layers so the MIKE+'s pair stays identical across games and only
+       #intro-object's image/entrance animation changes per game. Pure
+       CSS-driven timeline (animation-delay per layer) - script.js only
+       ever removes this element once it's done; it never gates or delays
+       game boot. See INTRO_ENABLED in script.js to disable while testing
+       gameplay. -->
+  <div id="intro-screen" aria-hidden="true">
+    <div id="intro-frame">
+      <div id="intro-lockup">
+        <div id="intro-wordmark">
+          <span id="intro-mike"><img src="assets/intro/mike-candy.png" alt="" draggable="false"></span>
+          <span id="intro-apostrophe"><img src="assets/intro/apostrophe-s.png" alt="" draggable="false"></span>
+        </div>
+        <div id="intro-object-pos">
+          <span id="intro-object"><img src="assets/intro/solitaire-card.png" alt="" draggable="false"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="update-bar" class="hidden">
     <span>A new version of Mike's Solitaire is available.</span>
     <button id="updateReloadBtn">Reload</button>

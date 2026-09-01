@@ -23,6 +23,41 @@ import { shuffle } from './shuffle.js';
 import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from './victory.js';
 import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 
+// DEV SWITCH: set to false to skip the opening intro completely while
+// testing gameplay. Flip and reload - no UI toggle, no persistence.
+// Mirrors Mike's Mahjong's INTRO_ENABLED/initIntro() exactly (see that
+// project's script.js) - the intro's own timeline is entirely CSS
+// (animation-delay per layer in style.css), so it starts painting the
+// instant the page does. This only ever REMOVES the overlay once it's
+// finished; it never gates or waits on newGame() below, so the board
+// deals behind it with zero added delay either way.
+const INTRO_ENABLED = true;
+(function initIntro() {
+  const el = document.getElementById('intro-screen');
+  if (!el) return;
+  if (!INTRO_ENABLED) { el.remove(); return; }
+  let done = false;
+  function finish() {
+    if (done) return;
+    done = true;
+    el.remove();
+  }
+  // e.target (not e.currentTarget) is the ORIGINATING element, so this
+  // only reacts to #intro-screen's own animation finishing - a child's
+  // animationend (MIKE/apostrophe/card) bubbles up but is correctly
+  // ignored. Checking target only, not animationName, means this doesn't
+  // need updating if the screen's exit animation is retuned or swapped
+  // (e.g. prefers-reduced-motion uses a different animation-name on the
+  // same element).
+  el.addEventListener('animationend', (e) => {
+    if (e.target === el) finish();
+  });
+  // Safety net: if this ever fails to fire, don't leave the game
+  // permanently covered and untouchable - well past the intended ~3.25s
+  // sequence so it never fires under normal conditions.
+  setTimeout(finish, 7000);
+})();
+
 (() => {
   const SUITS = [
     { key: 'hearts', file: 'heart', color: 'red', symbol: '♥' },

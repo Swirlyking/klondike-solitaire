@@ -1448,7 +1448,7 @@ body {
   #topbar h1 { font-size: 16px; }
   .stats { font-size: 12px; gap: 10px; }
 
-  #top-row { margin-bottom: 10px; }
+  #top-row { margin-bottom: 20px; }
 
   .controls { gap: 2px; padding: 6px 4px; }
   .controls button,
@@ -1575,4 +1575,189 @@ body {
   .controls button svg,
   .controls button.icon-button svg { width: 23px; height: 23px; }
   .controls .settings-gear { font-size: 21px; line-height: 1; }
+}
+
+/* ============================================================
+   OPENING INTRO - markup lives in index.html (three independent layers:
+   #intro-mike, #intro-apostrophe, #intro-object, same split as Mike's
+   Mahjong's own intro so the MIKE+'s pair is identical across games and
+   only #intro-object's image/entrance changes per game). Purely CSS-timed
+   via animation-delay so the sequence starts the instant the page paints -
+   see initIntro() in script.js, which only ever *removes* this element
+   once #intro-screen's own animation finishes (or a safety-net timeout
+   fires); it never gates or waits on game boot.
+
+   Timeline is beat-for-beat identical to Mahjong's (~3.25s total): MIKE is
+   simply present from first paint (no animation, @0ms) and holds ALONE
+   for 1000ms; apostrophe-s then snaps in near-instantly @1000ms and sits
+   with MIKE alone for another 350ms; the card begins its deal @1350ms and
+   lands @1700ms; the complete lockup then holds completely still for
+   1200ms; at 2900ms the ENTIRE #intro-screen - white background included -
+   drops straight down and off the bottom of the viewport as one rigid
+   unit (ends ~3250ms). The only intentional difference from Mahjong is
+   HOW the game-specific object arrives: Mahjong's tile slides in flat from
+   the left; here the card is dealt - it starts fully below the viewport,
+   flicks/spins upward, and decelerates into its resting tilt (see
+   introCardIn below) - same 350ms duration and easing as Mahjong's tile,
+   same 1350ms delay, same landing instant at 1700ms.
+
+   Mahjong sizes its intro with vh/vw because that whole app renders as a
+   capped 430px mobile column even on desktop. Solitaire uses the full
+   viewport, so sizing here is built around --intro-unit: a single scale
+   driven by vmin (the smaller of viewport width/height, so short landscape
+   phones and narrow portrait phones both shrink correctly) with three
+   breakpoint tiers for its upper bound, calibrated against design/intro/
+   sizing.png so the composition stays restrained on tablet/desktop instead
+   of ballooning with viewport width. MIKE/apostrophe/card sizes are all
+   multiples of this one variable, so the whole lockup scales as a single
+   composition rather than as independently-tuned elements. */
+:root {
+  --intro-unit: clamp(7px, 2.6vmin, 9px);
+}
+@media (min-width: 700px) {
+  :root { --intro-unit: clamp(8px, 2.2vmin, 11px); }
+}
+@media (min-width: 1100px) {
+  :root { --intro-unit: clamp(9px, 1.7vmin, 12.5px); }
+}
+#intro-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  overflow: hidden;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: introScreenDrop 350ms cubic-bezier(.4, 0, 1, 1) 2900ms forwards;
+}
+#intro-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* The single lockup: MIKE's + the card stacked as ONE flex column, tight
+   fixed gap, centered as a unit - so the two layers below never drift
+   apart or need independent viewport-relative anchoring the way Mahjong's
+   dual top:% layers do (Mahjong can get away with that because its tile
+   dominates the frame; Solitaire's restrained composition needs a gap that
+   stays tight regardless of viewport height). */
+#intro-lockup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--intro-unit) * 1.3);
+}
+/* MIKE alone is what's centered in the wordmark row - this wrapper
+   shrink-wraps to #intro-mike's own box (the only normal-flow child;
+   apostrophe-s is taken out of flow below), so MIKE's true center always
+   lands on the lockup's true center regardless of the 's hanging off to
+   its right. */
+#intro-wordmark {
+  position: relative;
+}
+#intro-wordmark img { display: block; }
+#intro-mike { display: block; }
+#intro-mike img { height: calc(var(--intro-unit) * 6.2); width: auto; }
+/* Positioned relative to #intro-wordmark (centered on MIKE), not a flex
+   sibling of it - left:100% + margin-left reserves its space without ever
+   affecting MIKE's own box, so apostrophe-s appearing can't shift/resize/
+   re-center MIKE. */
+#intro-apostrophe {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: calc(var(--intro-unit) * 0.5);
+  display: block;
+}
+#intro-apostrophe img { height: calc(var(--intro-unit) * 2.3); width: auto; }
+/* MIKE has no animation at all - it's simply part of the static page,
+   present from the very first paint, which is what gives Phase 1 its true
+   MIKE-only beat. */
+#intro-mike { opacity: 1; }
+/* Apostrophe-s stays invisible through the MIKE-only pause, then snaps to
+   visible near-instantly at 1000ms - a 10ms "animation" only exists so it
+   has a real animationend and a delay to hang the snap on; there is no
+   transform/scale/rotation to see it move through. */
+#intro-apostrophe { opacity: 0; animation: introFadeIn 10ms linear 1000ms forwards; }
+/* Same static/animated split as the wordmark: #intro-object-pos reserves
+   the card's resting slot in the flex column (a normal in-flow box, sized
+   by width + its image's intrinsic aspect-ratio) so the layout never
+   shifts while the card is transformed away above/below it; #intro-object
+   is what actually animates the deal - transforms don't affect layout, so
+   the reserved slot stays put throughout. */
+#intro-object-pos {
+  width: calc(var(--intro-unit) * 26);
+}
+/* filter:drop-shadow (not box-shadow) so the shadow follows the card's
+   actual rounded-rect silhouette and rides along with #intro-object's own
+   transform automatically, since it's painted post-transform - including
+   through the rotation below, since the alpha-shape it traces is whatever
+   the PNG's opaque pixels currently look like post-transform, not a
+   static rectangle. Tight offset + tight blur + darker alpha so the card
+   reads as sitting just barely above the white surface, not floating. */
+#intro-object-pos img { display: block; width: 100%; height: auto; filter: drop-shadow(1px 2px 3px rgba(0, 0, 0, .5)); }
+#intro-object {
+  display: block;
+  opacity: 0;
+  animation: introCardIn 350ms cubic-bezier(.215, .61, .355, 1) 1350ms forwards;
+}
+
+@keyframes introFadeIn { from { opacity: 0; } to { opacity: 1; } }
+/* The dealt-card entrance: begins fully below the viewport (100vh of pure
+   vertical clearance stacked on top of the lockup's own already-centered
+   resting position - generous overkill on purpose, so the card is offscreen
+   at every supported viewport regardless of its own rendered size) at a
+   dramatic -55deg tilt, then spins up to its 0,0 resting transform - TWO
+   full extra clockwise rotations (+720deg) on top of the original ~61deg
+   sweep to the resting angle, landing at 726deg, which is visually
+   identical to the +6deg tilt shown in design/intro/layout.png (726 mod
+   360 = 6) - before settling. easeOutCubic (a standard, well-tested
+   decelerate curve - both y-control-points <=1, so it's monotonic and can
+   never overshoot past the resting position) rather than Mahjong tile's
+   own far more front-loaded curve: still fast-start/decelerate-hard, but
+   spread widely enough across the full 350ms for two full rotations to
+   actually read as two rotations instead of resolving as a blur in the
+   first few ms. Translate-only + rotate - no layout properties animated. */
+@keyframes introCardIn {
+  0% { opacity: 0; transform: translateY(100vh) rotate(-55deg); }
+  15% { opacity: 1; }
+  100% { opacity: 1; transform: translateY(0) rotate(726deg); }
+}
+/* Exit: the whole screen (white bg + everything in it) translates straight
+   down as one rigid unit - no opacity change, no scale, no rotation,
+   nothing animated independently inside it. 115% (of the element's own
+   height, a full 100vh via inset:0) guarantees full clearance past the
+   viewport edge with a little margin to spare. cubic-bezier(.4,0,1,1) is a
+   pure accelerate curve: a brief slow start that keeps speeding up the
+   whole way, never easing off at the end. */
+@keyframes introScreenDrop {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(115%); }
+}
+@keyframes introFadeOutReduced { from { opacity: 1; } to { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  /* Intro: MIKE is already static and apostrophe already a near-instant
+     opacity snap - neither has real motion to trim. Swap the card's deal
+     spin and the screen's drop for quick plain fades at the same beats, no
+     transform - same philosophy as Mahjong's own reduced-motion intro. */
+  #intro-object {
+    animation-name: introFadeIn;
+    animation-duration: 150ms;
+    animation-timing-function: ease-out;
+    animation-delay: 1350ms;
+    animation-fill-mode: forwards;
+  }
+  #intro-screen {
+    animation-name: introFadeOutReduced;
+    animation-duration: 200ms;
+    animation-timing-function: ease-out;
+    animation-delay: 2900ms;
+    animation-fill-mode: forwards;
+  }
 }
