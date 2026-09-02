@@ -18,10 +18,18 @@ import {
   applyKingColumnSwap,
   computeKingCascade,
 } from './game-logic.js';
-import { getPreference, setPreference } from './preferences.js';
+import { getPreference, setPreference, setPreferences } from './preferences.js';
 import { shuffle } from './shuffle.js';
 import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from './victory.js';
 import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
+import { buildBackup, validateBackup, resolveRestorePatch, backupFilename, VALIDATION_ERROR_MESSAGES, LEGACY_CARD_BACK_IDS } from './backup.js';
+import { ensureIconGenerationMarker, shouldShowIconNotice, dismissIconNoticePermanently } from './pwa-icon-notice.js';
+
+// Must run before anything else touches the preferences store - see this
+// function's own comment for why (recordPlay() inside newGame() below
+// would otherwise make even a brand-new device's first-ever session look
+// like a returning player's by the time anything checked).
+ensureIconGenerationMarker();
 
 // DEV SWITCH: set to false to skip the opening intro completely while
 // testing gameplay. Flip and reload - no UI toggle, no persistence.
@@ -346,7 +354,9 @@ const INTRO_ENABLED = true;
   // rabbit) has no equivalent in the current 13 designs and is
   // deliberately left alone here: it already falls back safely to
   // 'cardBack's declared default via currentPreferenceOption above.
-  const LEGACY_CARD_BACK_IDS = { flowers: 'flower' };
+  // Reuses the exact same map backup.js's resolveRestorePatch checks a
+  // restored backup's cardBack against, rather than keeping a second copy
+  // that could drift from it.
   (() => {
     const stored = getPreference('cardBack', null);
     if (stored && LEGACY_CARD_BACK_IDS[stored]) {
@@ -824,6 +834,15 @@ const INTRO_ENABLED = true;
   const confirmMessage = document.getElementById('confirm-message');
   const confirmKeepBtn = document.getElementById('confirmKeepBtn');
   const confirmGiveUpBtn = document.getElementById('confirmGiveUpBtn');
+  const backupLink = document.getElementById('backupLink');
+  const restoreLink = document.getElementById('restoreLink');
+  const restoreFileInput = document.getElementById('restoreFileInput');
+  const settingsStatus = document.getElementById('settings-status');
+  const iconNoticeOverlay = document.getElementById('icon-notice-overlay');
+  const iconNoticeCloseBtn = document.getElementById('iconNoticeCloseBtn');
+  const iconNoticeGotItBtn = document.getElementById('iconNoticeGotItBtn');
+  const iconNoticeBackupBtn = document.getElementById('iconNoticeBackupBtn');
+  const iconNoticeDontShowCheckbox = document.getElementById('iconNoticeDontShowCheckbox');
 
   function freshDeck() {
     const deck = [];
@@ -932,7 +951,7 @@ const INTRO_ENABLED = true;
     confirmTriggerEl = null;
   }
 
-  function showConfirm({ title, message, confirmLabel, onConfirm }) {
+  function showConfirm({ title, message, confirmLabel, cancelLabel, onConfirm }) {
     if (confirmOpen) return; // only one modal at a time
     confirmOpen = true;
     confirmResolving = false;
@@ -942,6 +961,7 @@ const INTRO_ENABLED = true;
     confirmMessage.textContent = message || '';
     confirmMessage.classList.toggle('hidden', !message); // some dialogs (e.g. the stuck-game case) are title-only
     confirmGiveUpBtn.textContent = confirmLabel || 'Give Up'; // reset every time - this button is shared across every dialog variant
+    confirmKeepBtn.textContent = cancelLabel || 'Keep Playing'; // same - defaults to the abandon-game dialogs' original wording
     confirmOverlay.classList.remove('hidden');
     document.addEventListener('keydown', onConfirmKeydown, true);
     confirmKeepBtn.focus();
@@ -3207,6 +3227,172 @@ const INTRO_ENABLED = true;
       else originEls.forEach(el => { el.style.visibility = ''; });
       glideGhostsTo(ghosts, originRects, originRects, MOVE_GLIDE_MS);
     }
+  }
+
+  // ---------- backup / restore ----------
+  // Centralized here so there is exactly one implementation each for
+  // "generate a backup file" and "validate + apply a restored one" -
+  // Settings' own Backup/Restore rows and the Home Screen icon notice's
+  // backup button all call performBackup()/the restore flow below, never
+  // their own copy of this logic.
+
+  let settingsStatusTimer = null;
+
+  // Success (gold, matches #hint-message's existing tone) or error (red -
+  // the one place in Settings that needs to read as something going
+  // wrong). Auto-hides after a few seconds rather than needing its own
+  // dismiss control.
+  function showSettingsStatus(message, tone) {
+    if (settingsStatusTimer) clearTimeout(settingsStatusTimer);
+    settingsStatus.textContent = message;
+    settingsStatus.className = `settings-status--${tone}`;
+    settingsStatusTimer = setTimeout(() => { settingsStatus.classList.add('hidden'); }, 6000);
+  }
+
+  // The exact allowlist of what a backup contains - see buildBackup's own
+  // comment on why this is explicit rather than a raw dump of storage.
+  // getPreference('stats', ...) reads the raw stored object directly
+  // (not through stats.js's loadStats/sanitizeStats) so a backup captures
+  // exactly what's on disk, including any field sanitizeStats would
+  // already be silently repairing on read - restore re-sanitizes on the
+  // way back in regardless (see applyRestoredData), so nothing is lost
+  // either way.
+  function currentBackupFields() {
+    return {
+      cardStyle: getPreference('cardStyle', DEFAULT_COLLECTION),
+      cardBack: getCardBackDesignId(),
+      drawCount: currentPreferenceOption(findPreferenceSection('drawCount')).id,
+      stats: getPreference('stats', null),
+    };
+  }
+
+  // The one function every backup entry point calls. Triggers the
+  // download via a Blob + temporary <a download> - the standard,
+  // universally-supported technique (works identically on desktop and
+  // routes into iOS Safari's own Save-to-Files/share flow) - rather than
+  // the more restrictive Web Share API, which isn't reliably available
+  // for arbitrary file downloads across iOS versions. Never uploads
+  // anything anywhere; the blob never leaves this tab.
+  function performBackup() {
+    const backup = buildBackup(currentBackupFields());
+    const json = JSON.stringify(backup, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = backupFilename(new Date());
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Revoked on a short delay, not immediately - revoking synchronously
+    // has been observed to abort an in-flight save on some browsers
+    // before the download/share hand-off actually completes.
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  backupLink.addEventListener('click', () => {
+    performBackup();
+    showSettingsStatus('Backup downloaded — make sure the file is saved somewhere you can find it again.', 'success');
+  });
+
+  // Applies an already-fully-validated patch (see resolveRestorePatch in
+  // backup.js) in one write. By the time this runs, every field the
+  // backup included has already been confirmed valid - there is nothing
+  // left to check or partially skip here. Never touches
+  // homeScreenIconGen/homeScreenIconNotice - those are this device's own
+  // migration/UI state, not backed-up user data (see pwa-icon-notice.js).
+  function applyRestoredData(patch) {
+    setPreferences(patch);
+    renderSettingsPanel();
+    render();
+  }
+
+  function handleRestoreFile(file) {
+    const reader = new FileReader();
+    reader.onerror = () => showSettingsStatus("Couldn't read that file.", 'error');
+    reader.onload = () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(String(reader.result));
+      } catch {
+        showSettingsStatus("That file doesn't look like a valid backup.", 'error');
+        return;
+      }
+      // Two independent validation passes, both of which must fully pass
+      // before anything is written: validateBackup checks the envelope
+      // (is this recognizably a Mike's Solitaire backup file at all),
+      // resolveRestorePatch checks every field the envelope's data
+      // actually contains against this session's live registries/valid
+      // values. Either one failing rejects the WHOLE restore - there is
+      // no partial-field fallback, and setPreferences() is never reached
+      // unless both passed completely.
+      const envelope = validateBackup(parsed);
+      if (!envelope.ok) {
+        showSettingsStatus(VALIDATION_ERROR_MESSAGES[envelope.reason] || "That backup couldn't be restored.", 'error');
+        return;
+      }
+      const resolved = resolveRestorePatch(envelope.data, {
+        validCollectionIds: Object.keys(CARD_COLLECTIONS),
+        validCardBackIds: Object.keys(CARD_BACKS),
+      });
+      if (!resolved.ok) {
+        showSettingsStatus(VALIDATION_ERROR_MESSAGES[resolved.reason] || "That backup couldn't be restored.", 'error');
+        return;
+      }
+      showConfirm({
+        title: 'Restore Solitaire Data?',
+        message: 'The Solitaire data currently saved on this device will be replaced by this backup.',
+        confirmLabel: 'Restore',
+        cancelLabel: 'Cancel',
+        onConfirm: () => {
+          applyRestoredData(resolved.patch);
+          showSettingsStatus('Backup restored.', 'success');
+        },
+      });
+    };
+    reader.readAsText(file);
+  }
+
+  restoreLink.addEventListener('click', () => restoreFileInput.click());
+  restoreFileInput.addEventListener('change', () => {
+    const file = restoreFileInput.files && restoreFileInput.files[0];
+    restoreFileInput.value = ''; // reset so choosing the same filename again still fires 'change'
+    if (file) handleRestoreFile(file);
+  });
+
+  // ---------- Home Screen icon migration notice ----------
+  // See pwa-icon-notice.js for the eligibility/dismissal logic this
+  // gates on - this block only ever owns the modal's own DOM/interaction.
+
+  function closeIconNotice() {
+    if (iconNoticeDontShowCheckbox.checked) dismissIconNoticePermanently();
+    iconNoticeOverlay.classList.add('hidden');
+  }
+  iconNoticeCloseBtn.addEventListener('click', closeIconNotice);
+  iconNoticeGotItBtn.addEventListener('click', closeIconNotice);
+  iconNoticeOverlay.addEventListener('click', e => {
+    if (e.target === iconNoticeOverlay) closeIconNotice();
+  });
+  // Same centralized performBackup() Settings' own row calls - this button
+  // is just a second entry point into it, not a separate implementation.
+  // Never advances/closes the modal on its own: the user decides when
+  // they're done reading, this only confirms the download happened.
+  iconNoticeBackupBtn.addEventListener('click', () => {
+    performBackup();
+    iconNoticeBackupBtn.textContent = 'Backup Downloaded ✓';
+    iconNoticeBackupBtn.disabled = true;
+    setTimeout(() => {
+      iconNoticeBackupBtn.textContent = 'Back Up My Solitaire';
+      iconNoticeBackupBtn.disabled = false;
+    }, 4000);
+  });
+
+  if (shouldShowIconNotice()) {
+    // A short delay so this never competes visually with the opening
+    // intro animation - it isn't gated ON the intro finishing (the two
+    // systems stay fully independent, matching initIntro()'s own "never
+    // gates or delays game boot" rule), just timed to land safely after it.
+    setTimeout(() => iconNoticeOverlay.classList.remove('hidden'), 1600);
   }
 
   // ---------- settings panel ----------

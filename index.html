@@ -6,10 +6,10 @@
 <title>Mike's Solitaire</title>
 <link rel="stylesheet" href="style.css">
 
-<link rel="icon" href="favicon.png" sizes="48x48">
-<link rel="icon" href="icons/icon-192x192.png" type="image/png" sizes="192x192">
-<link rel="icon" href="icons/icon-512x512.png" type="image/png" sizes="512x512">
-<link rel="apple-touch-icon" href="icons/icon-180x180.png">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="icons/favicon-96x96.png" type="image/png" sizes="96x96">
+<link rel="shortcut icon" href="favicon.ico">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0b5d3b">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -171,11 +171,44 @@
       <div id="settings-secondary">
         <!-- Opens #stats-overlay (hides this panel, shows that one - see
              script.js). Plain in-app navigation, so a "›" rather than
-             Feedback's external-link arrow below. -->
+             Feedback's external-link arrow below. Bar-chart icon: Lucide
+             (ISC license), same icon set as Undo/Hint above. -->
         <button type="button" id="statsLink" class="settings-feedback-link" aria-label="View your stats">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 3v18h18" />
+            <path d="M18 17V9" />
+            <path d="M13 17V5" />
+            <path d="M8 17v-3" />
+          </svg>
           <span class="settings-feedback-link-label">Stats</span>
           <span class="settings-feedback-link-arrow" aria-hidden="true">&#8250;</span>
         </button>
+        <!-- Downloads a JSON backup of this device's Solitaire data - see
+             performBackup() in script.js, the single implementation this
+             and the Home Screen icon notice's own backup button both call.
+             Cloud-upload icon: Lucide (ISC license). -->
+        <button type="button" id="backupLink" class="settings-feedback-link" aria-label="Backup Game Data">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 13v8" />
+            <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242" />
+            <path d="m8 17 4-4 4 4" />
+          </svg>
+          <span class="settings-feedback-link-label">Backup Game Data</span>
+          <span class="settings-feedback-link-arrow" aria-hidden="true">&#8250;</span>
+        </button>
+        <!-- Opens the file picker, validates the chosen file, confirms,
+             then restores - see handleRestoreFile()/applyRestoredData() in
+             script.js. Cloud-download icon: Lucide (ISC license). -->
+        <button type="button" id="restoreLink" class="settings-feedback-link" aria-label="Restore Game Data">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 13v8l-4-4" />
+            <path d="m12 21 4-4" />
+            <path d="M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 .5 8.973" />
+          </svg>
+          <span class="settings-feedback-link-label">Restore Game Data</span>
+          <span class="settings-feedback-link-arrow" aria-hidden="true">&#8250;</span>
+        </button>
+        <input type="file" id="restoreFileInput" accept="application/json,.json" hidden>
         <!-- Message-square icon: Lucide (ISC license), same icon set as
              Undo/Hint above. A plain external link (not a JS click handler)
              so opening it can never touch this page's own game state - the
@@ -188,6 +221,11 @@
           <span class="settings-feedback-link-arrow" aria-hidden="true">&#8599;</span>
         </a>
       </div>
+      <!-- Transient status line for Backup/Restore outcomes (success or a
+           validation error) - see showSettingsStatus() in script.js. Not
+           used by any other settings control; those apply instantly with
+           no separate confirmation needed. -->
+      <p id="settings-status" class="hidden" role="status" aria-live="polite"></p>
       <!-- Plain-looking version text, not styled as a button - clicking it
            instantly completes the current board and plays the win
            celebration, for previewing it without actually finishing a deal.
@@ -247,6 +285,41 @@
         <button id="confirmGiveUpBtn">Give Up</button>
         <button id="confirmKeepBtn">Keep Playing</button>
       </div>
+    </div>
+  </div>
+
+  <!-- One-time notice for devices that had already installed Mike's
+       Solitaire to their Home Screen before the icon-v2 artwork shipped
+       (see pwa-icon-notice.js/shouldShowIconNotice() in script.js) - never
+       shown in ordinary browser tabs, and never shown to an install that
+       began after icon-v2 already existed. -->
+  <div id="icon-notice-overlay" class="hidden">
+    <div id="icon-notice-card" role="dialog" aria-modal="true" aria-labelledby="icon-notice-title">
+      <button type="button" id="iconNoticeCloseBtn" aria-label="Close">&times;</button>
+      <img id="icon-notice-icon" src="icons/web-app-manifest-512x512.png" alt="" draggable="false">
+      <h2 id="icon-notice-title"><span class="icon-notice-sparkle" aria-hidden="true">&#10022;</span> New Home<br>Screen Icon <span class="icon-notice-sparkle" aria-hidden="true">&#10022;</span></h2>
+      <p>
+        <strong>Mike's Solitaire</strong> has a new icon.
+        Because you're using the Home Screen version,
+        iPhone won't update the icon automatically.
+      </p>
+      <p class="icon-notice-subhead">To get the new one:</p>
+      <ol id="icon-notice-steps">
+        <li><span class="icon-notice-step-num" aria-hidden="true">1</span><span><strong>Tap "Back Up My Solitaire" in Settings</strong><br>and make sure the backup file is saved.</span></li>
+        <li><span class="icon-notice-step-num" aria-hidden="true">2</span><span><strong>Delete this Mike's Solitaire app</strong><br>from your Home Screen.</span></li>
+        <li><span class="icon-notice-step-num" aria-hidden="true">3</span><span><strong>Open <span id="icon-notice-url">solitaire.mikestrassburger.com</span> in Safari.</strong></span></li>
+        <li><span class="icon-notice-step-num" aria-hidden="true">4</span><span><strong>Tap Share</strong> &#8593; <strong>&rarr; Add to Home Screen.</strong></span></li>
+      </ol>
+      <p class="icon-notice-footnote">
+        Your Solitaire progress <em>may</em> still be there.
+        If it isn't, use Restore Game Data in Settings.
+      </p>
+      <button type="button" id="iconNoticeBackupBtn" class="icon-notice-btn icon-notice-btn--primary">Back Up My Solitaire</button>
+      <button type="button" id="iconNoticeGotItBtn" class="icon-notice-btn icon-notice-btn--secondary">Got It</button>
+      <label id="icon-notice-dismiss-label">
+        <input type="checkbox" id="iconNoticeDontShowCheckbox">
+        Don't show this again
+      </label>
     </div>
   </div>
 

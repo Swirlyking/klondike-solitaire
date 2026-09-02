@@ -36,3 +36,14 @@ export function setPreference(key, value) {
   prefs[key] = value;
   writeAll(prefs);
 }
+
+// Merges several keys into the store in one read-modify-write cycle,
+// rather than one setPreference() call per key (each of which re-reads
+// and re-writes the whole blob) - used by backup restore, which wants its
+// several allowlisted fields to land together rather than as a sequence
+// of separate writes.
+export function setPreferences(partial) {
+  const prefs = readAll();
+  Object.assign(prefs, partial);
+  writeAll(prefs);
+}

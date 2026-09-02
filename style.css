@@ -997,6 +997,31 @@ body {
   font-size: 14px;
 }
 
+/* Backup/Restore's own transient outcome line - success reuses the same
+   gold #hint-message already uses elsewhere for "worked, here's what
+   happened" feedback; error is the one place in Settings that needs a
+   genuinely different (red) tone, since "that file couldn't be restored"
+   isn't a neutral status. */
+#settings-status {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-align: center;
+}
+#settings-status.hidden { display: none; }
+.settings-status--success {
+  background: rgba(217, 180, 92, 0.14);
+  border: 1px solid rgba(217, 180, 92, 0.4);
+  color: var(--gold);
+}
+.settings-status--error {
+  background: rgba(217, 92, 92, 0.14);
+  border: 1px solid rgba(217, 92, 92, 0.4);
+  color: #e8a3a3;
+}
+
 /* Looks like inert small print, not a control - no pointer cursor, no hover
    feedback, no button chrome. That's the "hidden" part; it's still a real,
    focusable <button> underneath for keyboard/screen-reader users. */
@@ -1760,4 +1785,188 @@ body {
     animation-delay: 2900ms;
     animation-fill-mode: forwards;
   }
+}
+
+/* ---------- Home Screen icon migration notice ---------- */
+/* Same overlay/card shell conventions as #settings-overlay/#confirm-overlay
+   (dark scrim, #133 card, gold border/radius) - new markup rather than a
+   literal reuse of either, since its content shape (icon, numbered steps,
+   checkbox, two full-width stacked buttons) doesn't fit either existing
+   card's structure. */
+
+#icon-notice-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2100; /* same tier as #confirm-overlay - both are the "most important thing right now" */
+  padding: 20px;
+}
+#icon-notice-overlay.hidden { display: none; }
+
+#icon-notice-card {
+  position: relative;
+  background: #133;
+  border: 1px solid var(--gold);
+  border-radius: 12px;
+  padding: 34px 28px 24px;
+  width: min(90vw, 420px);
+  max-height: 90vh;
+  overflow-y: auto;
+  text-align: center;
+}
+
+#iconNoticeCloseBtn {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  background: none;
+  border: none;
+  color: #eee;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+  padding: 4px;
+}
+#iconNoticeCloseBtn:hover { opacity: 1; }
+
+/* The complete supplied icon PNG, shown as-is - no cropping, no
+   re-extracting the sign from it. Rounded corners + a thin white outline
+   are a UI treatment applied around the image here, not an alteration of
+   the source artwork itself. */
+#icon-notice-icon {
+  width: 84px;
+  height: 84px;
+  border-radius: 18px;
+  border: 2px solid #fff;
+  display: block;
+  margin: 0 auto 18px;
+  object-fit: cover;
+}
+
+#icon-notice-title {
+  color: var(--gold);
+  font-size: 25px;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  margin: 0 0 16px;
+}
+.icon-notice-sparkle {
+  font-size: 16px;
+  opacity: 0.85;
+}
+
+#icon-notice-card > p {
+  color: #dce7e0;
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0 0 14px;
+}
+#icon-notice-card > p strong { color: #fff; }
+
+#icon-notice-card > p.icon-notice-subhead {
+  color: var(--gold);
+  font-weight: 600;
+  font-size: 13px;
+  text-align: left;
+  margin: 18px 0 10px;
+}
+
+#icon-notice-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: left;
+}
+#icon-notice-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.icon-notice-step-num {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--gold);
+  color: #143;
+  font-weight: 700;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#icon-notice-steps li > span:last-child {
+  color: #dce7e0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  padding-top: 3px;
+}
+#icon-notice-steps li strong { color: #fff; }
+#icon-notice-url { color: var(--gold); }
+
+#icon-notice-card > p.icon-notice-footnote {
+  border-top: 1px solid rgba(255,255,255,0.12);
+  padding-top: 16px;
+  font-size: 13px;
+  margin-bottom: 18px;
+}
+.icon-notice-footnote em { color: #fff; font-style: normal; } /* "may" is the one word that matters most here - see script.js's own comment on why this can never promise "will" */
+
+.icon-notice-btn {
+  display: block;
+  width: 100%;
+  padding: 12px 18px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 15px;
+  cursor: pointer;
+  transition: filter 0.15s, background 0.15s;
+}
+.icon-notice-btn + .icon-notice-btn { margin-top: 10px; }
+.icon-notice-btn:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+.icon-notice-btn--primary {
+  background: var(--gold);
+  border: none;
+  color: #222;
+}
+.icon-notice-btn--primary:hover { filter: brightness(1.08); }
+.icon-notice-btn--primary:disabled {
+  opacity: 0.75;
+  cursor: default;
+  filter: none;
+}
+.icon-notice-btn--secondary {
+  background: transparent;
+  border: 1px solid rgba(217, 180, 92, 0.6);
+  color: var(--gold);
+}
+.icon-notice-btn--secondary:hover { background: rgba(217, 180, 92, 0.12); }
+
+#icon-notice-dismiss-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+  color: #9fb3ab;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+#icon-notice-dismiss-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--gold);
+  cursor: pointer;
 }
