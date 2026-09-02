@@ -31,6 +31,24 @@ import { ensureIconGenerationMarker, shouldShowIconNotice, dismissIconNoticePerm
 // like a returning player's by the time anything checked).
 ensureIconGenerationMarker();
 
+// Set by the game IIFE below, the instant the very first board's critical
+// art (the 7 face-up tableau cards + the one selected back design/
+// condition - see preloadCriticalFirstBoardAssets) is known and its
+// fetch+decode has been kicked off. initIntro() below reads this when its
+// own exit animation finishes, ~3.25s later - by which point the game
+// IIFE (synchronous, runs immediately after this file's top-level code)
+// has always already set it, so there's no race to worry about here.
+// Starts pre-resolved so that if anything ever prevented the game IIFE
+// from running, the intro still behaves exactly as it always has -
+// finishing on its own CSS timeline, never hanging on a promise that was
+// never assigned.
+let criticalAssetsReadyPromise = Promise.resolve();
+// Tens of milliseconds, not hundreds, per design intent: long enough to
+// smooth over the common case of one or two images finishing their decode
+// a beat late, nowhere near long enough to read as the intro pausing or
+// turning into a loading screen.
+const CRITICAL_ASSET_MAX_EXTRA_WAIT_MS = 80;
+
 // DEV SWITCH: set to false to skip the opening intro completely while
 // testing gameplay. Flip and reload - no UI toggle, no persistence.
 // Mirrors Mike's Mahjong's INTRO_ENABLED/initIntro() exactly (see that
@@ -50,6 +68,21 @@ const INTRO_ENABLED = true;
     done = true;
     el.remove();
   }
+  // Reveals on the intro's own normal schedule if the first board's
+  // critical art is already loaded (the common case - a microtask-scale
+  // check, not a perceptible delay), or waits a small bounded moment for
+  // it otherwise. Promise.race means this NEVER waits indefinitely: past
+  // CRITICAL_ASSET_MAX_EXTRA_WAIT_MS the intro finishes regardless of
+  // whether the images are ready, same as today for anything that's
+  // still slow past that point (see backgroundPreloadRemaining/normal
+  // on-demand loading for those).
+  function finishWhenReady() {
+    if (done) return;
+    Promise.race([
+      criticalAssetsReadyPromise,
+      new Promise(resolve => setTimeout(resolve, CRITICAL_ASSET_MAX_EXTRA_WAIT_MS)),
+    ]).then(finish);
+  }
   // e.target (not e.currentTarget) is the ORIGINATING element, so this
   // only reacts to #intro-screen's own animation finishing - a child's
   // animationend (MIKE/apostrophe/card) bubbles up but is correctly
@@ -58,11 +91,14 @@ const INTRO_ENABLED = true;
   // (e.g. prefers-reduced-motion uses a different animation-name on the
   // same element).
   el.addEventListener('animationend', (e) => {
-    if (e.target === el) finish();
+    if (e.target === el) finishWhenReady();
   });
   // Safety net: if this ever fails to fire, don't leave the game
   // permanently covered and untouchable - well past the intended ~3.25s
-  // sequence so it never fires under normal conditions.
+  // sequence so it never fires under normal conditions. Calls finish()
+  // directly, not finishWhenReady() - past 7s something's already
+  // unusually wrong, so revealing immediately wins over one more bounded
+  // wait.
   setTimeout(finish, 7000);
 })();
 
@@ -402,6 +438,29 @@ const INTRO_ENABLED = true;
     const img = new Image();
     img.src = url;
     if (img.decode) img.decode().catch(() => {});
+  }
+
+  // Exactly what the very first render() call needs and nothing else: one
+  // image per face-up tableau card (the rest of each column is face-down,
+  // all sharing the one back URL below) plus the currently selected back
+  // design in its correct clean/worn condition - reused across the entire
+  // stock pile and every face-down tableau card, so it's needed only once
+  // regardless of how many face-down cards this deal has. Foundations/
+  // waste start empty and need nothing. Reads straight off state (already
+  // the real, just-dealt board by the time this runs - see the call site
+  // at the bottom of this file) rather than predicting, so this is always
+  // exactly this session's actual first-paint art, never a guess. Stays
+  // scoped to whichever collection/size/tier/back-condition is already
+  // active this session - nothing here ever reaches for an inactive
+  // collection or an unselected back.
+  function criticalFirstBoardAssetUrls() {
+    const urls = [];
+    for (const col of state.tableau) {
+      const topCard = col[col.length - 1];
+      if (topCard && topCard.faceUp) urls.push(cardImageSrc(topCard));
+    }
+    urls.push(getCardBackSrc());
+    return urls;
   }
 
   let backgroundPreloadStarted = false;
@@ -3694,6 +3753,16 @@ const INTRO_ENABLED = true;
   window.addEventListener('orientationchange', scheduleTableauReflow);
 
   newGame();
+  // Immediate, not idle-deferred like backgroundPreloadRemaining below -
+  // this is the one thing genuinely worth prioritizing during the intro's
+  // ~3.25s window. render() (inside newGame() above) already started the
+  // real fetches for these exact URLs via the DOM <img> elements it just
+  // created; this doesn't duplicate that (the browser coalesces a second
+  // request for a URL already in flight), it just gives initIntro() an
+  // explicit promise to read once its own exit animation finishes, so a
+  // still-decoding image can hold the reveal for a few tens of ms instead
+  // of popping in a beat after the board's already visible.
+  criticalAssetsReadyPromise = preloadUrls(criticalFirstBoardAssetUrls());
   backgroundPreloadRemaining(); // only schedules idle-time work - the board above is already rendered and interactive
 })();
 
