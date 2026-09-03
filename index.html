@@ -209,6 +209,22 @@
           <span class="settings-feedback-link-arrow" aria-hidden="true">&#8250;</span>
         </button>
         <input type="file" id="restoreFileInput" accept="application/json,.json" hidden>
+        <!-- MIKE Games System (see mike-games-system/SYSTEM.md §12,
+             Support) - quiet, permanent, in Settings only. Opens
+             #support-overlay first rather than going straight out, so a
+             "›" like Stats/Backup/Restore above, not Feedback's external
+             arrow below. Coffee-cup icon: Lucide (ISC license), same
+             icon set as everything else on this row. -->
+        <button type="button" id="supportLink" class="settings-feedback-link" aria-label="Support Mike's Games">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 2v2" />
+            <path d="M14 2v2" />
+            <path d="M16 8a1 1 0 0 1 1 1v8a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1h14a4 4 0 1 1 0 8h-1" />
+            <path d="M6 2v2" />
+          </svg>
+          <span class="settings-feedback-link-label">Support Mike's Games</span>
+          <span class="settings-feedback-link-arrow" aria-hidden="true">&#8250;</span>
+        </button>
         <!-- Message-square icon: Lucide (ISC license), same icon set as
              Undo/Hint above. A plain external link (not a JS click handler)
              so opening it can never touch this page's own game state - the
@@ -284,6 +300,25 @@
       <div id="confirm-actions">
         <button id="confirmGiveUpBtn">Give Up</button>
         <button id="confirmKeepBtn">Keep Playing</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MIKE Games System (see mike-games-system/SYSTEM.md §12, Support) -
+       a tiny, quiet sheet opened from the "Support Mike's Games" row in
+       Settings above. Own overlay rather than reusing #confirm-overlay's
+       showConfirm() plumbing: that system's two buttons are always both
+       plain <button>s wired to one onConfirm callback, but the safest way
+       to open an external link (see script.js's own reasoning on
+       #feedbackLink above) is a real <a>, which this needs to be Buy
+       Mike a Coffee itself rather than a button that calls window.open. -->
+  <div id="support-overlay" class="hidden">
+    <div id="support-card" role="dialog" aria-modal="true" aria-labelledby="support-title" aria-describedby="support-message">
+      <h2 id="support-title">Support Mike's Games</h2>
+      <p id="support-message">Enjoying the games? You can buy me a coffee if you'd like to help me keep making more.</p>
+      <div id="support-actions">
+        <button type="button" id="supportCloseBtn">Close</button>
+        <a id="supportCoffeeBtn" href="https://www.buymeacoffee.com/mikestrassburger" target="_blank" rel="noopener noreferrer">Buy Mike a Coffee</a>
       </div>
     </div>
   </div>

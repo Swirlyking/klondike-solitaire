@@ -897,6 +897,10 @@ const INTRO_ENABLED = true;
   const restoreLink = document.getElementById('restoreLink');
   const restoreFileInput = document.getElementById('restoreFileInput');
   const settingsStatus = document.getElementById('settings-status');
+  const supportLink = document.getElementById('supportLink');
+  const supportOverlay = document.getElementById('support-overlay');
+  const supportCloseBtn = document.getElementById('supportCloseBtn');
+  const supportCoffeeBtn = document.getElementById('supportCoffeeBtn');
   const iconNoticeOverlay = document.getElementById('icon-notice-overlay');
   const iconNoticeCloseBtn = document.getElementById('iconNoticeCloseBtn');
   const iconNoticeGotItBtn = document.getElementById('iconNoticeGotItBtn');
@@ -3417,6 +3421,22 @@ const INTRO_ENABLED = true;
     const file = restoreFileInput.files && restoreFileInput.files[0];
     restoreFileInput.value = ''; // reset so choosing the same filename again still fires 'change'
     if (file) handleRestoreFile(file);
+  });
+
+  // ---------- Support Mike's Games ----------
+  // MIKE Games System (see mike-games-system/SYSTEM.md §12, Support) -
+  // quiet, permanent, Settings-only. #supportCoffeeBtn is a real <a
+  // target="_blank">, same reasoning as #feedbackLink above - closing
+  // this sheet on click is just tidiness, not something the link's own
+  // navigation depends on.
+  function closeSupportOverlay() {
+    supportOverlay.classList.add('hidden');
+  }
+  supportLink.addEventListener('click', () => supportOverlay.classList.remove('hidden'));
+  supportCloseBtn.addEventListener('click', closeSupportOverlay);
+  supportCoffeeBtn.addEventListener('click', closeSupportOverlay);
+  supportOverlay.addEventListener('click', e => {
+    if (e.target === supportOverlay) closeSupportOverlay();
   });
 
   // ---------- Home Screen icon migration notice ----------

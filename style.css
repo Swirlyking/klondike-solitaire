@@ -1326,6 +1326,87 @@ body {
   color: #222;
 }
 
+/* MIKE Games System (SYSTEM.md §12, Support) - its own small card rather
+   than reusing #confirm-card/#confirm-actions' selectors (which are
+   scoped to actual <button> elements) since #supportCoffeeBtn below is a
+   real <a>, not a button + JS handler. Same visual weight/shape as
+   #confirm-card on purpose - this should read as "the same kind of tiny
+   sheet you've already seen in this app," not a new visual system. */
+#support-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2100;
+  padding: 20px;
+}
+#support-overlay.hidden { display: none; }
+
+#support-card {
+  background: #133;
+  border: 1px solid var(--gold);
+  border-radius: 12px;
+  padding: 28px 32px;
+  width: min(90vw, 400px);
+  text-align: center;
+}
+#support-card h2 {
+  color: var(--gold);
+  margin: 0 0 10px;
+  font-size: 19px;
+}
+#support-card p {
+  color: #dce7e0;
+  margin: 0 0 22px;
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+
+#support-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+#support-actions a,
+#support-actions button {
+  flex: 1;
+  padding: 10px 18px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: filter 0.15s;
+}
+#support-actions a:hover,
+#support-actions button:hover { filter: brightness(1.1); }
+#support-actions a:focus-visible,
+#support-actions button:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* Close: de-emphasized outline, same treatment as #confirmGiveUpBtn. */
+#supportCloseBtn {
+  background: transparent;
+  border: 1px solid rgba(217, 180, 92, 0.6);
+  color: var(--gold);
+}
+#supportCloseBtn:hover { background: rgba(217, 180, 92, 0.12); }
+
+/* Buy Mike a Coffee: the emphasized, filled choice - this is the actual
+   point of the sheet, unlike the abandon-game dialogs above where the
+   safe default is what's emphasized. DOM order puts this last (see
+   index.html) for the same mobile column-reverse reason as
+   #confirmKeepBtn above. */
+#supportCoffeeBtn {
+  background: var(--gold);
+  border: none;
+  color: #222;
+}
+
 /* Above the mobile breakpoint, --card-w was a flat 84px regardless of how
    wide the viewport actually was - fine for a modest browser window, but
    on a genuinely wide screen (a landscape iPad, a large monitor) it left
@@ -1368,6 +1449,9 @@ body {
      side-by-side pair - a 44px+ tap height on each. */
   #confirm-actions { flex-direction: column-reverse; }
   #confirm-actions button { padding: 14px 18px; font-size: 15px; }
+  #support-actions { flex-direction: column-reverse; }
+  #support-actions a,
+  #support-actions button { padding: 14px 18px; font-size: 15px; }
 }
 
 /* ---------- Bottom-toolbar touch layouts ----------
