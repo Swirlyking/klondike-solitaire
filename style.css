@@ -997,6 +997,17 @@ body {
   font-size: 14px;
 }
 
+/* Support Mike's Games - Buy Me a Coffee's own brand yellow tint, so this
+   row reads as a distinct, branded entry point rather than blending into
+   the plain Stats/Backup/Restore rows above it. */
+#supportLink {
+  background: rgba(255, 221, 0, 0.14);
+  border-color: rgba(255, 221, 0, 0.5);
+  color: #ffdd00;
+}
+#supportLink:hover { background: rgba(255, 221, 0, 0.22); }
+#supportLink .settings-feedback-link-arrow { opacity: 0.85; }
+
 /* Backup/Restore's own transient outcome line - success reuses the same
    gold #hint-message already uses elsewhere for "worked, here's what
    happened" feedback; error is the one place in Settings that needs a
@@ -1400,9 +1411,11 @@ body {
    point of the sheet, unlike the abandon-game dialogs above where the
    safe default is what's emphasized. DOM order puts this last (see
    index.html) for the same mobile column-reverse reason as
-   #confirmKeepBtn above. */
+   #confirmKeepBtn above. Buy Me a Coffee's own brand yellow rather than
+   this app's own (more muted/tan) --gold, so it reads as the actual BMC
+   button rather than just another gold-accented control in this UI. */
 #supportCoffeeBtn {
-  background: var(--gold);
+  background: #ffdd00;
   border: none;
   color: #222;
 }
