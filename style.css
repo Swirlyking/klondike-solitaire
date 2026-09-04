@@ -1819,6 +1819,47 @@ body {
   align-items: center;
   justify-content: center;
 }
+/* MIKE Games System readiness-gate recovery state (see mike-games-system/
+   SYSTEM.md §01) - taken out of #intro-screen's own flex layout via
+   position:absolute (not a flex sibling of #intro-frame) so it can't
+   compete for centering with the MIKE/card lockup above it or shift that
+   lockup's own position when it appears; anchored toward the bottom third
+   of the screen instead, comfortably clear of the lockup at any
+   reasonable viewport size. Intentionally plain: dark, legible text on
+   the intro's own white field, one bordered button, no spinner/progress
+   bar - the message itself is the whole affordance. */
+#intro-recovery {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: max(48px, calc(env(safe-area-inset-bottom, 0px) + 32px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+}
+#intro-recovery.hidden { display: none; }
+#intro-recovery p {
+  margin: 0;
+  color: #333;
+  font-size: 15px;
+}
+#intro-recovery button {
+  padding: 10px 22px;
+  border-radius: 6px;
+  border: 1px solid #333;
+  background: #fff;
+  color: #333;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+#intro-recovery button:hover { background: #f2f2f2; }
+#intro-recovery button:focus-visible {
+  outline: 2px solid #333;
+  outline-offset: 2px;
+}
 /* The single lockup: MIKE's + the card stacked as ONE flex column, tight
    fixed gap, centered as a unit - so the two layers below never drift
    apart or need independent viewport-relative anchoring the way Mahjong's

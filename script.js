@@ -61,32 +61,63 @@ function hardReload() {
 // critical art (the 7 face-up tableau cards + the one selected back
 // design/condition - see criticalFirstBoardAssetUrls) is known and its
 // decode-awaited preload has been kicked off. initIntro() below awaits
-// this to decide when MIKE is allowed to stop being alone on screen - see
-// its own comment for why this is now a genuine gate, not a bounded
-// top-off. Starts pre-resolved so that if anything ever prevented the
-// game IIFE from running, the intro still releases on its own (behind the
-// safety net below) rather than hanging on a promise that was never
-// assigned.
+// this to decide whether MIKE is allowed to stop being alone on screen -
+// see its own comment for the three-way SUCCESS/FAILURE/TIMEOUT outcome
+// this settles into. Starts pre-resolved so that if anything ever
+// prevented the game IIFE from running, the intro still settles on its
+// own (as a TIMEOUT, behind the safety net below) rather than hanging on
+// a promise that was never assigned.
 let criticalAssetsReadyPromise = Promise.resolve();
-// A real safety net, not a race the common case is expected to lose: on
-// a warm cache this promise resolves in low tens of milliseconds and the
-// intro proceeds essentially the instant it would have before. This bound
-// only matters on a genuinely slow/cold/offline load, where it guarantees
-// MIKE eventually stops waiting rather than freezing forever - see
-// initIntro()'s own comment for what happens to the actual board art in
-// that failure case (attachImageFallback already covers it independently
-// of this gate).
+// A real safety net for how long to WAIT before giving up, not an
+// alternate way to succeed - see initIntro()'s own comment. On a warm
+// cache criticalAssetsReadyPromise settles in low tens of milliseconds and
+// the intro proceeds essentially the instant it would have before; this
+// bound only matters on a genuinely slow/cold/offline load, where it
+// guarantees the player is never left staring at MIKE with no explanation
+// forever - not by quietly pretending unfinished loading was success.
 const CRITICAL_ASSET_MAX_WAIT_MS = 5000;
+
+// Same "does this browser support decode()" fallback shape as preloadUrls
+// below, but for exactly one caller (the readiness gate) that needs to
+// know the difference between a real success and a real failure -
+// preloadUrls' own contract is deliberately the opposite (never rejects,
+// so a broken Settings-switch preview can't hang), so this is a separate
+// function rather than a shared one with two conflicting behaviors.
+// Rejects on a genuine decode/load failure - see initIntro() for why that
+// distinction is the whole point.
+function decodeAwaitedImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.src = url;
+    if (img.decode) {
+      img.decode().then(resolve, reject);
+    } else {
+      img.onload = resolve;
+      img.onerror = reject;
+    }
+  });
+}
 
 // DEV SWITCH: set to false to skip the opening intro completely while
 // testing gameplay. Flip and reload - no UI toggle, no persistence.
 // Mirrors Mike's Mahjong's INTRO_ENABLED/initIntro() exactly (see that
 // project's script.js) - the intro's own timeline is entirely CSS
 // (animation-delay per layer in style.css), so it starts painting the
-// instant the page does.
+// instant the page does. A plain function, not an immediately-invoked
+// one - called explicitly once criticalAssetsReadyPromise below holds
+// its real value (see the call site near the bottom of the game IIFE),
+// not at this declaration's own position. Calling it here, before
+// newGame() has run, would capture a .then() on the placeholder
+// Promise.resolve() this variable starts as - a real bug an earlier
+// version of this file had: the gate looked like it was waiting on real
+// readiness but was actually always resolving off the stale placeholder,
+// with only the intro's own fixed CSS timing coincidentally providing
+// cover most of the time.
 const INTRO_ENABLED = true;
-(function initIntro() {
+function initIntro() {
   const el = document.getElementById('intro-screen');
+  const recoveryEl = document.getElementById('intro-recovery');
+  const retryBtn = document.getElementById('introRecoveryRetry');
   if (!el) return;
   if (!INTRO_ENABLED) { el.remove(); return; }
   let done = false;
@@ -95,30 +126,64 @@ const INTRO_ENABLED = true;
     done = true;
     el.remove();
   }
-  // The readiness gate itself: every animation after MIKE (apostrophe-s,
-  // the dealt card, the whole screen's exit drop) starts CSS
-  // `animation-play-state: paused` (see style.css) - a paused animation's
-  // own delay does not tick down, so the sequence genuinely cannot
-  // proceed until this class is added, whether that's a few milliseconds
-  // from now (warm cache - the common case) or several seconds from now
-  // (cold/slow load). Releasing play-state doesn't skip or compress the
-  // 1000ms/1350ms/2900ms timing in style.css - it's exactly the same
-  // sequence as always, it just starts counting from release instead of
-  // from page load, which is the whole point: loading time is not part
-  // of the designed animation, it just makes MIKE hold alone for longer.
-  // Promise.race against CRITICAL_ASSET_MAX_WAIT_MS means this never
-  // waits indefinitely - see that constant's own comment for what "never"
-  // means in practice.
-  let released = false;
+  // MIKE Games System readiness gate (CORE, see mike-games-system/
+  // SYSTEM.md §01) - a genuine three-way outcome, not a two-way race:
+  //
+  //   SUCCESS: criticalAssetsReadyPromise resolves before the timeout ->
+  //     releaseGate() -> every animation after MIKE (apostrophe-s, the
+  //     dealt card, the exit drop - all CSS `animation-play-state: paused`
+  //     in style.css) is allowed to run. A paused animation's own delay
+  //     does not tick down, so this doesn't skip or compress the
+  //     1000ms/1350ms/2900ms timing below - it's exactly the same
+  //     sequence as always, it just starts counting from release instead
+  //     of from page load.
+  //   FAILURE: criticalAssetsReadyPromise REJECTS (a critical asset
+  //     genuinely failed to load/decode) -> showRecovery(), regardless of
+  //     how much of CRITICAL_ASSET_MAX_WAIT_MS is left. A failed asset is
+  //     never treated as "ready" - see decodeAwaitedImage above.
+  //   TIMEOUT: neither has happened by CRITICAL_ASSET_MAX_WAIT_MS ->
+  //     showRecovery(). The timer is a reason to STOP WAITING and show a
+  //     visible, actionable explanation - never a silent substitute for
+  //     genuine readiness.
+  //
+  // Both FAILURE and TIMEOUT leave the gate closed: MIKE keeps covering
+  // the game (still fully built underneath, per criticalFirstBoardAssetUrls'
+  // own comment - just not confirmed paintable), and the recovery sheet
+  // becomes visible in the same white field MIKE already occupies. Nothing
+  // here ever retries automatically - only an explicit tap on Try Again
+  // (a real hardReload(), the same one every other reload path in this
+  // app already uses) does anything further.
+  let settled = false;
   function releaseGate() {
-    if (released) return;
-    released = true;
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeoutId);
     el.classList.add('intro-ready');
+    // Post-release safety net - scoped to "SUCCESS genuinely happened but
+    // the exit-drop's own animationend somehow never fired" (a browser
+    // quirk), started fresh from the moment of release rather than from
+    // page load, comfortably longer than the full post-release sequence
+    // (~2.25s) so it never fires under any normal condition. Only ever
+    // armed after a real SUCCESS - FAILURE/TIMEOUT never reach here, so
+    // this can't become a second way to see the game past a closed gate.
+    setTimeout(finish, 4000);
   }
-  Promise.race([
-    criticalAssetsReadyPromise,
-    new Promise(resolve => setTimeout(resolve, CRITICAL_ASSET_MAX_WAIT_MS)),
-  ]).then(releaseGate);
+  function showRecovery() {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeoutId);
+    if (!recoveryEl) return;
+    recoveryEl.classList.remove('hidden');
+    // #intro-screen is aria-hidden by default (purely decorative while
+    // it's just MIKE and a CSS timeline) - this is the one state where it
+    // stops being decorative, so a screen-reader user isn't left with a
+    // silently covered page and no way to reach Try Again.
+    el.removeAttribute('aria-hidden');
+    if (retryBtn) retryBtn.focus();
+  }
+  const timeoutId = setTimeout(showRecovery, CRITICAL_ASSET_MAX_WAIT_MS);
+  criticalAssetsReadyPromise.then(releaseGate, showRecovery);
+  if (retryBtn) retryBtn.addEventListener('click', hardReload);
   // e.target (not e.currentTarget) is the ORIGINATING element, so this
   // only reacts to #intro-screen's own exit-drop animation finishing - a
   // child's animationend (MIKE/apostrophe/card) bubbles up but is
@@ -127,21 +192,12 @@ const INTRO_ENABLED = true;
   // or swapped (e.g. prefers-reduced-motion uses a different
   // animation-name on the same element). Since the exit animation can't
   // even start until releaseGate() above has run, this can only ever fire
-  // after the gate has already released - it's purely "the sequence that
-  // already started has now finished," not a second gate.
+  // after a genuine SUCCESS - it's purely "the sequence that already
+  // started has now finished," never reachable from FAILURE/TIMEOUT.
   el.addEventListener('animationend', (e) => {
     if (e.target === el) finish();
   });
-  // Absolute last-resort safety net: comfortably longer than
-  // CRITICAL_ASSET_MAX_WAIT_MS plus the full post-release sequence
-  // (~2.25s) combined, so it never fires under any normal condition, even
-  // a slow one - this only exists in case releaseGate() itself never runs
-  // (a bug) or the exit animation's animationend never fires for some
-  // other reason. Calls finish() directly (also forcing the gate open, in
-  // case that's specifically what got stuck), never leaving the game
-  // permanently covered and untouchable.
-  setTimeout(() => { releaseGate(); finish(); }, 12000);
-})();
+}
 
 (() => {
   const SUITS = [
@@ -3649,13 +3705,14 @@ const INTRO_ENABLED = true;
 
   // Resolves once every given URL has either genuinely finished decoding
   // (paintable, not just "bytes arrived over the network") or failed -
-  // never rejects, so a single broken fetch can't hang a caller (the
-  // readiness gate's own safety net, or render()'s own attachImageFallback
-  // for a real card, cover a real failure independently of this). Used
-  // both by the startup readiness gate (see criticalAssetsReadyPromise
-  // above) and to bridge the instant between picking a new Cards/Card Back
-  // option and applying it, so that instant never shows a blank card
-  // mid-load either.
+  // never rejects, so a single broken fetch can't hang this caller
+  // specifically (render()'s own attachImageFallback covers a real
+  // card-art failure independently of this). Used only to bridge the
+  // instant between picking a new Cards/Card Back option and applying it,
+  // so that instant never shows a blank card mid-load. The startup
+  // readiness gate deliberately does NOT use this - it needs the opposite
+  // contract (a real rejection on a real failure) - see decodeAwaitedImage
+  // near the top of this file instead.
   //
   // decode() is AWAITED, not raced against the 'load' event - the two
   // aren't the same signal (load only means the bytes arrived; decode()
@@ -3899,10 +3956,17 @@ const INTRO_ENABLED = true;
   // real fetches for these exact URLs via the DOM <img> elements it just
   // created; this doesn't duplicate that (the browser coalesces a second
   // request for a URL already in flight), it just gives initIntro() an
-  // explicit promise to read once its own exit animation finishes, so a
-  // still-decoding image can hold the reveal for a few tens of ms instead
-  // of popping in a beat after the board's already visible.
-  criticalAssetsReadyPromise = preloadUrls(criticalFirstBoardAssetUrls());
+  // explicit promise to read once its own exit animation finishes.
+  // decodeAwaitedImage (not preloadUrls, which deliberately never
+  // rejects for its own, different caller) is what lets a genuinely
+  // failed critical asset reach initIntro() as a real rejection rather
+  // than being silently treated as readiness - see initIntro()'s own
+  // SUCCESS/FAILURE/TIMEOUT comment.
+  criticalAssetsReadyPromise = Promise.all(criticalFirstBoardAssetUrls().map(decodeAwaitedImage));
+  // Called here, not at its own declaration - see initIntro()'s own
+  // header comment for why calling it any earlier would have bound its
+  // gate to the wrong (placeholder) promise.
+  initIntro();
   backgroundPreloadRemaining(); // only schedules idle-time work - the board above is already rendered and interactive
 })();
 

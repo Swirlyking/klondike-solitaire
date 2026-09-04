@@ -64,6 +64,18 @@
         </div>
       </div>
     </div>
+    <!-- MIKE Games System readiness gate (see mike-games-system/SYSTEM.md
+         §01) - hidden unless script.js's initIntro() decides the critical
+         startup readiness contract has genuinely FAILED or TIMED OUT
+         (never shown just because loading is slow and still in progress).
+         Sits in the same white field MIKE already occupies - the gate
+         stays closed, MIKE stays put, this is the only thing that changes.
+         Deliberately no spinner/progress bar - a flat, actionable message
+         is the whole point. -->
+    <div id="intro-recovery" class="hidden" role="alert">
+      <p>Having trouble loading the game.</p>
+      <button type="button" id="introRecoveryRetry">Try Again</button>
+    </div>
   </div>
 
   <div id="update-bar" class="hidden">
