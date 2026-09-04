@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Mike's Solitaire</title>
+<!-- MIKE Games System (see mike-games-system/SYSTEM.md §01) - MIKE himself
+     must appear as close to instantly as possible and isn't held hostage
+     by the readiness gate (see script.js's initIntro()), so this gives the
+     browser the earliest possible signal to fetch him at the highest
+     priority, ahead of even discovering the <img> tag itself further down
+     the page. -->
+<link rel="preload" as="image" href="assets/intro/mike-candy.png" fetchpriority="high">
 <link rel="stylesheet" href="style.css">
 
 <link rel="icon" href="favicon.svg" type="image/svg+xml">

@@ -1739,11 +1739,26 @@ body {
    OPENING INTRO - markup lives in index.html (three independent layers:
    #intro-mike, #intro-apostrophe, #intro-object, same split as Mike's
    Mahjong's own intro so the MIKE+'s pair is identical across games and
-   only #intro-object's image/entrance changes per game). Purely CSS-timed
-   via animation-delay so the sequence starts the instant the page paints -
-   see initIntro() in script.js, which only ever *removes* this element
-   once #intro-screen's own animation finishes (or a safety-net timeout
-   fires); it never gates or waits on game boot.
+   only #intro-object's image/entrance changes per game).
+
+   MIKE Games System readiness gate (CORE, see mike-games-system/SYSTEM.md
+   §01) - MIKE himself has no animation at all, so he's simply present from
+   the very first paint, completely unconditionally. Everything after him
+   (apostrophe-s, the dealt card, the whole screen's exit drop) is CSS-timed
+   via animation-delay exactly as before, but now starts every one of those
+   animations already `animation-play-state: paused` - a paused CSS
+   animation holds at its first frame and its own delay does not tick down,
+   so the whole sequence genuinely cannot proceed past "MIKE alone" until
+   script.js adds `.intro-ready` to #intro-screen (see initIntro()/
+   finishWhenReady()), which happens once this game's critical startup
+   readiness contract resolves (the dealt board's card art, decoded) or a
+   generous safety-net elapses. Releasing play-state doesn't reset or skip
+   any delay - the 1000ms/1350ms/2900ms timing below is exactly the same
+   sequence as always, it just starts counting from release instead of from
+   page load. initIntro() still only ever *removes* #intro-screen once its
+   own exit animation finishes (or an outer safety-net timeout fires) - the
+   gate only changes when the sequence is allowed to *begin*, not how it
+   ends.
 
    Timeline is beat-for-beat identical to Mahjong's (~3.25s total): MIKE is
    simply present from first paint (no animation, @0ms) and holds ALONE
@@ -1788,6 +1803,13 @@ body {
   align-items: center;
   justify-content: center;
   animation: introScreenDrop 350ms cubic-bezier(.4, 0, 1, 1) 2900ms forwards;
+  /* MIKE Games System readiness gate (see initIntro()/finishWhenReady() in
+     script.js) - paused by default so the drop can never start counting
+     down its 2900ms delay until script.js flips this to running. A CSS
+     animation's own delay does not advance while paused, so releasing this
+     later doesn't skip or compress anything - the 2900ms/350ms drop timing
+     below is unchanged, it just doesn't begin until the gate says so. */
+  animation-play-state: paused;
 }
 #intro-frame {
   position: relative;
@@ -1841,7 +1863,7 @@ body {
    visible near-instantly at 1000ms - a 10ms "animation" only exists so it
    has a real animationend and a delay to hang the snap on; there is no
    transform/scale/rotation to see it move through. */
-#intro-apostrophe { opacity: 0; animation: introFadeIn 10ms linear 1000ms forwards; }
+#intro-apostrophe { opacity: 0; animation: introFadeIn 10ms linear 1000ms forwards; animation-play-state: paused; }
 /* Same static/animated split as the wordmark: #intro-object-pos reserves
    the card's resting slot in the flex column (a normal in-flow box, sized
    by width + its image's intrinsic aspect-ratio) so the layout never
@@ -1863,6 +1885,19 @@ body {
   display: block;
   opacity: 0;
   animation: introCardIn 350ms cubic-bezier(.215, .61, .355, 1) 1350ms forwards;
+  animation-play-state: paused;
+}
+/* MIKE Games System readiness gate release (see script.js) - script.js adds
+   this class to #intro-screen the instant the critical startup readiness
+   contract resolves (the dealt board's own card art, decoded - see
+   criticalAssetsReadyPromise), or a generous safety-net elapses. Every
+   animation-delay above starts counting from this moment, not from page
+   load, so MIKE simply holds alone for longer on a slow/cold load rather
+   than the game appearing behind unfinished art. */
+#intro-screen.intro-ready,
+.intro-ready #intro-apostrophe,
+.intro-ready #intro-object {
+  animation-play-state: running;
 }
 
 @keyframes introFadeIn { from { opacity: 0; } to { opacity: 1; } }
