@@ -1487,11 +1487,11 @@ body {
        never stretched. */
     --card-w: calc((100vw - 2 * var(--board-pad) - 6 * var(--pile-gap)) / 7);
     --card-h: calc(var(--card-w) * 122 / 84);
-    --cascade-down: calc(var(--card-w) * 0.119);
-    --cascade-up: calc(var(--card-w) * 0.286);
+    --cascade-down: calc(var(--card-w) * 0.143);
+    --cascade-up: calc(var(--card-w) * 0.343);
   }
   #board { padding: var(--board-pad); }
-  #top-row { margin-bottom: 20px; }
+  #top-row { margin-bottom: 40px; }
   .column { min-height: 260px; }
 
   /* Large, stacked, easy-to-tap targets rather than the desktop's
@@ -1606,7 +1606,7 @@ body {
   #topbar h1 { font-size: 16px; }
   .stats { font-size: 12px; gap: 10px; }
 
-  #top-row { margin-bottom: 20px; }
+  #top-row { margin-bottom: 40px; }
 
   .controls { gap: 2px; padding: 6px 4px; }
   .controls button,
@@ -1656,8 +1656,8 @@ body {
       calc(16.7vh + 30px)
     );
     --card-h: calc(var(--card-w) * 122 / 84);
-    --cascade-down: calc(var(--card-w) * 0.119);
-    --cascade-up: calc(var(--card-w) * 0.286);
+    --cascade-down: calc(var(--card-w) * 0.143);
+    --cascade-up: calc(var(--card-w) * 0.343);
   }
   #board { padding: var(--board-pad) var(--board-pad) 0; }
   #topbar { padding: 4px 14px; gap: 10px; }
