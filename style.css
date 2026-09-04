@@ -796,7 +796,7 @@ body {
   margin: 0;
   font-size: 18px;
 }
-#settingsCloseBtn, #statsCloseBtn {
+#settingsCloseBtn, #statsCloseBtn, #testingCloseBtn {
   background: none;
   border: none;
   color: #eee;
@@ -806,7 +806,7 @@ body {
   opacity: 0.7;
   padding: 0;
 }
-#settingsCloseBtn:hover, #statsCloseBtn:hover { opacity: 1; }
+#settingsCloseBtn:hover, #statsCloseBtn:hover, #testingCloseBtn:hover { opacity: 1; }
 
 .settings-section + .settings-section {
   margin-top: 20px;
@@ -960,6 +960,17 @@ body {
   border-top: 1px solid rgba(255,255,255,0.12);
 }
 
+/* MIKE Games System (see mike-games-system/SYSTEM.md, Standard Settings
+   Architecture) - the standard utility block (Support/Feedback/Reload
+   App/Testing), same divider treatment as #settings-secondary just above
+   so the two read as distinct groups (game-specific vs. framework-level)
+   through spacing alone - no visible heading for either. */
+#settings-utilities {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255,255,255,0.12);
+}
+
 .settings-feedback-link {
   box-sizing: border-box;
   display: flex;
@@ -1033,24 +1044,19 @@ body {
   color: #e8a3a3;
 }
 
-/* Looks like inert small print, not a control - no pointer cursor, no hover
-   feedback, no button chrome. That's the "hidden" part; it's still a real,
-   focusable <button> underneath for keyboard/screen-reader users. */
+/* MIKE Games System (see mike-games-system/SYSTEM.md, Standard Settings
+   Architecture) - identifies the build, nothing else. Quieter than every
+   row above it on purpose (smallest text, lowest-contrast color, no
+   border/background at all) and a plain <p> in index.html now, not a
+   button - there's no interactive treatment left to style here at all. */
 .settings-version {
   display: block;
   width: 100%;
   margin-top: 14px;
   padding: 4px 0 0;
-  background: none;
-  border: none;
   color: rgba(255,255,255,0.32);
   font-size: 11px;
   text-align: center;
-  cursor: default;
-}
-.settings-version:focus-visible {
-  outline: 1px solid rgba(255,255,255,0.4);
-  outline-offset: 2px;
 }
 
 /* Stats: one level "into" Settings (see index.html/script.js) - same
@@ -1076,6 +1082,36 @@ body {
   max-height: 85vh;
   overflow-y: auto;
 }
+
+/* Testing Tools (development only - see IS_LOCAL_DEV in script.js): same
+   "one level into Settings" shell as #stats-overlay/#stats-card just
+   above, own ids for the same reason (both can exist in the DOM at once,
+   in a dev build). */
+#testing-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+#testing-overlay.hidden { display: none; }
+
+#testing-card {
+  background: #133;
+  border: 1px solid var(--gold);
+  border-radius: 12px;
+  padding: 0 28px 28px;
+  width: min(90vw, 380px);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+/* Same zero-gap stacked-row look as #settings-secondary/#settings-utilities
+   above (each .settings-feedback-link supplies its own border/background;
+   see that class's own comment) - no separate spacing rule needed. */
+#testing-rows { margin-top: 4px; }
 
 #stats-mode-toggle {
   display: flex;

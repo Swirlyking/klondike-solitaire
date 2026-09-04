@@ -38,12 +38,17 @@ automatically — identify and recommend first, let the user decide whether to p
 If you edit `mike-games-system/SYSTEM.md` or `MATRIX.md` as part of this, also add a one-line entry to
 `mike-games-system/CHANGELOG.md`.
 
-## Known current position (as of 2026-09-02 audit — verify before relying on this)
+## Known current position (as of 2026-09-04 — verify before relying on this)
 
 Solitaire has the family's strongest backup/restore, asset-preloading, and iOS safe-area handling, plus
 the only rigorous shuffle-fairness audit tool. It deliberately has no save/resume for the active deal (a
 legitimate design choice, not a gap) and no achievements system beyond basic best-record stats. Its
 `sfx.js` sound module exists but is intentionally dormant/unimported.
+
+Solitaire is also the **reference implementation of the Standard Settings Architecture** (`SYSTEM.md` §06):
+Settings ends with Support Mike's Games → Feedback → Reload App → (dev-only) Testing → version footer,
+version is fully inert, and dev/prod detection is hostname-based (`IS_LOCAL_DEV` in `script.js`, since this
+repo has no build step). Sudoku and Mahjong have not been migrated to this standard yet.
 
 ## Repo orientation
 

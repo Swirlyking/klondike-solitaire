@@ -31,6 +31,31 @@ import { ensureIconGenerationMarker, shouldShowIconNotice, dismissIconNoticePerm
 // like a returning player's by the time anything checked).
 ensureIconGenerationMarker();
 
+// MIKE Games System (see mike-games-system/SYSTEM.md, Standard Settings
+// Architecture) - gates the dev-only "Testing" row/sheet. This project has
+// no build step (no Vite, no bundler - see package.json), so there's no
+// compile-time DEV/PROD flag to read the way a Vite-based MIKE game can.
+// Hostname is the one thing that's actually reliable here without one:
+// it fails SAFE - every real deployment (the production custom domain,
+// any Netlify preview/branch subdomain, anything else) reads as
+// production and hides Testing, and it only opens up on an actual local
+// dev server. No manually-maintained flag to remember to flip before
+// deploying - this is derived automatically from where the page is
+// actually running.
+const IS_LOCAL_DEV = ['localhost', '127.0.0.1'].includes(location.hostname);
+
+// Single reload path for both the update-bar's "Reload" button and
+// Settings' "Reload App" row (see mike-games-system/SYSTEM.md, Standard
+// Settings Architecture) - plain location.reload() is unreliable in iOS
+// Safari standalone/Home-Screen mode specifically (WKWebView can resume a
+// suspended page instead of actually refetching it), so this navigates to
+// a cache-busting URL via location.replace() instead, which reliably
+// forces a real fetch in every context (browser tab, installed PWA,
+// desktop and mobile alike).
+function hardReload() {
+  location.replace(`${location.pathname}?_r=${Date.now()}`);
+}
+
 // Set by the game IIFE below, the instant the very first board's critical
 // art (the 7 face-up tableau cards + the one selected back design/
 // condition - see preloadCriticalFirstBoardAssets) is known and its
@@ -901,6 +926,20 @@ const INTRO_ENABLED = true;
   const supportOverlay = document.getElementById('support-overlay');
   const supportCloseBtn = document.getElementById('supportCloseBtn');
   const supportCoffeeBtn = document.getElementById('supportCoffeeBtn');
+  const reloadAppLink = document.getElementById('reloadAppLink');
+  const testingLink = document.getElementById('testingLink');
+  const testingOverlay = document.getElementById('testing-overlay');
+  const testingCloseBtn = document.getElementById('testingCloseBtn');
+  const testingForceWinBtn = document.getElementById('testingForceWinBtn');
+  // MIKE Games System (see mike-games-system/SYSTEM.md, Standard Settings
+  // Architecture) - Testing must never merely be CSS-hidden in production;
+  // the row and its whole sheet are removed from the DOM outright the
+  // instant this isn't a local dev server (see IS_LOCAL_DEV above), so
+  // there is no control left anywhere for a production visitor to find.
+  if (!IS_LOCAL_DEV) {
+    testingLink.remove();
+    testingOverlay.remove();
+  }
   const iconNoticeOverlay = document.getElementById('icon-notice-overlay');
   const iconNoticeCloseBtn = document.getElementById('iconNoticeCloseBtn');
   const iconNoticeGotItBtn = document.getElementById('iconNoticeGotItBtn');
@@ -982,6 +1021,11 @@ const INTRO_ENABLED = true;
   const ABANDON_COPY = {
     newGame: { title: 'Quitting?', message: 'There are still moves available, are you sure?', confirmLabel: 'Shuffle Me a New Game' },
     restart: { title: 'Restart this deal?', message: 'Your moves will be undone, but the same cards will be dealt again.' },
+    // Reload App (see Settings) - there's no save/resume for an in-progress
+    // deal (see hardReload's own header), so this needs the exact same
+    // "is there actually something to lose" gate as New Game/Restart above,
+    // reused via guardAbandon rather than a separate confirmation system.
+    reload: { title: 'Reload the app?', message: 'Your current game will be lost. Stats and preferences are unaffected.', confirmLabel: 'Reload' },
   };
 
   let confirmOpen = false;
@@ -2360,15 +2404,22 @@ const INTRO_ENABLED = true;
     glideGhostsTo(ghosts, originRects, destRects, glideMs, revealDest, undefined, options?.moveProfile);
   }
 
-  // Bottom-of-Settings easter egg (see versionLink): instantly overwrites
-  // the board with a legitimately-solved deck and re-renders, so checkWin()
-  // - completely unmodified - detects the same "all 52 on foundations" win
-  // it always does and runs the real celebration pipeline. This never
-  // touches win-detection itself; it only fabricates the state win-detection
-  // already knows how to recognize. moveCount/startTime are left alone, so
-  // the celebration's stats line still reflects the game actually played.
+  // Testing Tools' "Force Win" (see mike-games-system/SYSTEM.md, Standard
+  // Settings Architecture) - moved here from what used to be a tap on the
+  // version number in Settings; version is now purely informational (see
+  // its own comment near versionLink.textContent below). Instantly
+  // overwrites the board with a legitimately-solved deck and re-renders,
+  // so checkWin() - completely unmodified - detects the same "all 52 on
+  // foundations" win it always does and runs the real celebration
+  // pipeline. This never touches win-detection itself; it only fabricates
+  // the state win-detection already knows how to recognize. moveCount/
+  // startTime are left alone, so the celebration's stats line still
+  // reflects the game actually played. IS_LOCAL_DEV already guarantees
+  // this function has no reachable caller at all in production (see where
+  // testingLink/testingOverlay are removed from the DOM above).
   function forceWinForTesting() {
     settingsOverlay.classList.add('hidden');
+    testingOverlay.classList.add('hidden');
     if (won) {
       // Let an already-finished (or in-progress) celebration reset first,
       // so a repeated click always produces a fresh one instead of a no-op.
@@ -3439,6 +3490,39 @@ const INTRO_ENABLED = true;
     if (e.target === supportOverlay) closeSupportOverlay();
   });
 
+  // ---------- Reload App ----------
+  // MIKE Games System (see mike-games-system/SYSTEM.md, Standard Settings
+  // Architecture) - a real reload (see hardReload above), not a fake one
+  // via render(). Reuses guardAbandon/needsAbandonConfirmation, the exact
+  // same "is there actually something to lose" gate New Game/Restart
+  // already use, rather than a separate confirmation system - there's no
+  // save/resume for an in-progress deal, so reload is exactly as
+  // destructive as those two actions and deserves the same protection,
+  // and no more: nothing played yet, or already won, reloads immediately.
+  reloadAppLink.addEventListener('click', () => guardAbandon('reload', hardReload));
+
+  // ---------- Testing Tools (development only) ----------
+  // MIKE Games System (see mike-games-system/SYSTEM.md, Standard Settings
+  // Architecture) - only reachable at all when IS_LOCAL_DEV is true (see
+  // above, where testingLink/testingOverlay are removed from the DOM
+  // entirely otherwise), so none of this wiring can run in production.
+  // Same "one level into Settings" shape as Stats above.
+  if (IS_LOCAL_DEV) {
+    testingLink.addEventListener('click', () => {
+      settingsOverlay.classList.add('hidden');
+      testingOverlay.classList.remove('hidden');
+    });
+    function closeTestingPanel() {
+      testingOverlay.classList.add('hidden');
+      settingsOverlay.classList.remove('hidden');
+    }
+    testingCloseBtn.addEventListener('click', closeTestingPanel);
+    testingOverlay.addEventListener('click', e => {
+      if (e.target === testingOverlay) closeTestingPanel();
+    });
+    testingForceWinBtn.addEventListener('click', forceWinForTesting);
+  }
+
   // ---------- Home Screen icon migration notice ----------
   // See pwa-icon-notice.js for the eligibility/dismissal logic this
   // gates on - this block only ever owns the modal's own DOM/interaction.
@@ -3656,8 +3740,13 @@ const INTRO_ENABLED = true;
     settingsOverlay.classList.remove('hidden');
   });
   settingsCloseBtn.addEventListener('click', () => settingsOverlay.classList.add('hidden'));
+  // MIKE Games System (see mike-games-system/SYSTEM.md, Standard Settings
+  // Architecture) - version identifies the build and does nothing else.
+  // It used to double as a secret tap-to-force-win shortcut (see
+  // forceWinForTesting, now reachable only from Testing Tools); versionLink
+  // is a plain <p> now (see index.html), so there's no click/tap handler
+  // left to attach at all - this line is only ever a display update.
   versionLink.textContent = `v${APP_VERSION}`;
-  versionLink.addEventListener('click', forceWinForTesting);
   settingsOverlay.addEventListener('click', e => {
     if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
   });
@@ -3833,7 +3922,11 @@ const INTRO_ENABLED = true;
     }
   }
 
-  reloadBtn.addEventListener('click', () => location.reload());
+  // hardReload() (module scope, top of file) rather than a plain
+  // location.reload() - same iOS-standalone-mode reliability fix now
+  // shared with Settings' "Reload App" row, one authoritative reload path
+  // for the whole app instead of two independently-behaving ones.
+  reloadBtn.addEventListener('click', hardReload);
   dismissBtn.addEventListener('click', () => {
     dismissed = true;
     bar.classList.add('hidden');
