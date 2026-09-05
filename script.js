@@ -157,7 +157,8 @@ function initIntro() {
   function releaseGate() {
     if (settled) return;
     settled = true;
-    clearTimeout(timeoutId);
+    disarmTimeout();
+    document.removeEventListener('visibilitychange', onVisibilityChange);
     el.classList.add('intro-ready');
     // Post-release safety net - scoped to "SUCCESS genuinely happened but
     // the exit-drop's own animationend somehow never fired" (a browser
@@ -171,7 +172,8 @@ function initIntro() {
   function showRecovery() {
     if (settled) return;
     settled = true;
-    clearTimeout(timeoutId);
+    disarmTimeout();
+    document.removeEventListener('visibilitychange', onVisibilityChange);
     if (!recoveryEl) return;
     recoveryEl.classList.remove('hidden');
     // #intro-screen is aria-hidden by default (purely decorative while
@@ -181,7 +183,42 @@ function initIntro() {
     el.removeAttribute('aria-hidden');
     if (retryBtn) retryBtn.focus();
   }
-  const timeoutId = setTimeout(showRecovery, CRITICAL_ASSET_MAX_WAIT_MS);
+  // Visibility-aware countdown - a backgrounded tab heavily throttles
+  // decode() (a real, standard browser optimization; confirmed via
+  // direct instrumentation in Sudoku, where two genuinely valid images
+  // each took ~30s to decode while document.hidden was true, versus this
+  // budget's 5s), so racing that against a flat wall-clock timer punishes
+  // a tab nobody's even looking at for something that was never actually
+  // broken. Only time spent genuinely visible ever counts against
+  // CRITICAL_ASSET_MAX_WAIT_MS - hidden time is paused, never lost or
+  // reset, and counting resumes from wherever it left off the moment the
+  // document is visible again. A tab that's broken and genuinely visible
+  // the whole time behaves exactly as before (armTimeout below fires
+  // immediately on setup when already visible, for the same 5000ms).
+  // None of this touches the rejection path just below -
+  // criticalAssetsReadyPromise rejecting still calls showRecovery()
+  // immediately regardless of visibility or remaining budget, so a
+  // genuinely broken asset is never masked by this.
+  let timeoutId = null;
+  let remainingMs = CRITICAL_ASSET_MAX_WAIT_MS;
+  let visibleSince = null;
+  function armTimeout() {
+    if (document.hidden || timeoutId !== null) return;
+    visibleSince = performance.now();
+    timeoutId = setTimeout(showRecovery, remainingMs);
+  }
+  function disarmTimeout() {
+    if (timeoutId === null) return;
+    clearTimeout(timeoutId);
+    remainingMs = Math.max(0, remainingMs - (performance.now() - visibleSince));
+    timeoutId = null;
+  }
+  function onVisibilityChange() {
+    if (document.hidden) disarmTimeout();
+    else armTimeout();
+  }
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  armTimeout();
   criticalAssetsReadyPromise.then(releaseGate, showRecovery);
   if (retryBtn) retryBtn.addEventListener('click', hardReload);
   // e.target (not e.currentTarget) is the ORIGINATING element, so this
