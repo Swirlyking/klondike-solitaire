@@ -35,6 +35,14 @@ The check, briefly:
 Report the result briefly at the end of relevant work. Don't make unrelated changes to Sudoku or Mahjong
 automatically — identify and recommend first, let the user decide whether to propagate.
 
+**Before citing anything as a MIKE Games reference implementation, check whether it's actually committed.**
+`SYSTEM.md` once described Sudoku's Supabase sync as a built, inspectable reference design when the code
+existed only as uncommitted local WIP — never verify a shared-system claim (yours or the doc's) against the
+working tree; check `git log`/`git show HEAD:<path>`. Tag any claim whose provenance isn't plain committed
+history using `SYSTEM.md`'s own provenance rule (DEPLOYED / COMMITTED / WIP / PLANNED / UNKNOWN) — a WIP
+implementation may inform a design, but must never be called "strongest" or cited as a reference until it's
+committed.
+
 If you edit `mike-games-system/SYSTEM.md` or `MATRIX.md` as part of this, also add a one-line entry to
 `mike-games-system/CHANGELOG.md`.
 
