@@ -5,15 +5,21 @@ import {
   BACKUP_APP_ID, CURRENT_BACKUP_VERSION, LEGACY_CARD_BACK_IDS,
 } from './backup.js';
 
-// Mirrors script.js's real CARD_COLLECTIONS/CARD_BACKS registries closely
-// enough for these tests' purposes - resolveRestorePatch only ever reads
-// these as plain id lists, never anything collection/back-specific.
-const VALID_COLLECTION_IDS = ['worn', 'clean'];
+// Mirrors script.js's real CARD_FACE_DESIGNS/CONDITIONS/CARD_BACKS
+// registries closely enough for these tests' purposes - resolveRestorePatch
+// only ever reads these as plain id lists, never anything design/back-
+// specific.
+const VALID_FACE_DESIGN_IDS = ['regular', 'simple'];
+const VALID_CONDITION_IDS = ['worn', 'clean'];
 const VALID_CARD_BACK_IDS = [
   'lovebirds', 'mod_pop', 'north_star_blue', 'north_star_red', 'mesmer',
   'parlor_blue', 'parlor_red', 'fireflower_blue', 'fireflower_red', 'flower', 'eye', 'blue', 'red',
 ];
-const REGISTRIES = { validCollectionIds: VALID_COLLECTION_IDS, validCardBackIds: VALID_CARD_BACK_IDS };
+const REGISTRIES = {
+  validFaceDesignIds: VALID_FACE_DESIGN_IDS,
+  validConditionIds: VALID_CONDITION_IDS,
+  validCardBackIds: VALID_CARD_BACK_IDS,
+};
 
 function validModeStats(overrides) {
   return { plays: 10, wins: 3, fastestTimeSeconds: 120, fewestMoves: 80, lastWin: { timeSeconds: 120, moves: 80 }, ...overrides };
@@ -28,6 +34,7 @@ function validStatsPayload() {
 // here without a browser.
 
 const SAMPLE_FIELDS = {
+  faceDesign: 'regular',
   cardStyle: 'worn',
   cardBack: 'parlor_red',
   drawCount: '3',
@@ -167,10 +174,46 @@ test('isValidStatsPayload: rejects lastWin as a non-object (e.g. a stray string)
 // ---------- resolveRestorePatch ----------
 
 test('resolveRestorePatch: a fully valid payload resolves every field', () => {
-  const data = { cardStyle: 'clean', cardBack: 'parlor_red', drawCount: '1', stats: validStatsPayload() };
+  const data = { faceDesign: 'simple', cardStyle: 'clean', cardBack: 'parlor_red', drawCount: '1', stats: validStatsPayload() };
   const result = resolveRestorePatch(data, REGISTRIES);
   assert.equal(result.ok, true);
   assert.deepEqual(result.patch, data);
+});
+
+// ---------- faceDesign (Card Faces) ----------
+
+test('resolveRestorePatch: resolves a valid faceDesign', () => {
+  const result = resolveRestorePatch({ faceDesign: 'simple' }, REGISTRIES);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.patch, { faceDesign: 'simple' });
+});
+
+test('resolveRestorePatch: rejects the whole restore for an unrecognized faceDesign, with no partial patch', () => {
+  const result = resolveRestorePatch({ faceDesign: 'ultra-deluxe-design', cardStyle: 'worn' }, REGISTRIES);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'invalid-faceDesign');
+  assert.equal(result.patch, undefined);
+});
+
+test('resolveRestorePatch: rejects a non-string faceDesign', () => {
+  for (const bad of [42, null, {}, []]) {
+    const result = resolveRestorePatch({ faceDesign: bad }, REGISTRIES);
+    assert.equal(result.ok, false, `faceDesign=${JSON.stringify(bad)} should be rejected`);
+    assert.equal(result.reason, 'invalid-faceDesign');
+  }
+});
+
+test('resolveRestorePatch: backward compatibility - a backup predating Card Faces (no faceDesign key at all) restores everything else fine, with faceDesign simply absent from the patch (not defaulted, not rejected)', () => {
+  // Mirrors a real pre-Card-Faces backup file: buildBackup() from that era
+  // never included a faceDesign key in the first place.
+  const preCardFacesData = { cardStyle: 'clean', cardBack: 'parlor_red', drawCount: '1', stats: validStatsPayload() };
+  const result = resolveRestorePatch(preCardFacesData, REGISTRIES);
+  assert.equal(result.ok, true);
+  assert.equal('faceDesign' in result.patch, false);
+  assert.deepEqual(result.patch, preCardFacesData);
+  // The device's own getPreference('faceDesign', DEFAULT_FACE_DESIGN) fallback
+  // (script.js) is what resolves the now-untouched preference to 'regular' -
+  // resolveRestorePatch itself never writes a default value.
 });
 
 test('resolveRestorePatch: an empty data object resolves to an empty (no-op) patch, not a failure', () => {

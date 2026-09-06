@@ -12,17 +12,17 @@ export const BACKUP_APP_ID = 'mikes-solitaire';
 export const CURRENT_BACKUP_VERSION = 1;
 
 // Builds the exportable backup object from the caller's current preference
-// values. Deliberately an explicit allowlist of fields (cardStyle,
-// cardBack, drawCount, stats) rather than a blind dump of everything in
-// storage - ephemeral/internal state (e.g. the Home Screen icon notice's
-// migration/dismissal markers) is never passed in here in the first place,
-// so it can't end up in a backup by accident.
-export function buildBackup({ cardStyle, cardBack, drawCount, stats }) {
+// values. Deliberately an explicit allowlist of fields (faceDesign,
+// cardStyle, cardBack, drawCount, stats) rather than a blind dump of
+// everything in storage - ephemeral/internal state (e.g. the Home Screen
+// icon notice's migration/dismissal markers) is never passed in here in
+// the first place, so it can't end up in a backup by accident.
+export function buildBackup({ faceDesign, cardStyle, cardBack, drawCount, stats }) {
   return {
     app: BACKUP_APP_ID,
     backupVersion: CURRENT_BACKUP_VERSION,
     createdAt: new Date().toISOString(),
-    data: { cardStyle, cardBack, drawCount, stats },
+    data: { faceDesign, cardStyle, cardBack, drawCount, stats },
   };
 }
 
@@ -119,19 +119,38 @@ export function isValidStatsPayload(raw) {
 // (leaving whatever's already on the device for that field alone) rather
 // than causing a failure.
 //
-// validCollectionIds/validCardBackIds are supplied by the caller (script.js's
-// live CARD_COLLECTIONS/CARD_BACKS registries) since this module has no
-// registry of its own to check against - keeps this fully pure/testable
-// without needing to import script.js's local, non-exported constants.
-export function resolveRestorePatch(data, { validCollectionIds, validCardBackIds }) {
+// validFaceDesignIds/validConditionIds/validCardBackIds are supplied by the
+// caller (script.js's live CARD_FACE_DESIGNS/CARD_BACKS registries) since
+// this module has no registry of its own to check against - keeps this
+// fully pure/testable without needing to import script.js's local,
+// non-exported constants.
+//
+// faceDesign is backward-compatible by construction, not by special-cased
+// migration code: a backup made before CARD FACES existed simply has no
+// data.faceDesign key at all, so the `!== undefined` check below is false
+// and the field is silently omitted from the patch - same as any other
+// field a given backup doesn't happen to include. That leaves the current
+// device's faceDesign preference untouched, which for a device that has
+// never set one (including right after this restore) reads back as
+// DEFAULT_FACE_DESIGN ('regular') via script.js's own getPreference
+// fallback - exactly the desired "older backups resolve safely to Regular"
+// behavior, with no version-specific branch needed here.
+export function resolveRestorePatch(data, { validFaceDesignIds, validConditionIds, validCardBackIds }) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
     return { ok: false, reason: 'invalid-data' };
   }
 
   const patch = {};
 
+  if (data.faceDesign !== undefined) {
+    if (typeof data.faceDesign !== 'string' || !validFaceDesignIds.includes(data.faceDesign)) {
+      return { ok: false, reason: 'invalid-faceDesign' };
+    }
+    patch.faceDesign = data.faceDesign;
+  }
+
   if (data.cardStyle !== undefined) {
-    if (typeof data.cardStyle !== 'string' || !validCollectionIds.includes(data.cardStyle)) {
+    if (typeof data.cardStyle !== 'string' || !validConditionIds.includes(data.cardStyle)) {
       return { ok: false, reason: 'invalid-cardStyle' };
     }
     patch.cardStyle = data.cardStyle;
@@ -173,6 +192,7 @@ export const VALIDATION_ERROR_MESSAGES = {
   'unsupported-version': 'That backup was made with a newer version of Mike’s Solitaire and can’t be restored here.',
   'missing-data': "That backup file looks incomplete and can't be restored.",
   'invalid-data': "That backup file looks incomplete and can't be restored.",
+  'invalid-faceDesign': "That backup contains a card face design this version of Mike's Solitaire doesn't recognize, so nothing was restored.",
   'invalid-cardStyle': "That backup contains a card style this version of Mike's Solitaire doesn't recognize, so nothing was restored.",
   'invalid-cardBack': "That backup contains a card back design this version of Mike's Solitaire doesn't recognize, so nothing was restored.",
   'invalid-drawCount': "That backup contains a deal style this version of Mike's Solitaire doesn't recognize, so nothing was restored.",

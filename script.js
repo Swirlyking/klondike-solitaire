@@ -267,38 +267,68 @@ function initIntro() {
   // text.
   const RENDERED_CARD_W_PX = resolveCssLength('var(--card-w)') || 84;
 
-  // Every card-face collection this game knows about, each pointing at its
-  // two CARD_SIZE variants' base directory on disk. Adding a future
-  // collection means adding one entry here, its two asset folders, and one
-  // more option in PREFERENCE_SECTIONS' 'cardStyle' section below - nothing
-  // else in this file needs to change, since every call site only ever asks
-  // CARD_COLLECTIONS[getActiveCollection()][...] for a base path, never a
-  // hard-coded directory name. Card backs are deliberately NOT part of this
-  // registry - see BACKS_BASE.
-  const CARD_COLLECTIONS = {
-    worn: {
-      standard: 'assets/cards/worn/standard',
-      mobile: 'assets/cards/worn/mobile',
+  // Card-face artwork varies along two independent axes - which DESIGN
+  // (Regular, Simple, future designs...) and which CONDITION of that design
+  // (Worn/New) - each pointing at its own two CARD_SIZE variants' base
+  // directory on disk. Adding a future design means adding one entry here,
+  // its four asset folders (worn/clean x standard/mobile), and one more
+  // option in PREFERENCE_SECTIONS' 'faceDesign' section below - nothing else
+  // in this file needs to change, since every call site only ever asks
+  // CARD_FACE_DESIGNS[design][condition][...] for a base path, never a
+  // hard-coded directory name. Regular's own two condition folders are
+  // untouched from before this axis existed - Simple lives alongside them
+  // as its own sibling tree (assets/cards/simple/...) rather than requiring
+  // Regular's existing paths to move. Card backs are deliberately NOT part
+  // of this registry - see BACKS_BASE; CARD FACES has no effect on which
+  // back design/condition is used (see backCondition below).
+  const CARD_FACE_DESIGNS = {
+    regular: {
+      worn: {
+        standard: 'assets/cards/worn/standard',
+        mobile: 'assets/cards/worn/mobile',
+      },
+      clean: {
+        standard: 'assets/cards/clean/standard',
+        mobile: 'assets/cards/clean/mobile',
+      },
     },
-    clean: {
-      standard: 'assets/cards/clean/standard',
-      mobile: 'assets/cards/clean/mobile',
+    simple: {
+      worn: {
+        standard: 'assets/cards/simple/worn/standard',
+        mobile: 'assets/cards/simple/worn/mobile',
+      },
+      clean: {
+        standard: 'assets/cards/simple/clean/standard',
+        mobile: 'assets/cards/simple/clean/mobile',
+      },
     },
   };
-  const DEFAULT_COLLECTION = 'worn';
+  const DEFAULT_FACE_DESIGN = 'regular';
+  // Every design shares the same two condition ids - validated against this
+  // plain list (not against a specific design's keys) so checking a
+  // condition never has to assume any one design exists.
+  const CONDITIONS = ['worn', 'clean'];
+  const DEFAULT_CONDITION = 'worn';
 
-  // Read live off the 'cardStyle' preference (see PREFERENCE_SECTIONS)
+  // Both read live off their own preference (see PREFERENCE_SECTIONS)
   // rather than a frozen constant - unlike RESOLUTION_TIER/CARD_SIZE above,
-  // which are real per-session viewport measurements that can't change
-  // mid-game without the board visibly jumping, which collection to draw
+  // which are real per-session viewport measurements that can't change mid-
+  // game without the board visibly jumping, which design/condition to draw
   // from is a pure skin choice with nothing physical backing it, so there's
-  // no reason it can't apply the instant the player picks it. Falls back to
-  // the default for a stale/unknown stored id, same defensive pattern
-  // currentPreferenceOption uses below - a bad value here can never break
-  // rendering.
-  function getActiveCollection() {
-    const id = getPreference('cardStyle', DEFAULT_COLLECTION);
-    return CARD_COLLECTIONS[id] ? id : DEFAULT_COLLECTION;
+  // no reason it can't apply the instant the player picks it. Each falls
+  // back to its own default for a stale/unknown stored id, same defensive
+  // pattern currentPreferenceOption uses below - a bad value here can never
+  // break rendering. 'cardStyle' is condition's storage key, unchanged from
+  // before faceDesign existed - a returning player's existing Worn/New
+  // choice keeps working under the same key with no migration needed.
+  function getActiveFaceDesign() {
+    const id = getPreference('faceDesign', DEFAULT_FACE_DESIGN);
+    return CARD_FACE_DESIGNS[id] ? id : DEFAULT_FACE_DESIGN;
+  }
+
+  function getActiveCondition() {
+    const id = getPreference('cardStyle', DEFAULT_CONDITION);
+    return CONDITIONS.includes(id) ? id : DEFAULT_CONDITION;
   }
 
   // Card backs aren't collection-specific artwork the way faces are -
@@ -359,19 +389,20 @@ function initIntro() {
   // serving instantly from cache forever.
   const ASSET_VERSION = 'v7';
 
-  // CARD_SIZE picks the collection folder for card FACES only - card backs
-  // (below) are untouched by it, always following RESOLUTION_TIER alone
-  // against the shared BACKS_BASE, since backs aren't collection- or
-  // size-specific the way faces are. Standard-size faces get a further
+  // CARD_SIZE picks the design+condition folder for card FACES only - card
+  // backs (below) are untouched by it, always following RESOLUTION_TIER
+  // alone against the shared BACKS_BASE, since backs aren't design- or
+  // condition-specific the way faces are. Standard-size faces get a further
   // RESOLUTION_TIER subfolder; Mobile-size faces don't (single native res).
-  // collectionId defaults to the live active collection - every real call
-  // site wants that. The optional override exists solely for
-  // preloadForCollectionSwitch, which needs to resolve URLs for the
-  // collection the player is about to switch TO, before the preference
-  // (and therefore getActiveCollection()) actually changes.
-  function cardImageSrc(card, collectionId = getActiveCollection()) {
+  // faceDesignId/conditionId each default to the live active value - every
+  // real call site wants that. The optional overrides exist solely for the
+  // Settings preload-before-switch step, which needs to resolve URLs for
+  // whichever ONE axis the player is about to switch, before the
+  // corresponding preference actually changes, while the OTHER axis stays
+  // at its current live value.
+  function cardImageSrc(card, faceDesignId = getActiveFaceDesign(), conditionId = getActiveCondition()) {
     const suit = SUITS.find(s => s.key === card.suit);
-    const base = CARD_COLLECTIONS[collectionId][CARD_SIZE];
+    const base = CARD_FACE_DESIGNS[faceDesignId][conditionId][CARD_SIZE];
     const tierDir = CARD_SIZE === 'standard' ? `/${RESOLUTION_TIER}` : '';
     return `${base}${tierDir}/${suit.file}_${RANK_FILES[card.rank]}.webp?v=${ASSET_VERSION}`;
   }
@@ -380,11 +411,12 @@ function initIntro() {
   // same id the 'cardBack' preference is stored as - e.g. 'parlor_red',
   // never 'parlor_red_worn'. Which actual artwork that resolves to is a
   // second, independent question (see backImageSrc) driven by the active
-  // face collection - the two axes only ever combine at the resolver,
-  // mirroring how CARD_COLLECTIONS and CARD_SIZE stay separate too. Adding
-  // a future design means adding one entry here (plus its clean/worn
-  // asset files) - PREFERENCE_SECTIONS' 'cardBack' options are generated
-  // from this, not hand-listed.
+  // CONDITION only, never by face design - the two axes only ever combine
+  // at the face resolver above, not here (see backCondition below - CARD
+  // FACES has no effect on which back design/condition is used). Adding a
+  // future design means adding one entry here (plus its clean/worn asset
+  // files) - PREFERENCE_SECTIONS' 'cardBack' options are generated from
+  // this, not hand-listed.
   const CARD_BACKS = {
     lovebirds: 'Lovebirds',
     mod_pop: 'Mod Pop',
@@ -401,15 +433,15 @@ function initIntro() {
     red: 'Red',
   };
 
-  // Which back-art "condition" (clean or worn) a given face collection
-  // uses. Not every future collection is guaranteed its own worn-specific
-  // back set, so anything unlisted here falls back to 'clean' - the same
-  // thing a genuinely new collection with no back art of its own yet
-  // would need anyway.
-  const BACK_CONDITION_BY_COLLECTION = { worn: 'worn', clean: 'clean' };
+  // Which back-art "condition" (clean or worn) a given CONDITION id uses.
+  // Not every future condition is guaranteed its own worn-specific back
+  // set, so anything unlisted here falls back to 'clean' - the same thing
+  // a genuinely new condition with no back art of its own yet would need
+  // anyway.
+  const BACK_CONDITION_BY_CONDITION = { worn: 'worn', clean: 'clean' };
 
-  function backCondition(collectionId) {
-    return BACK_CONDITION_BY_COLLECTION[collectionId] || 'clean';
+  function backCondition(conditionId) {
+    return BACK_CONDITION_BY_CONDITION[conditionId] || 'clean';
   }
 
   // A resolved worn back has no dedicated debug/label surface in the game
@@ -417,34 +449,35 @@ function initIntro() {
   // (worn)" via CARD_BACKS[designId] + this suffix - never in the Card
   // Back picker itself, which only ever shows the plain design name (see
   // PREFERENCE_SECTIONS below).
-  function backConditionSuffix(collectionId) {
-    return backCondition(collectionId) === 'worn' ? '-worn' : '';
+  function backConditionSuffix(conditionId) {
+    return backCondition(conditionId) === 'worn' ? '-worn' : '';
   }
 
-  // collectionId defaults to the live active collection, same pattern as
+  // conditionId defaults to the live active condition, same pattern as
   // cardImageSrc - the optional override exists for the same reason:
-  // resolving a URL for the collection the player is about to switch TO,
+  // resolving a URL for the condition the player is about to switch TO,
   // before the preference actually changes (see the settings click
-  // handler's preload step).
-  function backImageSrc(designId, collectionId = getActiveCollection()) {
-    return `${BACKS_BASE}/${RESOLUTION_TIER}/back-${designId}${backConditionSuffix(collectionId)}.webp?v=${ASSET_VERSION}`;
+  // handler's preload step). Never takes a faceDesignId - see this
+  // function's own doc comment above CARD_BACKS.
+  function backImageSrc(designId, conditionId = getActiveCondition()) {
+    return `${BACKS_BASE}/${RESOLUTION_TIER}/back-${designId}${backConditionSuffix(conditionId)}.webp?v=${ASSET_VERSION}`;
   }
 
   // The original PNGs stay on disk as a graceful fallback target -
   // untiered and unversioned, so they're guaranteed to exist regardless of
   // RESOLUTION_TIER or a WebP request failing/being unsupported. Each
   // CARD_SIZE carries its own such fallback (same art, same idea) inside
-  // its own collection folder, so even a WebP-decode failure still shows
-  // the right artwork, not just a working one. See attachImageFallback for
-  // where these get wired up.
-  function cardPngFallbackSrc(card, collectionId = getActiveCollection()) {
+  // its own design+condition folder, so even a WebP-decode failure still
+  // shows the right artwork, not just a working one. See
+  // attachImageFallback for where these get wired up.
+  function cardPngFallbackSrc(card, faceDesignId = getActiveFaceDesign(), conditionId = getActiveCondition()) {
     const suit = SUITS.find(s => s.key === card.suit);
-    const base = CARD_COLLECTIONS[collectionId][CARD_SIZE];
+    const base = CARD_FACE_DESIGNS[faceDesignId][conditionId][CARD_SIZE];
     return `${base}/${suit.file}_${RANK_FILES[card.rank]}.png`;
   }
 
-  function backPngFallbackSrc(designId, collectionId = getActiveCollection()) {
-    return `${BACKS_BASE}/back-${designId}${backConditionSuffix(collectionId)}.png`;
+  function backPngFallbackSrc(designId, conditionId = getActiveCondition()) {
+    return `${BACKS_BASE}/back-${designId}${backConditionSuffix(conditionId)}.png`;
   }
 
   // Falls back exactly once per <img> - the dataset flag stops a failing
@@ -464,19 +497,40 @@ function initIntro() {
   // future preference (table surface, ...) should only ever mean adding
   // another entry here, an appearance-reading helper like getCardBackSrc,
   // and the render-time call sites that use it - never new settings-panel
-  // plumbing. 'cardStyle' is the one exception with extra wiring beyond
-  // that: see the special-cased preload in renderSettingsPanel's click
-  // handler, needed only because switching it can require new network
-  // fetches an instant color/deal-style change never does.
+  // plumbing. 'faceDesign' and 'cardStyle' are the two exceptions with
+  // extra wiring beyond that: see the special-cased preloads in
+  // renderSettingsPanel's click handler, needed only because switching
+  // either can require new network fetches an instant color/deal-style
+  // change never does.
+  // The one fixed card identity every face-DESIGN preview renders (Queen of
+  // Hearts) - a plain {suit, rank} shape is all cardImageSrc ever reads off
+  // a "card", so this never needs to be a real dealt card. Same picture
+  // across every design option is what makes them visually comparable at a
+  // glance, the same reason CARD_BACKS' own previews are all pinned to
+  // 'clean' below - showing a different card per option would make it
+  // impossible to tell whether a difference is the DESIGN or just a
+  // different rank/suit.
+  const FACE_DESIGN_PREVIEW_CARD = { suit: 'hearts', rank: 12 };
+
   const PREFERENCE_SECTIONS = [
     {
-      key: 'cardStyle',
-      label: 'Cards',
-      default: DEFAULT_COLLECTION,
-      variant: 'text', // plain text segmented control - no card art preview, unlike every other image-backed section
+      // The DESIGN of the faces - independent of CONDITION further below
+      // (see CARD_FACE_DESIGNS' own doc comment). Order here is what puts
+      // this section first in the rendered panel - renderSettingsPanel has
+      // no other notion of section order. Image-preview treatment (no
+      // variant, like CARD BACK below) rather than plain text buttons, so
+      // the two designs can be told apart at a glance rather than by name
+      // alone. previewSrc is pinned to 'clean' condition regardless of the
+      // live active condition, same reasoning as CARD_BACKS' own previews
+      // just below - this picker is choosing a DESIGN, not a wear
+      // condition, and should read the same whether the player is
+      // currently on Worn or New.
+      key: 'faceDesign',
+      label: 'Card Faces',
+      default: DEFAULT_FACE_DESIGN,
       options: [
-        { id: 'worn', label: 'Worn' },
-        { id: 'clean', label: 'New' },
+        { id: 'regular', label: 'Regular', previewSrc: () => cardImageSrc(FACE_DESIGN_PREVIEW_CARD, 'regular', 'clean') },
+        { id: 'simple', label: 'Simple', previewSrc: () => cardImageSrc(FACE_DESIGN_PREVIEW_CARD, 'simple', 'clean') },
       ],
     },
     {
@@ -498,6 +552,21 @@ function initIntro() {
         label,
         previewSrc: () => backImageSrc(id, 'clean'),
       })),
+    },
+    {
+      // The CONDITION of whichever face design is active - independent of
+      // which design that is. Still stored under the 'cardStyle' key (its
+      // name from before faceDesign existed) so a returning player's
+      // existing Worn/New choice keeps working unchanged. Below Card Back
+      // rather than right under Card Faces - see the order of this array.
+      key: 'cardStyle',
+      label: 'Condition',
+      default: DEFAULT_CONDITION,
+      variant: 'text', // plain text segmented control - no card art preview, unlike every other image-backed section
+      options: [
+        { id: 'worn', label: 'Worn' },
+        { id: 'clean', label: 'New' },
+      ],
     },
     {
       key: 'drawCount',
@@ -4005,7 +4074,8 @@ function initIntro() {
   // either way.
   function currentBackupFields() {
     return {
-      cardStyle: getPreference('cardStyle', DEFAULT_COLLECTION),
+      faceDesign: getPreference('faceDesign', DEFAULT_FACE_DESIGN),
+      cardStyle: getPreference('cardStyle', DEFAULT_CONDITION),
       cardBack: getCardBackDesignId(),
       drawCount: currentPreferenceOption(findPreferenceSection('drawCount')).id,
       stats: getPreference('stats', null),
@@ -4078,7 +4148,8 @@ function initIntro() {
         return;
       }
       const resolved = resolveRestorePatch(envelope.data, {
-        validCollectionIds: Object.keys(CARD_COLLECTIONS),
+        validFaceDesignIds: Object.keys(CARD_FACE_DESIGNS),
+        validConditionIds: CONDITIONS,
         validCardBackIds: Object.keys(CARD_BACKS),
       });
       if (!resolved.ok) {
@@ -4346,20 +4417,38 @@ function initIntro() {
         }
         optionBtn.addEventListener('click', () => {
           if (option.id === current.id) return;
-          if (section.key === 'cardStyle') {
-            // Switching collections is different from every other
-            // preference here: it's the entire visible board's worth of
-            // faces, plus the selected back's condition, in art the
-            // browser may never have fetched before (a Settings preview
-            // only ever warms the CLEAN back - see the cardBack section's
-            // previewSrc - so the worn variant of whatever's selected is
-            // still cold the first time a player switches to Worn).
-            // Waiting for exactly that (visibleFaceUpCards + the one back
-            // URL, not the whole deck) to be decode-ready before flipping
-            // the preference over is what keeps this from reading as a
-            // blank-card flash. See preloadUrls for the "never hangs"
+          if (section.key === 'faceDesign') {
+            // Switching designs is the same category of gap as switching
+            // condition just below: the entire visible board's worth of
+            // faces, in art the browser may never have fetched before.
+            // Never touches back art - CARD FACES has no effect on which
+            // back design/condition is used (see backCondition), so unlike
+            // 'cardStyle' below there's no back URL to preload here.
+            // Waiting for visibleFaceUpCards to be decode-ready before
+            // flipping the preference over is what keeps this from reading
+            // as a blank-card flash. See preloadUrls for the "never hangs"
             // guarantee.
-            const urls = visibleFaceUpCards().map(card => cardImageSrc(card, option.id));
+            const urls = visibleFaceUpCards().map(card => cardImageSrc(card, option.id, getActiveCondition()));
+            preloadUrls(urls).then(() => {
+              setPreference(section.key, option.id);
+              renderSettingsPanel();
+              render();
+            });
+            return;
+          }
+          if (section.key === 'cardStyle') {
+            // Switching condition is different from every other preference
+            // here: it's the entire visible board's worth of faces, plus
+            // the selected back's condition, in art the browser may never
+            // have fetched before (a Settings preview only ever warms the
+            // CLEAN back - see the cardBack section's previewSrc - so the
+            // worn variant of whatever's selected is still cold the first
+            // time a player switches to Worn). Waiting for exactly that
+            // (visibleFaceUpCards + the one back URL, not the whole deck)
+            // to be decode-ready before flipping the preference over is
+            // what keeps this from reading as a blank-card flash. See
+            // preloadUrls for the "never hangs" guarantee.
+            const urls = visibleFaceUpCards().map(card => cardImageSrc(card, getActiveFaceDesign(), option.id));
             urls.push(backImageSrc(getCardBackDesignId(), option.id));
             preloadUrls(urls).then(() => {
               setPreference(section.key, option.id);
@@ -4373,7 +4462,7 @@ function initIntro() {
             // preview tile was only ever fetched as CLEAN art, so if the
             // player is currently on Worn faces, its worn variant is still
             // cold the instant they pick it. One image, not the whole set.
-            preloadUrls([backImageSrc(option.id, getActiveCollection())]).then(() => {
+            preloadUrls([backImageSrc(option.id, getActiveCondition())]).then(() => {
               setPreference(section.key, option.id);
               renderSettingsPanel();
               render();
