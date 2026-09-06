@@ -483,6 +483,11 @@ function initIntro() {
       key: 'cardBack',
       label: 'Card Back',
       default: 'red',
+      // A single horizontal scrolling row rather than the default wrapping
+      // grid - see renderSettingsPanel's own use of this flag and
+      // .settings-options--scroll in style.css. Purely a layout choice for
+      // this one section; nothing about the options themselves changes.
+      scrollRow: true,
       // Generated from CARD_BACKS rather than hand-listed, so a future
       // design only ever needs adding there. previewSrc is pinned to
       // 'clean' regardless of the live active collection - the picker is
@@ -4315,7 +4320,7 @@ function initIntro() {
       }
 
       const optionsRow = document.createElement('div');
-      optionsRow.className = 'settings-options';
+      optionsRow.className = section.scrollRow ? 'settings-options settings-options--scroll' : 'settings-options';
       for (const option of section.options) {
         const optionBtn = document.createElement('button');
         optionBtn.type = 'button';
@@ -4386,9 +4391,23 @@ function initIntro() {
     }
   }
 
+  // Brings the currently selected card back into view within its own
+  // horizontal strip - never the Settings modal's own vertical scroll,
+  // since inline/block are independent axes and 'nearest' for block means
+  // this does nothing vertically unless the element is truly outside the
+  // visible area. Only ever called right after Settings opens (see below),
+  // not from renderSettingsPanel() itself - re-centering on every option
+  // click would fight the "don't unnecessarily snap the strip" requirement,
+  // since a design the player just tapped is already visible by definition.
+  function scrollSelectedCardBackIntoView() {
+    const selected = settingsSections.querySelector('.settings-options--scroll .settings-option.selected');
+    if (selected) selected.scrollIntoView({ inline: 'center', block: 'nearest' });
+  }
+
   settingsBtn.addEventListener('click', () => {
     renderSettingsPanel();
     settingsOverlay.classList.remove('hidden');
+    scrollSelectedCardBackIntoView();
   });
   settingsCloseBtn.addEventListener('click', () => settingsOverlay.classList.add('hidden'));
   // MIKE Games System (see mike-games-system/SYSTEM.md, Standard Settings

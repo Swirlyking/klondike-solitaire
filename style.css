@@ -977,6 +977,38 @@ body {
   gap: 10px;
 }
 
+/* Card Back: a single horizontal row instead of the default wrapping grid
+   above - 13 designs would otherwise take three full rows. Plain native
+   overflow-x scrolling, no JS carousel/snap machinery: momentum scrolling
+   on iOS and trackpad/wheel horizontal scroll on desktop both come free
+   from the browser. overflow-y stays clipped so a swipe here can only
+   ever scroll this one row, never bleed into #settings-card's own
+   vertical scroll (orthogonal-axis touch scrolling is standard browser
+   behavior, not something this needs to implement). The extra block
+   padding/negative margin is just enough room for .selected's own glow
+   (box-shadow spreads ~9px) to render in full instead of being clipped
+   flat by this container's own edge. */
+.settings-options--scroll {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-block: 10px;
+  margin-block: -10px;
+  /* A light static fade at both edges - a polish on top of the primary,
+     self-evident scroll cue: the row's width rarely divides evenly into
+     whole cards, so the next design is already partially visible at the
+     right edge on its own. Masks the container itself rather than
+     overlaying a separate element, so it can never sit on top of a card
+     or read as a button. */
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 16px, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 16px, #000 calc(100% - 16px), transparent);
+}
+/* Never shrinks below its own natural size when the row is full - flex's
+   default min-width:auto would otherwise let options compress instead of
+   overflowing, defeating the whole point of this variant. */
+.settings-options--scroll .settings-option { flex-shrink: 0; }
+
 .settings-option {
   width: 48px;
   height: 68px;
@@ -1137,6 +1169,12 @@ body {
   text-decoration: none;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
+  /* Every other row here is a <button>, which centers its text by default
+     in the browser's own UA stylesheet - #feedbackLink is the one real <a>
+     in this group and doesn't get that for free, so it needs to be made
+     explicit here rather than left to an accident of which element type
+     each row happens to use. */
+  text-align: center;
 }
 .settings-feedback-link:hover {
   background: rgba(255,255,255,0.1);
