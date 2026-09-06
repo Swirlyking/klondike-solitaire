@@ -27,6 +27,22 @@ export function canPlaceOnTableau(state, card, colIndex) {
   return top.color !== card.color && top.rank === card.rank + 1;
 }
 
+// Automatic Tips (see autoTips.js) - classifies *why* a specific tableau drop
+// was illegal, for a card/column pair a caller already knows failed. Never a
+// second legality check: defers to canPlaceOnTableau as the one source of
+// truth and only runs the reason breakdown once that's already said no, so
+// this can never drift into disagreeing with it. Doesn't handle a King-column
+// swap - that's a deliberate outside-the-rules convenience move (see
+// isKingColumnSwap below), not a rule a player could be "wrong" about.
+export function tableauDropRuleViolation(state, card, targetIndex) {
+  if (canPlaceOnTableau(state, card, targetIndex)) return null;
+  const col = state.tableau[targetIndex];
+  if (!col.length) return 'needs_king_on_empty'; // canPlaceOnTableau already confirmed card.rank !== 13
+  const top = col[col.length - 1];
+  if (top.rank !== card.rank + 1) return 'wrong_rank';
+  return 'same_color'; // rank matched, so the only remaining reason is color
+}
+
 // Everything from `card` through the end of its column, tableau-sourced.
 // Does not itself verify this is a well-formed descending/alternating run -
 // a face-up card can rest directly above an unrelated face-up card (it's

@@ -295,6 +295,21 @@ body {
    were: Undo/Hint/Settings icon-only, New Game/Restart text-only. */
 .btn-label--new, .btn-icon--new { display: none; }
 
+/* Help mode's "on" state - a solid gold fill (not just a color swap on the
+   same transparent background), so it reads as a real pressed/filled state
+   at a glance rather than depending on color alone; aria-pressed and the
+   title/aria-label swap in script.js carry the same information for anyone
+   not relying on sight. An ID selector so this reliably wins over every
+   breakpoint's own `.controls button`/`.icon-button` rules below regardless
+   of source order - deliberately no animation, unlike Auto Finish's glow:
+   Help is a restrained, persistent mode indicator, not an invitation. */
+#helpBtn.active {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #041209;
+}
+#helpBtn.active:hover { background: #e8c473; }
+
 #hint-message {
   display: flex;
   align-items: center;
@@ -331,6 +346,129 @@ body {
 }
 .hint-card .suit-red { color: #e07860; }
 .hint-card .suit-black { color: #231f20; }
+
+/* ==========================================================================
+   Card annotation - the ONE shared presentation for all four Automatic Tip
+   categories (see showCardAnnotation()/triggerAutoTip() in script.js and
+   TIP_CATALOG in autoTips.js). A floating, non-modal graphic callout
+   anchored near the specific card/column that triggered it -
+   "Pop-Up Video"-spirited (personality + spatial pointing), never a literal
+   copy of that show's own graphics/type. Approved 2026-09-05 (was compared
+   against two other prototype treatments; this is the only one left).
+   `position: fixed` and zero effect on layout: its place in index.html is
+   irrelevant to where it renders, and it can never push the board down or
+   reserve space.
+   ========================================================================== */
+#card-annotation {
+  position: fixed;
+  z-index: 900; /* above ordinary card stacking (small idx-based z-indexes), below an active drag ghost (1000+) */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: min(78vw, 260px);
+  pointer-events: none; /* never blocks a card/drag underneath, even if positioning slightly overlaps one */
+  /* Shared fill/outline/text tokens every category's annotation reads (via
+     getComputedStyle in script.js) - one place to change the look later,
+     never duplicated per category. Defined on the nearest common ancestor
+     since custom properties only inherit downward. */
+  --tip-fill: #041209; /* deliberately darker than --felt/--felt-dark (#0b5d3b/#084a2f) so the fill always reads as solid against the table, not just whichever card happens to be underneath */
+  --tip-outline: var(--gold);
+  --tip-text: #f1ead9;
+}
+#card-annotation.hidden { display: none; }
+#card-annotation-shape {
+  position: relative;
+  text-align: center;
+  transform: rotate(var(--rot, 0deg)); /* randomized -2..2deg per trigger (see showCardAnnotation) - a static tilt, kept even under reduced motion since it's a look, not an animation */
+}
+#card-annotation-fill {
+  position: relative; /* stacks above the SVG background via DOM order */
+  color: var(--tip-text);
+  padding: 16px 20px;
+}
+/* Reserves room for the pointer on whichever edge it's actually on (see
+   showCardAnnotation() for which class gets applied) - ANNOTATION_POINTER_H
+   in script.js must match this value; the two are kept in sync by both
+   pointing at the same comment, not by sharing a literal constant, since
+   CSS can't read a JS value or vice versa. */
+#card-annotation.anchor-below #card-annotation-fill { padding-top: 42px; }
+#card-annotation.anchor-above #card-annotation-fill { padding-bottom: 42px; }
+#card-annotation-headline {
+  margin: 0 0 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  line-height: 1.15;
+}
+#card-annotation-headline svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--gold); /* stroke="currentColor" - a gold icon, restrained, not colored like an emoji */
+}
+#card-annotation-text {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+#card-annotation-disclosure {
+  margin: 6px 0 0;
+  font-size: 10px;
+  font-weight: 500;
+  font-style: italic;
+  opacity: 0.72;
+}
+#card-annotation-disclosure.hidden { display: none; }
+
+/* Contextual Help's quieter presentation - same component, same fill/
+   outline/type family/pointer construction, just a smaller footprint
+   (~20-30% down) with tighter padding/line-height: Help is player-
+   requested and likely tapped through repeatedly while exploring the
+   board, so it shouldn't carry the same visual weight as a volunteered
+   Automatic Tip. Applied via showCardAnnotation's `size: 'help'` param
+   (script.js) - Automatic Tips never carry this class. Padding-top/bottom
+   below must match HELP_ANNOTATION_POINTER_H in script.js (12px base + 20
+   = 32px) - same "kept in sync by hand" convention as the un-prefixed
+   rules above. Stroke width is deliberately untouched - "same gold
+   outline" per the brief. */
+#card-annotation.size-help { max-width: min(58vw, 190px); }
+#card-annotation.size-help #card-annotation-fill { padding: 12px 14px; }
+#card-annotation.size-help.anchor-below #card-annotation-fill { padding-top: 32px; }
+#card-annotation.size-help.anchor-above #card-annotation-fill { padding-bottom: 32px; }
+#card-annotation.size-help #card-annotation-headline { margin-bottom: 2px; font-size: 14px; }
+#card-annotation.size-help #card-annotation-text { font-size: 12px; line-height: 1.25; }
+
+/* A quick, restrained "pop" - the shape's own static rotation (above) is
+   untouched by this; only scale+fade animate. Reduced-motion gets the
+   final state immediately, never a delayed reveal of the same information. */
+#card-annotation.pop-in { animation: card-annotation-pop 200ms cubic-bezier(.34, 1.56, .64, 1) both; }
+@keyframes card-annotation-pop {
+  0%   { opacity: 0; transform: scale(0.7); }
+  60%  { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #card-annotation.pop-in { animation: none; opacity: 1; }
+}
+
+/* The rounded-rectangle-plus-pointer background, as ONE continuous SVG path
+   (see buildAnnotationPointerPath() in script.js) - fill and stroke are
+   both properties of that single path, so the pointer/body join is
+   mathematically the same line, not two shapes meeting. Sized and
+   positioned in real script.js-computed pixels every time a tip shows
+   (never a percentage/viewBox stretch), so it can never distort regardless
+   of text length or viewport. */
+#card-annotation-svg {
+  position: absolute;
+  pointer-events: none;
+  overflow: visible; /* the stroke intentionally bleeds slightly past the nominal w/h - see script.js */
+}
 
 #board {
   padding: 24px 28px 60px;
@@ -817,6 +955,19 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  margin: 0 0 10px;
+}
+
+/* Short descriptive copy under a settings-section heading, for a section
+   whose label alone isn't self-explanatory (e.g. Automatic Tips) - same
+   body-copy tone as #support-card p, the app's existing "settings
+   description text" convention. Optional per-section (see
+   PREFERENCE_SECTIONS' `caption` field in script.js); most sections don't
+   need one. */
+.settings-section-caption {
+  color: #9fb3ac;
+  font-size: 13px;
+  line-height: 1.4;
   margin: 0 0 10px;
 }
 
@@ -1621,7 +1772,7 @@ body {
   }
   .controls button svg,
   .controls button.icon-button svg { width: 19px; height: 19px; }
-  .controls .settings-gear { font-size: 17px; line-height: 1; }
+  .controls .settings-gear, .controls .help-question { font-size: 17px; line-height: 1; }
 }
 
 /* ---------- iPhone landscape ----------
@@ -1682,7 +1833,7 @@ body {
   }
   .controls button svg,
   .controls button.icon-button svg { width: 16px; height: 16px; }
-  .controls .settings-gear { font-size: 15px; line-height: 1; }
+  .controls .settings-gear, .controls .help-question { font-size: 15px; line-height: 1; }
 
   /* Expanding a compressed cascade for inspection (see toggleColumnExpanded
      in script.js) is the one time this toolbar gets out of the way
@@ -1732,7 +1883,7 @@ body {
   }
   .controls button svg,
   .controls button.icon-button svg { width: 23px; height: 23px; }
-  .controls .settings-gear { font-size: 21px; line-height: 1; }
+  .controls .settings-gear, .controls .help-question { font-size: 21px; line-height: 1; }
 }
 
 /* ============================================================

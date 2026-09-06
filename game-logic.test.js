@@ -24,6 +24,7 @@ import {
   applyKingColumnSwap,
   isKingLedColumn,
   computeKingCascade,
+  tableauDropRuleViolation,
 } from './game-logic.js';
 
 let nextId = 0;
@@ -344,6 +345,34 @@ test('empty tableau columns only accept a King (or a sequence starting with one)
   const s = emptyState();
   assert.equal(canPlaceOnTableau(s, card('hearts', 12), 0), false); // queen
   assert.ok(canPlaceOnTableau(s, card('hearts', 13), 0)); // king
+});
+
+// Automatic Tips (see autoTips.js) reads these reason codes to decide which
+// rule explanation to volunteer - each case here mirrors a canPlaceOnTableau
+// test above, but for the *illegal* side of that same rule.
+test('tableauDropRuleViolation: a legal drop is null, not a reason', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('spades', 8)];
+  assert.equal(tableauDropRuleViolation(s, card('hearts', 7), 0), null);
+});
+
+test('tableauDropRuleViolation: non-King onto an empty column', () => {
+  const s = emptyState();
+  assert.equal(tableauDropRuleViolation(s, card('hearts', 12), 0), 'needs_king_on_empty');
+  assert.equal(tableauDropRuleViolation(s, card('hearts', 13), 0), null); // a King is legal, not a violation
+});
+
+test('tableauDropRuleViolation: rank does not descend by one, regardless of color', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('spades', 8)];
+  assert.equal(tableauDropRuleViolation(s, card('hearts', 5), 0), 'wrong_rank'); // right color, wrong rank
+  assert.equal(tableauDropRuleViolation(s, card('clubs', 5), 0), 'wrong_rank'); // wrong color too, but rank is reported
+});
+
+test('tableauDropRuleViolation: rank is right but color does not alternate', () => {
+  const s = emptyState();
+  s.tableau[0] = [card('spades', 8)];
+  assert.equal(tableauDropRuleViolation(s, card('clubs', 7), 0), 'same_color');
 });
 
 test('a King\'s first click prefers an empty column to its right over one to its left', () => {

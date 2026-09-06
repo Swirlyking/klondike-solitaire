@@ -17,7 +17,15 @@ import {
   isKingColumnSwap,
   applyKingColumnSwap,
   computeKingCascade,
+  tableauDropRuleViolation,
 } from './game-logic.js';
+import {
+  TIP_CATALOG,
+  createAutoTipState,
+  recordTipTrigger,
+  recordRuleDemonstrated,
+} from './autoTips.js';
+import { helpConceptForTarget, HELP_CATALOG } from './help.js';
 import { getPreference, setPreference, setPreferences } from './preferences.js';
 import { shuffle } from './shuffle.js';
 import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from './victory.js';
@@ -496,6 +504,22 @@ function initIntro() {
         { id: '3', label: 'Draw 3', previewCards: 3 },
       ],
     },
+    {
+      // MIKE Learning System, first prototype (Solitaire only - see
+      // autoTips.js). A Solitaire-specific preference for now, deliberately
+      // not synced with any other MIKE game. Modeled as a plain two-option
+      // segmented control - the game's existing Settings visual language -
+      // rather than introducing a new toggle-switch component.
+      key: 'automaticTips',
+      label: 'Automatic Tips',
+      caption: 'Show helpful tips when I may need them.',
+      default: 'on',
+      variant: 'text',
+      options: [
+        { id: 'on', label: 'On' },
+        { id: 'off', label: 'Off' },
+      ],
+    },
   ];
 
   function findPreferenceSection(key) {
@@ -954,6 +978,21 @@ function initIntro() {
   let startTime = null;
   let timerHandle = null;
   let won = false;
+  // MIKE Learning System, first prototype: Automatic Tips (see autoTips.js).
+  // In-memory only, never persisted - Solitaire has no save/resume for the
+  // active deal, so there's nothing to write to disk and this can never
+  // contaminate a real game save. Reset by resetAutoTipState() on New Game
+  // only (see newGame()) - deliberately NOT reset by restart(), so replaying
+  // the exact same deal doesn't let an already-shown tip start volunteering
+  // itself again.
+  let autoTipState = createAutoTipState();
+  // Contextual Help mode (see the "contextual help" section below) - on
+  // while the player is deliberately tapping around asking "what's this?"
+  // instead of playing. In-memory only, same reasoning as autoTipState:
+  // nothing here is a real game-state concern, so there's nothing to reset
+  // on New Game/Restart either - toggling Help never touches the deal.
+  let helpModeActive = false;
+  let cardAnnotationTimer = null;
   // Snapshot taken the instant checkWin() detects the win, so the celebration
   // (which only starts after a deliberate pause) still shows the exact
   // moveCount/elapsed time from the winning move itself, not whatever they'd
@@ -997,6 +1036,13 @@ function initIntro() {
   const undoBtn = document.getElementById('undoBtn');
   const hintBtn = document.getElementById('hintBtn');
   const hintMessage = document.getElementById('hint-message');
+  const helpBtn = document.getElementById('helpBtn');
+  const cardAnnotation = document.getElementById('card-annotation');
+  const cardAnnotationHeadline = document.getElementById('card-annotation-headline');
+  const cardAnnotationText = document.getElementById('card-annotation-text');
+  const cardAnnotationDisclosure = document.getElementById('card-annotation-disclosure');
+  const cardAnnotationShape = document.getElementById('card-annotation-shape');
+  const cardAnnotationSvg = document.getElementById('card-annotation-svg');
   const autoFinishBtn = document.getElementById('autoFinishBtn');
   const autoFinishBtnLabel = document.getElementById('autoFinishBtnLabel');
   const newGameBtn = document.getElementById('newGameBtn');
@@ -1072,6 +1118,7 @@ function initIntro() {
     cleanupVictoryCelebration();
     resetTableauClickMemory();
     clearHint();
+    resetAutoTipState(); // a genuinely fresh deal - fair game to teach a repeated mistake again (see its own comment)
     expandedColumnIndex = null;
     recordPlay(currentDrawModeKey()); // a fresh deal, independent of whether it's ever won - restart() replays this same deal, so it doesn't count again
     const deck = shuffle(freshDeck());
@@ -1113,6 +1160,7 @@ function initIntro() {
     cleanupVictoryCelebration();
     resetTableauClickMemory();
     clearHint();
+    hideCardAnnotation(); // dismiss whatever's on screen, but keep autoTipState - same deal replayed, an already-shown tip must not re-arm
     expandedColumnIndex = null;
     state = cloneState(initialDeal);
     history = [];
@@ -1312,6 +1360,7 @@ function initIntro() {
   // disagree with; getProgressingMoves is what actually decides which
   // legal moves are worth showing at all.
   function showHint() {
+    hideCardAnnotation(); // an explicit Hint request always wins over a volunteered tip
     if (!hintMoves) {
       const moves = rankMoves(state, getProgressingMoves(state, getDrawCount()));
       if (!moves.length) {
@@ -1328,6 +1377,427 @@ function initIntro() {
   }
 
   hintBtn.addEventListener('click', showHint);
+
+  // ---------- automatic tips ----------
+  //
+  // MIKE Learning System, first prototype (see autoTips.js for the pure
+  // trigger/suppression logic and TIP_CATALOG for the actual copy). This is
+  // NOT the Hint system above: Hint is an explicit request that suggests a
+  // specific move; a tip is volunteered, explains a general rule (never a
+  // specific move), and is skipped/hidden whenever Hint is in play, never
+  // the reverse.
+
+  const AUTO_TIP_DISPLAY_MS = 6000; // matches showSettingsStatus's own auto-hide convention
+
+  function autoTipsEnabled() {
+    return currentPreferenceOption(findPreferenceSection('automaticTips')).id === 'on';
+  }
+
+  // Full reset of the per-deal counters/suppression - New Game only (a
+  // genuinely fresh hand is a fair new chance to teach a repeated mistake).
+  function resetAutoTipState() {
+    autoTipState = createAutoTipState();
+    hideCardAnnotation();
+  }
+
+  // ---------- card annotation ----------
+  //
+  // The one shared presentation for all four Automatic Tip categories: a
+  // floating, non-modal graphic annotation that anchors itself near the
+  // card/column that triggered it - "Pop-Up Video"-spirited (personality +
+  // spatial pointing), never a literal copy of that show's own graphics.
+  // Approved 2026-09-05 (was compared against two other prototype
+  // treatments under this same {headline, text, disclosure, anchorEl} shape;
+  // this is the only one left). General enough that it may eventually
+  // become the shared visual language for other MIKE Learning System
+  // surfaces (contextual `?` help, Learn to Play) - none of those are built
+  // here.
+
+  // A restrained line-art crown (same stroke=currentColor convention as the
+  // toolbar's own Undo/Hint/Settings icons - see SYSTEM.md §16), used only
+  // for the KINGS ONLY headline - see TIP_ICONS below. Not every category
+  // gets an icon: restrained and text-first per the brief, not elaborate
+  // iconography invented for its own sake.
+  const CROWN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 17 2-10 5 6 2-8 2 8 5-6 2 10z"/><path d="M3 17h18"/></svg>';
+  // category -> icon HTML, or omitted for a text-only headline.
+  const TIP_ICONS = { needs_king_on_empty: CROWN_ICON };
+
+  // The annotation's background - rounded rectangle + pointer as ONE SVG
+  // path (see buildAnnotationPointerPath below). Must match the padding
+  // reserved in style.css's .anchor-below/.anchor-above #card-annotation-fill
+  // rules (16px base + this = 42px) - the two aren't read from one shared
+  // source since CSS can't consume a JS constant, but they're named the same
+  // way here and there specifically so they're easy to keep in sync by hand.
+  const ANNOTATION_POINTER_H = 26;
+  const ANNOTATION_POINTER_HALF_W = 20;
+  const ANNOTATION_RADIUS = 11;
+  const ANNOTATION_STROKE_W = 4;
+
+  // Contextual Help's quieter sizing (~20-30% smaller overall) - same
+  // component, same construction, same gold outline weight (stroke width is
+  // deliberately NOT reduced here - "same gold outline" per the brief), just
+  // a smaller footprint since Help is player-requested and likely tapped
+  // through repeatedly while exploring, unlike a volunteered Automatic Tip.
+  // Must match the padding reserved in style.css's own
+  // #card-annotation.size-help .anchor-below/.anchor-above rules (12px base
+  // + this = 32px) - same "kept in sync by hand, named the same way"
+  // convention as ANNOTATION_POINTER_H above, since CSS can't read a JS
+  // constant. Automatic Tips never pass size:'help' to showCardAnnotation,
+  // so they never see these.
+  const HELP_ANNOTATION_POINTER_H = 20;
+  const HELP_ANNOTATION_POINTER_HALF_W = 15;
+  const HELP_ANNOTATION_RADIUS = 9;
+
+  // Builds a single closed SVG path `d` string for a rounded rectangle with
+  // a triangular pointer integrated directly into its top or bottom edge -
+  // one path, one stroke, so the pointer/body join is literally the same
+  // line rather than two shapes meeting (which is what produced every seam
+  // artifact in the earlier border-triangle version). Coordinates are in
+  // the same real-pixel space as the SVG's own viewBox (see
+  // showCardAnnotation), never a percentage or a stretched viewBox, so the
+  // stroke width and corner radius can never distort regardless of the
+  // annotation's actual measured size. Pure geometry, no DOM - reusable for
+  // any future annotation shape (a different tip, a future `?` help
+  // callout) by passing different dimensions/pointerX, not by copying it.
+  function buildAnnotationPointerPath(w, h, { pointerH, pointerHalfW, pointerX, radius, pointerAtBottom }) {
+    const r = Math.max(0, Math.min(radius, pointerH, w / 2, (h - pointerH) / 2));
+    const bodyH = h - pointerH;
+    const minPx = r + pointerHalfW + 2;
+    const px = Math.max(minPx, Math.min(pointerX, w - minPx));
+    if (!pointerAtBottom) {
+      // Pointer on the TOP edge - the annotation sits below its target,
+      // pointing up at it (the common case - see showCardAnnotation).
+      const top = pointerH;
+      return [
+        `M ${r} ${top}`,
+        `L ${px - pointerHalfW} ${top}`,
+        `L ${px} 0`,
+        `L ${px + pointerHalfW} ${top}`,
+        `L ${w - r} ${top}`,
+        `A ${r} ${r} 0 0 1 ${w} ${top + r}`,
+        `L ${w} ${h - r}`,
+        `A ${r} ${r} 0 0 1 ${w - r} ${h}`,
+        `L ${r} ${h}`,
+        `A ${r} ${r} 0 0 1 0 ${h - r}`,
+        `L 0 ${top + r}`,
+        `A ${r} ${r} 0 0 1 ${r} ${top}`,
+        'Z',
+      ].join(' ');
+    }
+    // Pointer on the BOTTOM edge - the annotation sits above its target
+    // instead (not enough room below - the graceful-degradation case).
+    return [
+      `M ${r} 0`,
+      `L ${w - r} 0`,
+      `A ${r} ${r} 0 0 1 ${w} ${r}`,
+      `L ${w} ${bodyH - r}`,
+      `A ${r} ${r} 0 0 1 ${w - r} ${bodyH}`,
+      `L ${px + pointerHalfW} ${bodyH}`,
+      `L ${px} ${h}`,
+      `L ${px - pointerHalfW} ${bodyH}`,
+      `L ${r} ${bodyH}`,
+      `A ${r} ${r} 0 0 1 0 ${bodyH - r}`,
+      `L 0 ${r}`,
+      `A ${r} ${r} 0 0 1 ${r} 0`,
+      'Z',
+    ].join(' ');
+  }
+
+  function hideCardAnnotation() {
+    if (cardAnnotationTimer) { clearTimeout(cardAnnotationTimer); cardAnnotationTimer = null; }
+    cardAnnotation.classList.add('hidden');
+    cardAnnotation.classList.remove('pop-in');
+    document.removeEventListener('pointerdown', onOutsideTapDismissAnnotation, true);
+  }
+
+  // "Tap elsewhere" dismissal - observes only, never intercepts (no
+  // preventDefault/stopPropagation), so the tap that dismisses the
+  // annotation still reaches whatever real card/pile is underneath it,
+  // exactly as if the annotation weren't there at all.
+  function onOutsideTapDismissAnnotation(e) {
+    if (!cardAnnotation.contains(e.target)) hideCardAnnotation();
+  }
+
+  // Positions the annotation near anchorEl, choosing above vs. below based
+  // on which side actually has room (never blindly "above"), and clamps
+  // horizontally so it can't run off either edge of a narrow phone. The
+  // pointer then shifts independently within the shape (not the shape
+  // itself) so it keeps aiming at the anchor's true center even when the
+  // shape had to be nudged sideways to stay on-screen.
+  function showCardAnnotation({ headline, text, icon, disclosure, anchorEl, autoHide = true, size = 'tip' }) {
+    if (!anchorEl) return;
+    const isHelp = size === 'help';
+    // anchor-below as a starting guess, not yet the real decision (made
+    // below, once anchorRect/annotH are known) - needed because
+    // #card-annotation-fill only reserves room for the pointer once one of
+    // .anchor-below/.anchor-above is present, and that reserved space must
+    // already be included in the very first size measurement. Harmless if
+    // it turns out to be the wrong guess: .anchor-above reserves the exact
+    // same total padding, just on the opposite edge, so the measured
+    // height is correct either way and never needs a second measurement.
+    // size-help (see style.css) is the ONLY thing that distinguishes Help's
+    // quieter presentation from an Automatic Tip - same component either way.
+    cardAnnotation.className = isHelp ? 'anchor-below size-help' : 'anchor-below';
+    // A small, restrained randomized tilt each time it appears. Automatic
+    // Tips keep the full -2..2deg range; Help halves it to -1..1deg - still
+    // a little personality, less visual jumping while rapidly inspecting
+    // several things in a row.
+    const rotRange = isHelp ? 1 : 2;
+    const rot = (Math.random() * rotRange * 2 - rotRange).toFixed(2);
+    cardAnnotation.style.setProperty('--rot', `${rot}deg`);
+    cardAnnotationHeadline.innerHTML = icon ? `${icon}${headline}` : headline;
+    cardAnnotationText.textContent = text;
+    cardAnnotationDisclosure.classList.toggle('hidden', !disclosure);
+
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const margin = 10;
+    // An empty tableau column's own pile div is a much taller drop-zone
+    // than the single card slot it visually reads as (room enough for a
+    // full dealt cascade even though nothing's in it yet) - confirmed live
+    // at desktop widths, where that reserved height stretched nearly to
+    // the bottom of the viewport. Using its full height as "the anchor"
+    // would measure available space below from the bottom of that mostly-
+    // invisible zone, not from the actual card-sized area a player is
+    // looking at - capped to a generous single-card height instead.
+    const rawAnchorRect = anchorEl.getBoundingClientRect();
+    const anchorRect = {
+      top: rawAnchorRect.top,
+      left: rawAnchorRect.left,
+      width: rawAnchorRect.width,
+      height: Math.min(rawAnchorRect.height, 150),
+      get bottom() { return this.top + this.height; },
+    };
+
+    // Measure at natural size before deciding where it goes, so the very
+    // first visible frame is already in its final place - no flash-then-jump.
+    // Offset vertically, not horizontally: this is a shrink-to-fit fixed-
+    // position box (width:auto, capped by max-width), and CSS computes its
+    // shrink-to-fit width from the *available* width implied by `left` -
+    // shoving `left` to -9999px inflates that available width far past the
+    // real viewport, so the box measures wider here than it will once it's
+    // actually placed at its real (much smaller) left. `top` doesn't feed
+    // into that calculation, so parking it off-screen vertically instead
+    // measures the same width it will render at anywhere on-screen.
+    cardAnnotation.style.left = '0px';
+    cardAnnotation.style.top = '-9999px';
+    cardAnnotation.style.width = '';
+    const shapeRect = cardAnnotation.getBoundingClientRect();
+    const annotW = shapeRect.width;
+    const annotH = shapeRect.height;
+    // Lock the measured width so repositioning to the real left below can't
+    // trigger a second, different shrink-to-fit reflow at a smaller
+    // available width - without this the box (and the SVG background,
+    // sized from annotW here) can end up wider than the box actually renders.
+    cardAnnotation.style.width = `${annotW}px`;
+
+    // Favor below whenever there's genuinely enough room for it (the
+    // pointer reads best projecting upward from the annotation's own top
+    // edge at the target above it - see the CSS) - only fall back to
+    // placing it above the target, pointer at the bottom instead, when
+    // below truly can't fit. The final clamp below still keeps it fully
+    // on-screen even in a genuinely extreme viewport.
+    const spaceBelow = vh - anchorRect.bottom;
+    const below = spaceBelow >= annotH + margin;
+    cardAnnotation.classList.toggle('anchor-below', below);
+    cardAnnotation.classList.toggle('anchor-above', !below);
+
+    const rawTop = below ? anchorRect.bottom + margin : anchorRect.top - margin - annotH;
+    const top = Math.max(8, Math.min(rawTop, vh - annotH - 8));
+    const rawLeft = anchorRect.left + anchorRect.width / 2 - annotW / 2;
+    const left = Math.max(8, Math.min(rawLeft, vw - annotW - 8));
+    cardAnnotation.style.left = `${left}px`;
+    cardAnnotation.style.top = `${top}px`;
+
+    // The pointer is drawn AS PART OF the single SVG path below, not
+    // positioned via a separate element's margin - see
+    // buildAnnotationPointerPath's own comment for why that's what
+    // eliminated the seam. pointerX is in the SVG's own local coordinate
+    // space (0..annotW), which starts at the same left edge as
+    // #card-annotation itself (the shape fills it exactly).
+    const anchorCenterX = anchorRect.left + anchorRect.width / 2;
+    const pointerX = Math.max(0, Math.min(anchorCenterX - left, annotW));
+    const strokeInset = ANNOTATION_STROKE_W / 2; // stroke weight itself doesn't change for Help - see HELP_ANNOTATION_* comment above
+    const svgW = annotW + ANNOTATION_STROKE_W;
+    const svgH = annotH + ANNOTATION_STROKE_W;
+    const d = buildAnnotationPointerPath(annotW, annotH, {
+      pointerH: isHelp ? HELP_ANNOTATION_POINTER_H : ANNOTATION_POINTER_H,
+      pointerHalfW: isHelp ? HELP_ANNOTATION_POINTER_HALF_W : ANNOTATION_POINTER_HALF_W,
+      pointerX,
+      radius: isHelp ? HELP_ANNOTATION_RADIUS : ANNOTATION_RADIUS,
+      pointerAtBottom: !below,
+    });
+    // --tip-fill/--tip-outline live on #card-annotation itself (see
+    // style.css) - one shared token pair every category's annotation reads,
+    // so a future fill-color change is a single edit there, never
+    // duplicated per category here.
+    const shapeStyle = getComputedStyle(cardAnnotationShape);
+    const fillColor = shapeStyle.getPropertyValue('--tip-fill').trim() || '#041209';
+    const strokeColor = shapeStyle.getPropertyValue('--tip-outline').trim() || 'var(--gold)';
+    cardAnnotationSvg.setAttribute('viewBox', `0 0 ${svgW} ${svgH}`);
+    cardAnnotationSvg.style.left = `${-strokeInset}px`;
+    cardAnnotationSvg.style.top = `${-strokeInset}px`;
+    cardAnnotationSvg.style.width = `${svgW}px`;
+    cardAnnotationSvg.style.height = `${svgH}px`;
+    // One path, one fill, one stroke - the pointer and the rounded
+    // rectangle are the same shape, so there is no seam for a double
+    // border or a mismatched join to ever appear at.
+    cardAnnotationSvg.innerHTML = `<path d="${d}" transform="translate(${strokeInset}, ${strokeInset})" fill="${fillColor}" stroke="${strokeColor}" stroke-width="${ANNOTATION_STROKE_W}" stroke-linejoin="round"/>`;
+
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    cardAnnotation.classList.remove('pop-in'); // restart the entrance if this fires again while still visible
+    if (!reduced) {
+      void cardAnnotation.offsetWidth; // force reflow so re-adding the class restarts the animation
+      cardAnnotation.classList.add('pop-in');
+    }
+
+    // autoHide false: Help (see showHelp below) - the player is deliberately
+    // exploring, not being briefly interrupted, so nothing should vanish out
+    // from under them just because they paused to read. Still fully
+    // dismissed by tapping a new target (replaced), tapping elsewhere
+    // (onOutsideTapDismissAnnotation, unchanged), or leaving Help mode.
+    if (cardAnnotationTimer) { clearTimeout(cardAnnotationTimer); cardAnnotationTimer = null; }
+    if (autoHide) cardAnnotationTimer = setTimeout(hideCardAnnotation, AUTO_TIP_DISPLAY_MS);
+    document.addEventListener('pointerdown', onOutsideTapDismissAnnotation, true);
+  }
+
+  // The one entry point every failure-detection call site below uses.
+  // Never fires once the game is won (nothing left to teach), never fires
+  // while the preference is off, and steps aside for an explicit Hint
+  // already on screen rather than competing with it for attention.
+  // anchorEl is the specific card/column involved in the failed action -
+  // every category anchors its annotation there (see each call site below).
+  function triggerAutoTip(category, anchorEl) {
+    if (won || !autoTipsEnabled()) return;
+    if (!hintMessage.classList.contains('hidden')) return;
+    // The player is deliberately inspecting the game, not attempting
+    // gameplay - every entry point that could call this is already
+    // intercepted while Help mode is active (see the "contextual help"
+    // section below), but this stays as an explicit belt-and-suspenders
+    // guard rather than relying only on those call sites never changing.
+    if (helpModeActive) return;
+    const { nextState, tipId } = recordTipTrigger(autoTipState, category);
+    autoTipState = nextState;
+    if (!tipId) return;
+    const firstEver = !getPreference('autoTipDisclosureShown', false);
+    if (firstEver) setPreference('autoTipDisclosureShown', true);
+    const { headline, body } = TIP_CATALOG[tipId];
+    showCardAnnotation({
+      headline,
+      text: body,
+      icon: TIP_ICONS[tipId],
+      disclosure: firstEver,
+      anchorEl,
+    });
+  }
+
+  // Called only from commitMove (see below) with whatever categories that
+  // exact move just demonstrated correct understanding of - resets an
+  // in-progress miscount so it can't combine with an unrelated later one,
+  // without touching a tip already shown this deal (see
+  // recordRuleDemonstrated's own comment).
+  function demonstrateAutoTipRule(categories) {
+    if (!categories.length) return;
+    autoTipState = recordRuleDemonstrated(autoTipState, categories);
+  }
+
+  // Automatic Tips case: trying to place a card on a specific occupied or
+  // empty tableau column that turns out to be illegal (drag-and-drop is the
+  // only interaction that names a *specific* attempted target - see the
+  // implementation plan for why tap-to-move's undirected "nowhere to go"
+  // bounce isn't wired in here). Dropping a stack back onto its own source
+  // column is not a rule mistake and is excluded.
+  function checkAutoTipOnIllegalTableauDrop(pileEl, stack, source, sourceIndex) {
+    if (!pileEl || pileEl.dataset.pile !== 'tableau') return;
+    const targetIndex = parseInt(pileEl.dataset.index, 10);
+    if (source === 'tableau' && sourceIndex === targetIndex) return;
+    const reason = tableauDropRuleViolation(state, stack[0], targetIndex);
+    if (reason) triggerAutoTip(reason, pileEl);
+  }
+
+  // ---------- contextual help ----------
+  //
+  // MIKE Learning System, second surface (see help.js for the pure content/
+  // classifier and Automatic Tips above for the first). Fundamentally the
+  // mirror image of Automatic Tips: USER-requested ("what's this?") rather
+  // than volunteered, so it has no counters, no threshold, no per-deal
+  // suppression, and no disclosure - the player asked, so there's nothing to
+  // explain about why it appeared. Reuses the exact same floating annotation
+  // (showCardAnnotation) as the approved presentation system - a calmer,
+  // explanatory headline set is the only real difference (see help.js).
+  //
+  // While active, every tap that would otherwise start a drag, tap-to-move,
+  // draw from stock, or acknowledge a covered card is intercepted at its own
+  // entry point instead (attachCardInteractions, onStockClick, the covered-
+  // card listener, and the empty-pile listeners set up below) - "leave Help
+  // mode active, do nothing" is the default for anywhere without a
+  // recognized concept, per the brief; there's no separate catch-all here.
+
+  function showHelp(concept, anchorEl) {
+    const entry = HELP_CATALOG[concept];
+    if (!entry || !anchorEl) return;
+    showCardAnnotation({ headline: entry.headline, text: entry.body, anchorEl, autoHide: false, size: 'help' });
+  }
+
+  function enterHelpMode() {
+    helpModeActive = true;
+    cancelActiveDrag(); // belt-and-suspenders - nothing should be mid-drag when Help turns on, but a stuck drag would be worse than a redundant no-op cancel
+    clearHint(); // Help and Hint answer different questions - a clean slate, not two instructional surfaces competing for attention
+    helpBtn.classList.add('active');
+    helpBtn.setAttribute('aria-pressed', 'true');
+    helpBtn.title = 'Exit Help mode';
+    helpBtn.setAttribute('aria-label', 'Exit Help mode');
+    showCardAnnotation({
+      headline: 'HELP',
+      text: "Tap anything you're curious about.",
+      anchorEl: helpBtn,
+      autoHide: false,
+      size: 'help',
+    });
+  }
+
+  function exitHelpMode() {
+    helpModeActive = false;
+    helpBtn.classList.remove('active');
+    helpBtn.setAttribute('aria-pressed', 'false');
+    helpBtn.title = 'Help';
+    helpBtn.setAttribute('aria-label', 'Help');
+    hideCardAnnotation();
+  }
+
+  helpBtn.addEventListener('click', () => {
+    if (helpModeActive) exitHelpMode(); else enterHelpMode();
+  });
+
+  // Empty piles have no card element for attachCardInteractions to attach
+  // to, so they'd otherwise have no tap target at all while Help is active
+  // (before this, tapping an empty waste/foundation/tableau column does
+  // nothing today, help or no help - see renderWaste/renderFoundation/
+  // renderTableauCol). These listen on the pile container itself, once, and
+  // stay harmless no-ops outside Help mode - e.target !== e.currentTarget
+  // means the tap actually landed on a real card, which attachCardInteractions
+  // (or the covered-card listener) already handles.
+  document.getElementById('waste').addEventListener('click', (e) => {
+    if (!helpModeActive || e.target !== e.currentTarget) return;
+    showHelp(helpConceptForTarget('waste'), e.currentTarget);
+  });
+  for (let i = 0; i < 4; i++) {
+    document.getElementById(`foundation-${i}`).addEventListener('click', (e) => {
+      if (!helpModeActive || e.target !== e.currentTarget) return;
+      showHelp(helpConceptForTarget('foundation'), e.currentTarget);
+    });
+  }
+  for (let i = 0; i < 7; i++) {
+    document.getElementById(`tableau-${i}`).addEventListener('click', (e) => {
+      // A non-empty column's own pile div reserves a lot of empty space
+      // below its last card (see showCardAnnotation's own comment on this) -
+      // e.target === e.currentTarget alone can't tell "genuinely empty
+      // column" from "tapped the blank space under a tall one," so the real
+      // deal state is what actually decides.
+      if (!helpModeActive || e.target !== e.currentTarget || state.tableau[i].length) return;
+      showHelp(helpConceptForTarget('tableau', { isEmpty: true }), e.currentTarget);
+    });
+  }
 
   // ---------- auto finish ----------
   //
@@ -1924,6 +2394,22 @@ function initIntro() {
         attachCardInteractions(cardEl, card, 'tableau', i);
       } else {
         cardEl.classList.add('not-draggable');
+        // A face-down tableau card is always still covered by something -
+        // every column's own top card is auto-flipped the instant it's
+        // exposed (see flipNewTopIfNeeded/peekCardToFlip), so there's no
+        // "tap the top card to flip it" gesture to confuse this with. No
+        // drag semantics needed (a covered card can never be moved) - just
+        // acknowledge the tap (same bounce already used elsewhere for
+        // "nothing to do here") and let Automatic Tips notice a repeated one,
+        // anchored on the actual covered card the player tapped.
+        cardEl.addEventListener('click', () => {
+          if (helpModeActive) {
+            showHelp(helpConceptForTarget('tableau', { faceUp: false }), cardEl);
+            return;
+          }
+          bounceCard(card);
+          triggerAutoTip('covered_card', cardEl);
+        });
       }
       el.appendChild(cardEl);
     });
@@ -2272,7 +2758,12 @@ function initIntro() {
   let isDrawing = false; // guards against a rapid repeated stock tap interrupting or duplicating an in-flight draw transition
 
   function onStockClick() {
+    if (helpModeActive) {
+      showHelp(helpConceptForTarget('stock'), document.getElementById('stock'));
+      return;
+    }
     if (isDrawing || autoFinishRunning) return;
+    hideCardAnnotation(); // a real gameplay action dismisses whatever's showing
     if (state.stock.length) {
       isDrawing = true;
       const stockRect = document.getElementById('stock').getBoundingClientRect();
@@ -2329,6 +2820,7 @@ function initIntro() {
   function commitMove(cards, source, sourceIndex, target, targetIndex, { recordHistory = true, countMove = true } = {}) {
     resetTableauClickMemory();
     clearHint();
+    hideCardAnnotation(); // a real gameplay action dismisses whatever's showing
     // A card leaving or landing in the expanded column means whatever's
     // showing there is about to change - never leave a stale expanded
     // layout up over a column whose contents just moved out from under it.
@@ -2339,7 +2831,22 @@ function initIntro() {
     }
     if (recordHistory) pushHistory();
     const cardToFlip = peekCardToFlip(source, sourceIndex, cards);
+    // Automatic Tips (see autoTips.js): read BEFORE applyMove mutates
+    // state, since these ask what the board looked like at the moment this
+    // (already-legal) move demonstrated a rule. A legal placement onto a
+    // non-empty column proves both alternating-color and descending-rank
+    // were understood at once; a King legally starting an empty column
+    // proves that rule specifically; cardToFlip already tells us a covered
+    // card is about to become exposed.
+    const demonstratedTipRules = [];
+    if (target === 'tableau') {
+      const destCol = state.tableau[targetIndex];
+      if (destCol.length) demonstratedTipRules.push('same_color', 'wrong_rank');
+      else if (cards[0].rank === 13) demonstratedTipRules.push('needs_king_on_empty');
+    }
+    if (cardToFlip) demonstratedTipRules.push('covered_card');
     applyMove(state, cards, source, sourceIndex, target, targetIndex);
+    demonstrateAutoTipRule(demonstratedTipRules);
     if (countMove) moveCount++;
     updateMoves();
     render();
@@ -3157,7 +3664,17 @@ function initIntro() {
   // own pointerdown/pointerup pair sidesteps it entirely and behaves
   // identically for mouse, trackpad, and touch.
   function attachCardInteractions(cardEl, card, source, sourceIndex) {
-    cardEl.addEventListener('pointerdown', (e) => startDrag(e, card, source, sourceIndex), { passive: false });
+    cardEl.addEventListener('pointerdown', (e) => {
+      // Help mode: "tell me about this," not the card's normal drag/tap
+      // action - source is always a face-up card here (a covered card gets
+      // its own separate click listener below, not this one).
+      if (helpModeActive) {
+        e.preventDefault();
+        showHelp(helpConceptForTarget(source, { faceUp: true }), cardEl);
+        return;
+      }
+      startDrag(e, card, source, sourceIndex);
+    }, { passive: false });
   }
 
   function createGhostStack(cards, rects) {
@@ -3443,6 +3960,7 @@ function initIntro() {
       const revealDest = hideDestElements(stack, target, targetIndex, previousTopCard);
       glideGhostsTo(ghosts, originRects, destRects, MOVE_GLIDE_MS, revealDest);
     } else {
+      checkAutoTipOnIllegalTableauDrop(pileEl, stack, source, sourceIndex);
       // See onDragCancel's comment: a foundation's origin element was
       // replaced by the peek-render, not just hidden, so it needs a real
       // re-render rather than a visibility restore.
@@ -3787,6 +4305,14 @@ function initIntro() {
       heading.className = 'settings-section-label';
       heading.textContent = section.label;
       sectionEl.appendChild(heading);
+
+      // Optional - most sections' labels are self-explanatory and skip this.
+      if (section.caption) {
+        const caption = document.createElement('p');
+        caption.className = 'settings-section-caption';
+        caption.textContent = section.caption;
+        sectionEl.appendChild(caption);
+      }
 
       const optionsRow = document.createElement('div');
       optionsRow.className = 'settings-options';

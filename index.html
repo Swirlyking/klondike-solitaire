@@ -111,6 +111,16 @@
         </svg>
         <span class="btn-label btn-label--new">Hint</span>
       </button>
+      <!-- Help: user-requested ("what's this?"), distinct from Hint above
+           ("what move should I make?") - see script.js's enterHelpMode/
+           exitHelpMode. A plain "?" glyph, same text-character-as-icon
+           convention as Settings' gear below, not an SVG - aria-pressed and
+           the active class together (never color alone) say whether Help
+           mode is currently on. -->
+      <button id="helpBtn" class="icon-button" aria-label="Help" aria-pressed="false" title="Help">
+        <span class="help-question" aria-hidden="true">?</span>
+        <span class="btn-label btn-label--new">Help</span>
+      </button>
       <!-- fast-forward icon: Lucide (ISC license), same icon set as Undo/
            Hint above. Label lives in its own span - script.js swaps its
            text between "Auto Finish"/"Stop" without touching the icon. -->
@@ -153,6 +163,29 @@
   </header>
 
   <div id="hint-message" class="hidden" role="status" aria-live="polite"></div>
+  <!-- Automatic Tips: the shared floating annotation for all four tip
+       categories (see autoTips.js's TIP_CATALOG and script.js's
+       showCardAnnotation/triggerAutoTip) - a non-modal graphic annotation
+       that anchors itself near the card/column that triggered it.
+       `position: fixed` in style.css - deliberately outside any layout
+       flow, so it can never push the board down or reserve space, and its
+       position here in the document has no bearing on where it renders. -->
+  <div id="card-annotation" class="hidden" role="status" aria-live="polite">
+    <div id="card-annotation-shape">
+      <!-- The whole rounded-rectangle-plus-pointer outline as ONE
+           continuous SVG path (see buildAnnotationPointerPath() in
+           script.js) - the pointer is part of the same path as the body,
+           so there is no separate element for it to seam against. Sized
+           and re-drawn in real script.js in real pixels every time a tip
+           shows (never CSS-stretched), so it never distorts. -->
+      <svg id="card-annotation-svg" aria-hidden="true" focusable="false"></svg>
+      <div id="card-annotation-fill">
+        <p id="card-annotation-headline"></p>
+        <p id="card-annotation-text"></p>
+        <p id="card-annotation-disclosure" class="hidden">Automatic Tips can be turned off in Settings.</p>
+      </div>
+    </div>
+  </div>
 
   <main id="board">
     <div id="top-row">
