@@ -12,6 +12,28 @@ backup, updates/reload, settings, modals, sound, motion, mobile interaction, per
 feedback, stats/rewards, accessibility, error recovery, general engineering conventions). `MATRIX.md` has
 a quick per-feature "who has this and how strong is it" table.
 
+## Concurrent Work Check — do this before any substantial edit
+
+Before starting a substantial editing task in this repo, check whether it's safe to edit in this shared
+checkout:
+- `git status --short` — a dirty tree or unrelated WIP present?
+- `git worktree list` — any other active worktree already checked out?
+- Any other Claude Code session likely running against this same repo path right now (ask the user if
+  unsure)?
+
+If any of those are true, **do not start editing here** — create a dedicated worktree and task branch
+first (`git worktree add ../klondike-solitaire-<task> -b <task-branch>`), and do the edit there instead.
+This applies even in auto/YOLO permission mode — isolation isn't a confirmation step, it's structural, and
+auto mode doesn't override it. Small read-only investigations (reading files, running tests, checking
+history) are exempt and may use the main checkout regardless.
+
+While working: never stage or commit files that belong to another task or another session's WIP — before
+every commit, check the staged diff actually contains only this task. Don't delete, stash, or clean
+another session's uncommitted work to make room. Don't merge a task branch back into `main` unless the user
+explicitly asks for that.
+
+Full standard, with the incident that prompted it: `mike-games-system/SYSTEM.md` §16.
+
 ## MIKE Games Impact Check — do this without being asked
 
 Whenever work in this repo does any of the following, run a **MIKE GAMES IMPACT CHECK** before considering
