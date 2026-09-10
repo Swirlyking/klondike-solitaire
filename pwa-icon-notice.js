@@ -44,7 +44,11 @@ export function ensureIconGenerationMarker() {
   setPreference(ICON_GEN_KEY, hadPriorActivity ? 'v1' : CURRENT_ICON_GEN);
 }
 
-function isStandalonePwa() {
+// Exported (not just used internally) so install-prompt.js's own
+// eligibility check reuses this exact test rather than a second,
+// independently-written standalone-detection - see that module's own
+// header for why.
+export function isStandalonePwa() {
   return (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches)
     || window.navigator.standalone === true; // legacy iOS Safari's own standalone flag
 }

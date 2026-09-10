@@ -32,12 +32,33 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
 import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 import { buildBackup, validateBackup, resolveRestorePatch, backupFilename, VALIDATION_ERROR_MESSAGES, LEGACY_CARD_BACK_IDS } from './backup.js';
 import { ensureIconGenerationMarker, shouldShowIconNotice, dismissIconNoticePermanently } from './pwa-icon-notice.js';
+import {
+  bumpVisitCount,
+  initBeforeInstallPromptCapture,
+  isEligibleForIOSHelp,
+  isNativeInstallAvailable,
+  onInstallAvailabilityChange,
+  promptNativeInstall,
+  recordGotIt,
+  recordNotNow,
+} from './install-prompt.js';
 
 // Must run before anything else touches the preferences store - see this
 // function's own comment for why (recordPlay() inside newGame() below
 // would otherwise make even a brand-new device's first-ever session look
 // like a returning player's by the time anything checked).
 ensureIconGenerationMarker();
+
+// MIKE Games System (see mike-games-system/SYSTEM.md §02, "Custom install
+// prompt") - as early as possible, same reasoning as Mike's Sudoku's own
+// call site: Chrome can fire beforeinstallprompt before any user
+// interaction, and it must be preventDefault()'d immediately (not just
+// handled later) to stay available for the Settings install button
+// instead of the browser's own mini-infobar. bumpVisitCount() once per
+// app load (not per render) is what "wait N visits after Not Now" in
+// install-prompt.js actually counts.
+initBeforeInstallPromptCapture();
+bumpVisitCount();
 
 // MIKE Games System (see mike-games-system/SYSTEM.md, Standard Settings
 // Architecture) - gates the dev-only "Testing" row/sheet. This project has
@@ -1072,6 +1093,14 @@ function initIntro() {
   // moveCount/elapsed time from the winning move itself, not whatever they'd
   // be by the time the message actually renders.
   let pendingWinResult = null;
+  // MIKE Games System (see mike-games-system/SYSTEM.md §02) - set true
+  // only by a real win in checkWin() (never a forceWinForTesting one,
+  // matching Mike's Sudoku's own !testCelebrationActive exclusion),
+  // read and cleared the next time newGame()/restart() runs. Deliberately
+  // its own flag rather than reconstructed from skipNextStatsRecord,
+  // which checkWin() already resets to false at win time, long before
+  // the player eventually starts another game.
+  let justWonGenuinely = false;
   let celebrationTimer = null;
   // Every currently-in-flight celebration-card Animation object (from
   // el.animate() - see animateCelebrationCard), tracked purely so
@@ -1155,6 +1184,10 @@ function initIntro() {
   const supportOverlay = document.getElementById('support-overlay');
   const supportCloseBtn = document.getElementById('supportCloseBtn');
   const supportCoffeeBtn = document.getElementById('supportCoffeeBtn');
+  const installLink = document.getElementById('installLink');
+  const installPromptOverlay = document.getElementById('install-prompt-overlay');
+  const installPromptNotNowBtn = document.getElementById('installPromptNotNowBtn');
+  const installPromptGotItBtn = document.getElementById('installPromptGotItBtn');
   const reloadAppLink = document.getElementById('reloadAppLink');
   const testingLink = document.getElementById('testingLink');
   const testingOverlay = document.getElementById('testing-overlay');
@@ -1187,6 +1220,18 @@ function initIntro() {
   }
 
   function newGame() {
+    // MIKE Games System (see mike-games-system/SYSTEM.md §02) - captured
+    // before the reset just below, acted on after render() at the tail
+    // of this function, so the overlay (if eligible) appears over the
+    // freshly-dealt board the player is now actually looking at, not
+    // stacked on top of the win screen or the celebration - same
+    // reasoning as Mike's Sudoku's own dismissCelebration() comment on
+    // never competing with the fireworks. A "Restart" (same deal
+    // replayed, see restart() below) is a different player intent -
+    // diving back into another attempt, not wrapping up - so it's
+    // deliberately not a trigger point for this.
+    const showInstallHelpAfterDeal = justWonGenuinely && isEligibleForIOSHelp();
+    justWonGenuinely = false;
     cancelActiveDrag();
     clearGhosts();
     cleanupVictoryCelebration();
@@ -1221,6 +1266,7 @@ function initIntro() {
     startTime = Date.now();
     updateMoves();
     render();
+    if (showInstallHelpAfterDeal) installPromptOverlay.classList.remove('hidden');
   }
 
   // Replays the exact same deal as the current newGame() call, for when
@@ -1229,6 +1275,7 @@ function initIntro() {
   // initialDeal snapshot instead of drawing a new one.
   function restart() {
     if (!initialDeal) return;
+    justWonGenuinely = false; // diving back into the same deal, not wrapping up - see newGame()'s own comment
     cancelActiveDrag();
     clearGhosts();
     cleanupVictoryCelebration();
@@ -3161,6 +3208,10 @@ function initIntro() {
       const statsResult = skipNextStatsRecord
         ? applyWin(getStatsForMode(drawModeKey), secs, moveCount)
         : recordWin(drawModeKey, secs, moveCount);
+      // Captured before the reset just below, so it survives all the way
+      // to the next newGame()/restart() - see install-prompt.js's own
+      // eligibility check, consulted there rather than here.
+      justWonGenuinely = !skipNextStatsRecord;
       skipNextStatsRecord = false;
       pendingWinResult = { moveCount, secs, statsResult };
       setAutoFinishControlsDisabled(true);
@@ -4192,6 +4243,42 @@ function initIntro() {
   supportOverlay.addEventListener('click', e => {
     if (e.target === supportOverlay) closeSupportOverlay();
   });
+
+  // ---------- Install Mike's Solitaire ----------
+  // MIKE Games System (see mike-games-system/SYSTEM.md §02, "Custom
+  // install prompt") - two independent paths, same as Mike's Sudoku's
+  // reference implementation: the iOS instructional overlay (shown
+  // automatically after a genuine win - see newGame()'s own comment) and
+  // the Settings row that only ever appears on a browser that fired
+  // beforeinstallprompt. "Not now" and the backdrop are both a soft
+  // dismiss (same distinction the source implementation draws) - only
+  // "Got it" is the permanent, never-ask-again acknowledgment.
+  function closeInstallPrompt() {
+    installPromptOverlay.classList.add('hidden');
+  }
+  installPromptNotNowBtn.addEventListener('click', () => {
+    recordNotNow();
+    closeInstallPrompt();
+  });
+  installPromptGotItBtn.addEventListener('click', () => {
+    recordGotIt();
+    closeInstallPrompt();
+  });
+  installPromptOverlay.addEventListener('click', e => {
+    if (e.target === installPromptOverlay) {
+      recordNotNow();
+      closeInstallPrompt();
+    }
+  });
+  // Toggled live via onInstallAvailabilityChange rather than checked
+  // once at boot - beforeinstallprompt can fire well after this file has
+  // already run. Starts hidden in the markup for the same reason (see
+  // index.html's own comment on this row).
+  installLink.addEventListener('click', () => { promptNativeInstall(); });
+  onInstallAvailabilityChange((available) => {
+    installLink.classList.toggle('hidden', !available);
+  });
+  installLink.classList.toggle('hidden', !isNativeInstallAvailable());
 
   // ---------- Reload App ----------
   // MIKE Games System (see mike-games-system/SYSTEM.md, Standard Settings

@@ -261,6 +261,25 @@
           <span class="settings-feedback-link-arrow" aria-hidden="true">&#8250;</span>
         </button>
         <input type="file" id="restoreFileInput" accept="application/json,.json" hidden>
+        <!-- MIKE Games System (see mike-games-system/SYSTEM.md §02,
+             "Custom install prompt") - only ever unhidden once the
+             browser itself fires beforeinstallprompt (Chrome/Edge/
+             Android; see install-prompt.js's onInstallAvailabilityChange
+             in script.js), never shown as a dead/disabled control on
+             browsers or platforms (notably iOS) that don't support it.
+             Sits at the end of the game-specific group, not inside
+             #settings-utilities below - it isn't one of that group's
+             three fixed rows and must never be interleaved with them.
+             Download icon: Lucide (ISC license), same icon set as the
+             rest of this panel. -->
+        <button type="button" id="installLink" class="settings-feedback-link hidden" aria-label="Install Mike's Solitaire">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <path d="M7 10l5 5 5-5" />
+            <path d="M12 15V3" />
+          </svg>
+          <span class="settings-feedback-link-label">Install Mike's Solitaire</span>
+        </button>
       </div>
       <!-- MIKE Games System (see mike-games-system/SYSTEM.md, Standard
            Settings Architecture) - the standard MIKE Games utility block,
@@ -442,6 +461,41 @@
       <div id="support-actions">
         <button type="button" id="supportCloseBtn">Close</button>
         <a id="supportCoffeeBtn" href="https://www.buymeacoffee.com/mikestrassburger" target="_blank" rel="noopener noreferrer">Buy Mike a Coffee</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- MIKE Games System (see mike-games-system/SYSTEM.md §02, "Custom
+       install prompt") - iOS has no programmatic install API, so this
+       can only ever show static instructions; it never claims to
+       trigger the OS "Add to Home Screen" dialog itself. Shown once
+       after a genuine win (see script.js's newGame()), never at launch
+       - see install-prompt.js for the standalone/iOS detection and
+       dismissal cooldown this defers to. Same overlay/card shell as
+       #support-overlay above, backdrop-click dismisses same as that
+       sibling overlay (no Escape handler - matching this overlay's own
+       convention, not introducing a one-off). -->
+  <div id="install-prompt-overlay" class="hidden">
+    <div id="install-prompt-card" role="dialog" aria-modal="true" aria-labelledby="install-prompt-title" aria-describedby="install-prompt-message">
+      <!-- A plain, monochrome stand-in for Apple's own Share glyph (an
+           upward arrow over an open-topped tray) - deliberately not
+           styled like this app's own icons, since the point is "this is
+           what to look for in your browser's toolbar," not branding. -->
+      <div id="install-prompt-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v12" />
+          <path d="M7.5 7.5L12 3l4.5 4.5" />
+          <path d="M5 11v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7" />
+        </svg>
+      </div>
+      <h2 id="install-prompt-title">Put Mike's Solitaire on your Home Screen</h2>
+      <!-- The bolded phrase is the literal menu item text iOS shows, so
+           it reads as a direct reference rather than paraphrased
+           instructions - same copy Mike's Sudoku uses. -->
+      <p id="install-prompt-message">Tap the Share button, then choose <strong>&ldquo;Add to Home Screen.&rdquo;</strong></p>
+      <div id="install-prompt-actions">
+        <button type="button" id="installPromptNotNowBtn">Not now</button>
+        <button type="button" id="installPromptGotItBtn">Got it</button>
       </div>
     </div>
   </div>
