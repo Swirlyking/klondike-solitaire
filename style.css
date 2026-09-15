@@ -509,11 +509,9 @@ body {
      --watermark-y        vertical nudge from dead-center, in px */
 #top-row-watermark {
   --watermark-width: calc((var(--card-w) + 2 * var(--pile-gap)) * 0.52);
-  /* Matches .column's own rgba(0,0,0,0.10) tone below - both are black
-     composited at the same alpha directly over the felt, so the mark
-     reads as the same "darker shade of felt" as an empty tableau slot
-     rather than standing out darker/lighter than it. */
-  --watermark-opacity: 0.10;
+  /* Close to .column's own rgba(0,0,0,0.10) tone below (both are black
+     composited directly over the felt), just a touch more visible. */
+  --watermark-opacity: 0.15;
   --watermark-y: 0px;
   /* The mark's own viewBox (144x144) is a perfect square, so mask-size:
      contain doesn't have to guess. */
