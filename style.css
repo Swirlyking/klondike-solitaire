@@ -509,11 +509,15 @@ body {
      --watermark-y        vertical nudge from dead-center, in px */
 #top-row-watermark {
   --watermark-width: calc((var(--card-w) + 2 * var(--pile-gap)) * 0.52);
-  --watermark-opacity: 0.26;
+  /* Matches .column's own rgba(0,0,0,0.10) tone below - both are black
+     composited at the same alpha directly over the felt, so the mark
+     reads as the same "darker shade of felt" as an empty tableau slot
+     rather than standing out darker/lighter than it. */
+  --watermark-opacity: 0.10;
   --watermark-y: 0px;
-  /* Matches the real mark's own cropped proportions (145:207), so
-     mask-size: contain doesn't have to guess. */
-  --watermark-aspect: 145 / 207;
+  /* The mark's own viewBox (144x144) is a perfect square, so mask-size:
+     contain doesn't have to guess. */
+  --watermark-aspect: 1 / 1;
 
   position: absolute;
   z-index: 0;
@@ -531,10 +535,12 @@ body {
      the felt shows through. --watermark-opacity above is the single knob
      for how dark it reads; no separate color-mix step, so there's no
      double-attenuation between a "how dark" color choice and a separate
-     "how visible" opacity choice. */
+     "how visible" opacity choice. SVG (not PNG) so the mark stays crisp at
+     any --watermark-width rather than being resampled from one fixed
+     raster size. */
   background-color: black;
-  -webkit-mask-image: url('assets/watermark-logo.png');
-  mask-image: url('assets/watermark-logo.png');
+  -webkit-mask-image: url('assets/m-logo.svg');
+  mask-image: url('assets/m-logo.svg');
   -webkit-mask-size: contain;
   mask-size: contain;
   -webkit-mask-repeat: no-repeat;
