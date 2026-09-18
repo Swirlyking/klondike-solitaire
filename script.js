@@ -32,6 +32,7 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
 import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 import { buildBackup, validateBackup, resolveRestorePatch, backupFilename, VALIDATION_ERROR_MESSAGES, LEGACY_CARD_BACK_IDS } from './backup.js';
 import { ensureIconGenerationMarker, shouldShowIconNotice, dismissIconNoticePermanently } from './pwa-icon-notice.js';
+import { shareCelebration, formatRecordLine, buildShareText } from './share.js';
 import {
   bumpVisitCount,
   initBeforeInstallPromptCapture,
@@ -1093,6 +1094,14 @@ function initIntro() {
   // moveCount/elapsed time from the winning move itself, not whatever they'd
   // be by the time the message actually renders.
   let pendingWinResult = null;
+  // The exact string winShareBtn will hand to shareCelebration() - built
+  // once in showVictoryMessage from the same authoritative numbers the win
+  // card itself renders (see buildShareText in share.js), so the card and
+  // the share payload can never disagree. Empty/disabled in the rare
+  // fallback path where showVictoryMessage has no real statsResult to work
+  // from - see that function's own comment.
+  let currentShareText = '';
+  let winShareStatusTimer = null;
   // MIKE Games System (see mike-games-system/SYSTEM.md §02) - set true
   // only by a real win in checkWin() (never a forceWinForTesting one,
   // matching Mike's Sudoku's own !testCelebrationActive exclusion),
@@ -1158,6 +1167,8 @@ function initIntro() {
   const winRecordTime = document.getElementById('winRecordTime');
   const winRecordMoves = document.getElementById('winRecordMoves');
   const winRecords = document.getElementById('winRecords');
+  const winShareBtn = document.getElementById('winShareBtn');
+  const winShareStatus = document.getElementById('winShareStatus');
   const winNewGameBtn = document.getElementById('winNewGameBtn');
   const celebrationLayer = document.getElementById('celebration-layer');
   const settingsBtn = document.getElementById('settingsBtn');
@@ -3714,15 +3725,20 @@ function initIntro() {
   // if this specific win just broke that specific record - a trophy line
   // instead. Never both for the same record. formattedRecordValue is
   // already-formatted text (formatTime()'s output, or a plain move count).
+  // The actual wording lives in share.js's formatRecordLine, reused as-is
+  // (not reimplemented here) so this on-screen row and the Share Win text
+  // built from the exact same inputs can never independently drift.
   function renderRecordRow(el, isNewRecord, trophyText, ordinaryLabel, formattedRecordValue) {
-    el.textContent = isNewRecord ? trophyText : `${ordinaryLabel}: ${formattedRecordValue}`;
+    el.textContent = formatRecordLine(isNewRecord, trophyText, ordinaryLabel, formattedRecordValue);
     el.classList.toggle('win-record-trophy', isNewRecord);
   }
 
   function showVictoryMessage(entrance) {
-    winEmoji.textContent = pickHeadline();
+    const emoji = pickHeadline();
+    winEmoji.textContent = emoji;
     const result = pendingWinResult || { moveCount, secs: 0, statsResult: null };
-    winResultLine.textContent = `${formatTime(result.secs)} · ${result.moveCount} moves`;
+    const timeLabel = formatTime(result.secs);
+    winResultLine.textContent = `${timeLabel} · ${result.moveCount} moves`;
 
     const stats = result.statsResult;
     if (stats) {
@@ -3733,18 +3749,38 @@ function initIntro() {
       // below the result line would just be a redundant echo.
       const showRecords = stats.winNumber > 1;
       winRecords.classList.toggle('hidden', !showRecords);
+      let fastestTimeLabel = null;
+      let fewestMoves = null;
       if (showRecords) {
-        renderRecordRow(winRecordTime, stats.isNewFastest, '🏆 NEW FASTEST TIME', 'Fastest', formatTime(stats.stats.fastestTimeSeconds));
-        renderRecordRow(winRecordMoves, stats.isNewFewestMoves, '🏆 NEW FEWEST MOVES', 'Fewest moves', stats.stats.fewestMoves);
+        fastestTimeLabel = formatTime(stats.stats.fastestTimeSeconds);
+        fewestMoves = stats.stats.fewestMoves;
+        renderRecordRow(winRecordTime, stats.isNewFastest, '🏆 NEW FASTEST TIME', 'Fastest', fastestTimeLabel);
+        renderRecordRow(winRecordMoves, stats.isNewFewestMoves, '🏆 NEW FEWEST MOVES', 'Fewest moves', fewestMoves);
       }
+      winShareBtn.disabled = false;
+      currentShareText = buildShareText({
+        emoji,
+        drawCount: getDrawCount(),
+        winNumber: stats.winNumber,
+        timeLabel,
+        moveCount: result.moveCount,
+        showRecords,
+        isNewFastest: stats.isNewFastest,
+        isNewFewestMoves: stats.isNewFewestMoves,
+        fastestTimeLabel,
+        fewestMoves,
+      });
     } else {
       // Defensive fallback only - checkWin() always produces a statsResult
       // (a real recordWin() or, for the forceWinForTesting preview path, an
       // unsaved applyWin()); this just keeps the screen sane if it's ever
-      // reached some other way.
+      // reached some other way. Nothing meaningful to share here, so the
+      // button is disabled rather than sharing an incomplete result.
       winHeadline.textContent = '';
       winPlaysLine.textContent = '';
       winRecords.classList.add('hidden');
+      winShareBtn.disabled = true;
+      currentShareText = '';
     }
 
     winMessage.className = `win-enter-${entrance}`; // replaces "hidden" outright - single source of truth for this element's visual state
@@ -3775,6 +3811,10 @@ function initIntro() {
     celebrationLayer.innerHTML = '';
     winMessage.className = 'hidden';
     document.querySelectorAll('#foundations .card').forEach(el => { el.style.visibility = ''; });
+    // A lingering "Copied!"/manual-text status from this win must never
+    // carry into the next one's own win-message.
+    clearTimeout(winShareStatusTimer);
+    winShareStatus.classList.add('hidden');
   }
 
   // ---------- dragging ----------
@@ -4658,6 +4698,33 @@ function initIntro() {
   newGameBtn.addEventListener('click', () => guardAbandon('newGame', newGame));
   restartBtn.addEventListener('click', () => guardAbandon('restart', restart));
   winNewGameBtn.addEventListener('click', newGame); // starting again from the win screen is never gated
+
+  function showWinShareStatus(text) {
+    clearTimeout(winShareStatusTimer);
+    winShareStatus.textContent = text;
+    winShareStatus.classList.remove('hidden');
+  }
+  // For the "Copied!" acknowledgement only - not for the manual-text
+  // fallback (showWinShareStatus alone), which stays up until the player
+  // dismisses the win message some other way (New Game, Restart, Undo).
+  function showTransientWinShareStatus(text, ms = 1800) {
+    showWinShareStatus(text);
+    winShareStatusTimer = setTimeout(() => winShareStatus.classList.add('hidden'), ms);
+  }
+  winShareBtn.addEventListener('click', () => {
+    // shareCelebration() calls navigator.share() synchronously before its
+    // own first await (see share.js's own comment on why) - this handler
+    // must not await anything before calling it, or a real device/browser
+    // will silently refuse the share as no longer tied to a genuine tap.
+    clearTimeout(winShareStatusTimer);
+    winShareStatus.classList.add('hidden');
+    shareCelebration({ text: currentShareText }).then((result) => {
+      if (result.outcome === 'copied') showTransientWinShareStatus('Copied!');
+      else if (result.outcome === 'manual') showWinShareStatus(currentShareText);
+      // 'shared' and 'cancelled' need no message of their own - the share
+      // sheet (or its absence) already told the player what happened.
+    });
+  });
 
   timerHandle = setInterval(tick, 500);
 

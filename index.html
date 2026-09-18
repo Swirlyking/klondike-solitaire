@@ -436,6 +436,15 @@
       <p id="winRecordTime"></p>
       <p id="winRecordMoves"></p>
     </div>
+    <!-- Secondary action, sits above New Game's primary gold-filled CTA -
+         see script.js's win-share click handler and share.js for what
+         native-share/clipboard/manual path actually runs. Text and
+         aria-label always read "Share Win" regardless of which path runs;
+         see share.js's own header for why. winShareStatus is the "Copied!"
+         transient acknowledgement or (rarely) the manual-copy fallback
+         text - hidden until there's something to say. -->
+    <button id="winShareBtn" type="button" aria-label="Share Win">📤 Share Win</button>
+    <p id="winShareStatus" class="hidden" aria-live="polite"></p>
     <button id="winNewGameBtn">New Game</button>
   </div>
 

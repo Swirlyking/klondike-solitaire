@@ -1420,6 +1420,41 @@ body {
   font-weight: 700;
 }
 
+/* Secondary action - New Game below it stays the one filled/emphasized
+   choice, same outline-gold-on-transparent language as
+   .icon-notice-btn--secondary/#confirmGiveUpBtn elsewhere in this app,
+   not a new visual system. */
+#winShareBtn {
+  background: transparent;
+  border: 1px solid rgba(217, 180, 92, 0.6);
+  color: var(--gold);
+  font-weight: 600;
+  font-size: 15px;
+  padding: 10px 24px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+#winShareBtn:hover { background: rgba(217, 180, 92, 0.12); }
+#winShareBtn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+#winShareBtn:disabled { opacity: 0.4; cursor: default; }
+
+/* "Copied!" (transient) or the manual-copy fallback text (stays up until
+   the win message itself is dismissed) - quiet, same tier as winPlaysLine/
+   winRecords, not a competing headline. Negative margin-top pulls it
+   toward the button above rather than taking a full 18px flex gap, same
+   technique winPlaysLine uses against winHeadline above. */
+#winShareStatus {
+  margin: 0;
+  margin-top: -9px;
+  max-width: 320px;
+  color: rgba(255,255,255,0.7);
+  font-size: 13px;
+  white-space: pre-line; /* the manual-copy fallback is the real multi-line share text */
+  text-shadow: 0 1px 6px rgba(0,0,0,0.4);
+}
+#winShareStatus.hidden { display: none; }
+
 #winNewGameBtn {
   background: var(--gold);
   border: none;
