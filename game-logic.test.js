@@ -1619,3 +1619,230 @@ test('an empty-column King cascade opportunity produces zero legal moves - Hint,
   assert.equal(autoFinishAvailable(s), false);
   assert.equal(needsAbandonConfirmation(s, 5, false), false);
 });
+
+// ---------- foundation -> tableau: the reported iPad board ----------
+//
+// Regression cover for the exact position reported from an iPad (Moves: 49):
+// a 5 of clubs on top of an already-built first foundation slot, with a 6 of
+// diamonds exposed in the tableau, where tapping the 5C appeared to do
+// nothing at all. The real defect was in script.js's drag teardown (a
+// foundation left standing on its non-interactive peekBehindTop render - see
+// cancelActiveDrag), NOT in the rules below, which already resolved this
+// position correctly. These lock that in so a future change to the
+// enumeration or the click-priority rules can't quietly introduce the
+// gameplay bug the original symptom looked like.
+
+// The reported board, rebuilt exactly. Foundation 0 is A-5 of clubs (the
+// only pile a 5C can legally sit on top of), foundation 1 is A-2 of
+// diamonds, and column 4 is the King-led run ending in the exposed 6D.
+function reportedIPadBoard() {
+  const s = emptyState();
+  s.stock = [card('spades', 3, false), card('spades', 4, false)];
+  s.waste = [card('diamonds', 7), card('spades', 4), card('spades', 7)];
+  s.foundations[0] = [card('clubs', 1), card('clubs', 2), card('clubs', 3), card('clubs', 4), card('clubs', 5)];
+  s.foundations[1] = [card('diamonds', 1), card('diamonds', 2)];
+  s.tableau[1] = [card('hearts', 12), card('clubs', 11), card('diamonds', 10), card('spades', 9)];
+  s.tableau[2] = [card('hearts', 13), card('clubs', 12), card('hearts', 11), card('spades', 10), card('diamonds', 9)];
+  s.tableau[3] = [card('clubs', 8, false), card('hearts', 8, false), card('spades', 8, false), card('hearts', 3), card('spades', 2)];
+  s.tableau[4] = [card('spades', 13), card('diamonds', 12), card('spades', 11), card('clubs', 10), card('clubs', 9), card('diamonds', 8), card('clubs', 7), card('diamonds', 6)];
+  s.tableau[5] = [card('hearts', 10, false), card('hearts', 9, false), card('clubs', 6, false), card('hearts', 6, false), card('hearts', 7)];
+  s.tableau[6] = [card('spades', 5, false), card('spades', 6, false), card('hearts', 5, false), card('clubs', 13, false), card('diamonds', 13, false), card('diamonds', 4)];
+  return s;
+}
+
+test('reported iPad board: the 5C on foundation 0 resolves to the 6D in column 4 on a click', () => {
+  const s = reportedIPadBoard();
+  const fiveOfClubs = s.foundations[0][s.foundations[0].length - 1];
+  assert.equal(canPlaceOnTableau(s, fiveOfClubs, 4), true);
+  assert.deepEqual(
+    resolveClickDestination(s, fiveOfClubs, 'foundation', 0, 1),
+    { type: 'tableau', index: 4 },
+  );
+});
+
+test('reported iPad board: getLegalMoves offers the 5C foundation->tableau move, and only that one from a foundation', () => {
+  const s = reportedIPadBoard();
+  const fiveOfClubs = s.foundations[0][s.foundations[0].length - 1];
+  const fromFoundation = getLegalMoves(s).filter(m => m.source === 'foundation');
+  assert.equal(fromFoundation.length, 1);
+  assert.ok(sameMove(fromFoundation[0], {
+    category: MoveCategory.TABLEAU_MOVE, source: 'foundation', sourceIndex: 0,
+    card: fiveOfClubs, target: 'tableau', targetIndex: 4,
+  }));
+});
+
+test('reported iPad board: applying the click destination actually moves the 5C onto the 6D and exposes the 4C', () => {
+  const s = reportedIPadBoard();
+  const fiveOfClubs = s.foundations[0][s.foundations[0].length - 1];
+  const dest = resolveClickDestination(s, fiveOfClubs, 'foundation', 0, 1);
+  applyMove(s, getStackFrom(s, 'foundation', 0, fiveOfClubs), 'foundation', 0, dest.type, dest.index);
+  assert.equal(s.tableau[4][s.tableau[4].length - 1].id, fiveOfClubs.id);
+  assert.equal(s.foundations[0].length, 4);
+  assert.equal(s.foundations[0][s.foundations[0].length - 1].rank, 4); // the 4C underneath is now the top
+});
+
+test('foundation -> tableau: lands on the opposite-color next-higher card', () => {
+  const s = emptyState();
+  s.foundations[2] = [card('hearts', 1), card('hearts', 2), card('hearts', 3)];
+  const threeOfHearts = s.foundations[2][2];
+  s.tableau[5] = [card('spades', 4)]; // black 4 accepts a red 3
+  assert.deepEqual(
+    resolveClickDestination(s, threeOfHearts, 'foundation', 2, 1),
+    { type: 'tableau', index: 5 },
+  );
+});
+
+test('foundation -> tableau: a same-color destination is rejected', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('clubs', 1), card('clubs', 2), card('clubs', 3)];
+  const threeOfClubs = s.foundations[0][2];
+  s.tableau[4] = [card('spades', 4)]; // black 4 under a black 3 - right rank, wrong color
+  assert.equal(canPlaceOnTableau(s, threeOfClubs, 4), false);
+  assert.equal(resolveClickDestination(s, threeOfClubs, 'foundation', 0, 1), null);
+});
+
+test('foundation -> tableau: a wrong-rank destination is rejected', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('clubs', 1), card('clubs', 2), card('clubs', 3)];
+  const threeOfClubs = s.foundations[0][2];
+  s.tableau[4] = [card('hearts', 6)]; // opposite color, but nowhere near the right rank
+  assert.equal(canPlaceOnTableau(s, threeOfClubs, 4), false);
+  assert.equal(resolveClickDestination(s, threeOfClubs, 'foundation', 0, 1), null);
+});
+
+test('foundation -> tableau: only the TOP foundation card is ever offered', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('clubs', 1), card('clubs', 2), card('clubs', 3), card('clubs', 4)];
+  const buriedThree = s.foundations[0][2];
+  const topFour = s.foundations[0][3];
+  s.tableau[1] = [card('hearts', 4)]; // would accept the buried 3C
+  s.tableau[2] = [card('hearts', 5)]; // accepts the top 4C
+  const fromFoundation = getLegalMoves(s).filter(m => m.source === 'foundation');
+  assert.deepEqual(fromFoundation.map(m => m.card.id), [topFour.id]);
+  assert.ok(!fromFoundation.some(m => m.card.id === buriedThree.id));
+});
+
+test('foundation -> tableau: works from the first, middle and last foundation slots alike - index is never treated as a suit', () => {
+  for (const slot of [0, 1, 2, 3]) {
+    const s = emptyState();
+    // Deliberately the same suit in every slot in turn: foundations are not
+    // suit-locked, so the slot index must carry no suit meaning whatsoever.
+    s.foundations[slot] = [card('spades', 1), card('spades', 2), card('spades', 3)];
+    const threeOfSpades = s.foundations[slot][2];
+    s.tableau[6] = [card('diamonds', 4)];
+    assert.deepEqual(
+      resolveClickDestination(s, threeOfSpades, 'foundation', slot, 1),
+      { type: 'tableau', index: 6 },
+      `foundation slot ${slot}`,
+    );
+  }
+});
+
+test('foundation -> tableau: red and black foundation cards behave identically', () => {
+  for (const [suit, acceptor] of [['hearts', 'clubs'], ['clubs', 'hearts'], ['diamonds', 'spades'], ['spades', 'diamonds']]) {
+    const s = emptyState();
+    s.foundations[1] = [card(suit, 1), card(suit, 2), card(suit, 3), card(suit, 4), card(suit, 5)];
+    const five = s.foundations[1][4];
+    s.tableau[3] = [card(acceptor, 6)];
+    assert.deepEqual(
+      resolveClickDestination(s, five, 'foundation', 1, 1),
+      { type: 'tableau', index: 3 },
+      `${suit} 5 onto ${acceptor} 6`,
+    );
+  }
+});
+
+test('foundation -> tableau: with several legal columns, the leftmost wins (existing deterministic rule, unchanged)', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('clubs', 1), card('clubs', 2), card('clubs', 3), card('clubs', 4), card('clubs', 5)];
+  const fiveOfClubs = s.foundations[0][4];
+  s.tableau[1] = [card('hearts', 6)];
+  s.tableau[4] = [card('diamonds', 6)];
+  s.tableau[6] = [card('hearts', 6)];
+  assert.deepEqual(
+    resolveClickDestination(s, fiveOfClubs, 'foundation', 0, 1),
+    { type: 'tableau', index: 1 },
+  );
+});
+
+test('foundation -> tableau: repeated clicks do NOT cycle destinations - only tableau-sourced cards cycle', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('clubs', 1), card('clubs', 2), card('clubs', 3), card('clubs', 4), card('clubs', 5)];
+  const fiveOfClubs = s.foundations[0][4];
+  s.tableau[1] = [card('hearts', 6)];
+  s.tableau[4] = [card('diamonds', 6)];
+  // lastTableauDest is only ever fed for a tableau source (see tryClickMove),
+  // so a foundation card stays pinned to the leftmost legal column.
+  assert.deepEqual(resolveClickDestination(s, fiveOfClubs, 'foundation', 0, 1, 1), { type: 'tableau', index: 1 });
+});
+
+test('foundation -> tableau: an empty column never accepts a non-King coming back off a foundation', () => {
+  const s = emptyState();
+  s.foundations[0] = [card('clubs', 1), card('clubs', 2), card('clubs', 3), card('clubs', 4), card('clubs', 5)];
+  const fiveOfClubs = s.foundations[0][4];
+  // every column empty - a 5 has nowhere to go
+  assert.equal(resolveClickDestination(s, fiveOfClubs, 'foundation', 0, 1), null);
+});
+
+test('foundation -> tableau: a King comes back off a completed foundation onto the leftmost empty column', () => {
+  const s = emptyState();
+  // A genuinely reachable pile: spades built all the way up, King on top.
+  s.foundations[3] = [];
+  for (let rank = 1; rank <= 13; rank++) s.foundations[3].push(card('spades', rank));
+  const king = s.foundations[3][12];
+  s.tableau[0] = [card('hearts', 5)]; // occupied
+  s.tableau[1] = [card('clubs', 9)];  // occupied
+  // columns 2..6 are empty; a King takes the leftmost of them
+  assert.deepEqual(resolveClickDestination(s, king, 'foundation', 3, 1), { type: 'tableau', index: 2 });
+});
+
+test('foundation -> tableau: draw mode is irrelevant to this path - the same board resolves identically under Draw 1 and Draw 3', () => {
+  // resolveClickDestination/getLegalMoves never read a draw count at all;
+  // this pins that so a future draw-aware change cannot silently alter a
+  // foundation return. Draw mode only ever changes how many cards move
+  // stock->waste, which is why the two waste shapes below are the only
+  // difference between these boards.
+  const build = (wasteCards) => {
+    const s = reportedIPadBoard();
+    s.waste = wasteCards;
+    return s;
+  };
+  const draw1 = build([card('spades', 7)]);
+  const draw3 = build([card('diamonds', 7), card('spades', 4), card('spades', 7)]);
+  for (const s of [draw1, draw3]) {
+    const fiveOfClubs = s.foundations[0][s.foundations[0].length - 1];
+    assert.deepEqual(
+      resolveClickDestination(s, fiveOfClubs, 'foundation', 0, 1),
+      { type: 'tableau', index: 4 },
+    );
+  }
+});
+
+test('foundation -> tableau: the history snapshot Undo restores is unaffected by the move', () => {
+  // script.js's undo() is pushHistory() (cloneState) + restore, so a move
+  // being cleanly reversible reduces exactly to "the snapshot taken before
+  // it still describes the pre-move board afterwards".
+  const s = reportedIPadBoard();
+  const snapshot = cloneState(s); // what pushHistory() stores
+  const fiveOfClubs = s.foundations[0][s.foundations[0].length - 1];
+  applyMove(s, getStackFrom(s, 'foundation', 0, fiveOfClubs), 'foundation', 0, 'tableau', 4);
+
+  // the move really happened...
+  assert.equal(s.foundations[0].length, 4);
+  assert.equal(s.tableau[4].length, 9);
+  // ...and the snapshot Undo would restore is still the original board
+  assert.deepEqual(snapshot, reportedIPadBoardFrom(snapshot));
+  assert.equal(snapshot.foundations[0].length, 5);
+  assert.equal(snapshot.foundations[0][4].rank, 5);
+  assert.equal(snapshot.foundations[0][4].suit, 'clubs');
+  assert.equal(snapshot.tableau[4].length, 8);
+  assert.equal(snapshot.tableau[4][7].rank, 6);
+  assert.equal(snapshot.tableau[4][7].suit, 'diamonds');
+});
+
+// Identity helper for the assertion above - cloneState must be a faithful
+// deep copy, so a snapshot compared against itself is the honest check that
+// nothing in it aliases the mutated live state.
+function reportedIPadBoardFrom(snapshot) {
+  return cloneState(snapshot);
+}

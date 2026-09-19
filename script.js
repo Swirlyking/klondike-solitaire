@@ -3957,11 +3957,45 @@ function initIntro() {
     window.removeEventListener('pointercancel', onDragCancel);
   }
 
+  // Abandons an in-flight drag from OUTSIDE the pointer-event flow (Help
+  // mode, a reflow, New Game, Restart, Undo, Auto Finish, Force Win).
+  //
+  // Undoes the drag's visual side effects as well as its bookkeeping, and
+  // that second half is not optional: once processDragFrame crosses the
+  // drag threshold it hides the origin elements and, for a foundation
+  // source, swaps the pile over to its peekBehindTop render - and that peek
+  // element is deliberately built WITHOUT attachCardInteractions (see
+  // renderFoundation), because it only ever exists for the duration of a
+  // drag. Tearing down dragCtx while that peek is still standing leaves a
+  // card on screen that looks completely normal but has no pointerdown
+  // listener at all, so the whole foundation pile goes silently inert to
+  // both tap and drag - no move, no bounce, no reaction - while the rest of
+  // the board keeps working. The non-foundation equivalent is just as bad:
+  // the origin card stays visibility: hidden and the tableau/waste card
+  // simply vanishes.
+  //
+  // It used to be each caller's job to follow up with a render() that
+  // happened to repaint over the damage. Most do, but enterHelpMode() never
+  // renders, and scheduleTableauReflow() skips its render() entirely on the
+  // `isDrawing || autoFinishRunning || kingCascadeRunning` early return - so
+  // those two left the pile permanently dead until some unrelated later
+  // action triggered a full render(). Restoring here instead makes every
+  // caller safe by construction, present and future; for the callers that
+  // do re-render immediately afterwards it's a harmless no-op.
   function cancelActiveDrag() {
     if (!dragCtx) return;
     removeDragListeners();
-    if (dragCtx.hoverTarget) dragCtx.hoverTarget.classList.remove('drop-target-active');
+    const { ghosts, originEls, hoverTarget, moved, source, sourceIndex } = dragCtx;
     dragCtx = null;
+    if (hoverTarget) hoverTarget.classList.remove('drop-target-active');
+    ghosts.wrappers.forEach(w => w.remove());
+    if (moved) {
+      // A foundation's origin element was replaced by the peek-render, not
+      // just hidden - restoring visibility on it would be a no-op, so the
+      // real top card needs a proper re-render instead.
+      if (source === 'foundation') renderFoundation(sourceIndex);
+      else originEls.forEach(el => { el.style.visibility = ''; });
+    } // unmoved: origin was never hidden
   }
 
   // The browser fires this instead of pointerup when it takes the gesture
@@ -3972,19 +4006,8 @@ function initIntro() {
   // tap and drag until a reload.
   function onDragCancel(e) {
     if (dragCtx && dragCtx.pointerId !== e.pointerId) return;
-    removeDragListeners();
-    if (!dragCtx) return;
-    const { ghosts, originEls, hoverTarget, moved, source, sourceIndex } = dragCtx;
-    dragCtx = null;
-    if (hoverTarget) hoverTarget.classList.remove('drop-target-active');
-    ghosts.wrappers.forEach(w => w.remove());
-    if (moved) {
-      // A foundation's origin element was replaced by the peek-render above,
-      // not just hidden - restoring visibility on it would be a no-op, so
-      // the real top card needs a proper re-render instead.
-      if (source === 'foundation') renderFoundation(sourceIndex);
-      else originEls.forEach(el => { el.style.visibility = ''; });
-    } // unmoved: origin was never hidden
+    removeDragListeners(); // also when dragCtx is already null - a stray cancel must never leave listeners behind
+    cancelActiveDrag();
   }
 
   function startDrag(e, card, source, sourceIndex) {
