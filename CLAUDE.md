@@ -4,7 +4,7 @@ Part of the **MIKE Games family** (with Mike's Sudoku and Mike's Mahjong). Share
 engineering standards live outside this repo at:
 
 ```
-/Users/michaelstrassburger/Documents/mike-games-system/
+/Users/michaelstrassburger/Developer/mike-games-system/
 ```
 
 Read `SYSTEM.md` there before touching anything in the areas it covers (intro, PWA/install, save/resume,
