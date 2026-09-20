@@ -2645,7 +2645,16 @@ function initIntro() {
   // resolveClickDestination, and applyMove all live in game-logic.js so
   // they're testable without a DOM.
 
-  function createFlipGhost(card, rect, zIndex) {
+  // backSrc defaults to the eager, synchronous cardImageSrc(card) lookup -
+  // fine for a caller that has already confirmed the composite is ready
+  // (see ensureCardsFaceReady). Pass null to defer it instead, leaving
+  // backImg with no src at all until the caller sets ghost.backImg.src
+  // itself: safe for any span of time, because backface-visibility:hidden
+  // (see .flip-face in style.css) means the back face is never actually
+  // painted until .flip-inner gets the 'flipped' class, however long that
+  // takes - there's no window where an unset or placeholder src could be
+  // seen.
+  function createFlipGhost(card, rect, zIndex, backSrc = cardImageSrc(card)) {
     const wrapper = document.createElement('div');
     wrapper.className = 'flip-ghost';
     wrapper.style.left = `${rect.left}px`;
@@ -2670,7 +2679,7 @@ function initIntro() {
     back.className = 'flip-face flip-back';
     const backImg = document.createElement('img');
     backImg.decoding = 'sync';
-    backImg.src = cardImageSrc(card);
+    if (backSrc !== null) backImg.src = backSrc;
     backImg.alt = `${RANK_LABELS[card.rank]} of ${card.suit}`;
     attachImageFallback(backImg, cardPngFallbackSrc(card));
     back.appendChild(backImg);
@@ -2679,7 +2688,24 @@ function initIntro() {
     inner.appendChild(back);
     wrapper.appendChild(inner);
     document.getElementById('drag-layer').appendChild(wrapper);
-    return { wrapper, inner };
+    return { wrapper, inner, backImg };
+  }
+
+  // Resolves the CURRENT face design/condition once, ensures the given
+  // cards' composited faces are ready under exactly those values, and
+  // hands both back alongside the readiness promise - so a caller that
+  // needs to pin the same design/condition for a later cardImageSrc()
+  // call (a flip deferring its reveal until ready) can't drift from what
+  // it just confirmed, even if the player changes Cards/Condition in
+  // Settings while the wait is still in flight. size/version are always
+  // read fresh too (faceCompositeTargetSize() is frozen for the session
+  // anyway - see its own comment - so there's nothing to pin there).
+  function ensureCardsFaceReady(cards) {
+    const faceDesignId = getActiveFaceDesign();
+    const conditionId = getActiveCondition();
+    const design = CARD_FACE_DESIGNS[faceDesignId];
+    const ready = ensureFacesReady(design, cards.map(faceCardId), conditionId, faceCompositeTargetSize(), ASSET_VERSION);
+    return { ready, faceDesignId, conditionId };
   }
 
   // Deals cards from the stock rect to wherever they actually landed in the
@@ -2762,23 +2788,57 @@ function initIntro() {
   // it with the same 3D flip used for dealing from the stock - reused
   // as-is, just with no travel (the wrapper never gets a translate, so
   // it stays put at the real card's own position).
-  function animateTableauFlip(card) {
+  //
+  // commitMove() has already applied the move and re-rendered by the time
+  // this is called (see its own header comment - state/render() must
+  // never block on how long a ghost animation takes), so the "real" el
+  // this hides may already be showing card-face-compositor.js's
+  // placeholder src if that card's composite wasn't cached yet. Rather
+  // than let the ghost inherit that same placeholder (the actual bug this
+  // fixes), the ghost is built with its face art deliberately deferred
+  // (createFlipGhost(..., null)) and only gets a real backImg.src once
+  // ensureCardsFaceReady confirms the true composite is ready - the card
+  // back shown by the ghost's own front face in the meantime is always
+  // real, immediately available art, never a placeholder, so there's
+  // nothing wrong on screen at any point during the wait.
+  async function animateTableauFlip(card) {
     const el = document.querySelector(`.card[data-id="${card.id}"]`);
     if (!el) return;
     const rect = el.getBoundingClientRect();
     el.style.visibility = 'hidden';
 
-    const { wrapper, inner } = createFlipGhost(card, rect, 900);
+    const { wrapper, inner, backImg } = createFlipGhost(card, rect, 900, null);
     inner.style.transition = `transform ${TABLEAU_FLIP_MS}ms var(--ease-in-out-smooth)`; // overrides .flip-inner's default duration (shared with the deal animation) for just this reveal
 
-    setTimeout(() => {
-      inner.classList.add('flipped');
-    }, TABLEAU_FLIP_PAUSE_MS);
-
-    setTimeout(() => {
+    const stateAtStart = state; // newGame()/restart() always replace this with a new object - see their own bodies
+    const { ready, faceDesignId, conditionId } = ensureCardsFaceReady([card]);
+    // Overlaps the existing "beat of stillness" pause with readiness
+    // rather than stacking them - an already-cached card (by far the
+    // common case) is still gated purely by TABLEAU_FLIP_PAUSE_MS, exactly
+    // as before; only a genuinely uncached one ever pushes the flip later
+    // than that, and never by more than it actually needs.
+    await Promise.all([ready, sleep(TABLEAU_FLIP_PAUSE_MS)]);
+    if (state !== stateAtStart) {
+      // A new game/restart superseded this reveal while the wait was in
+      // flight - nothing left to animate. Both lines are harmless no-ops
+      // if the new deal's own render() already replaced this DOM subtree.
       wrapper.remove();
       el.style.visibility = '';
-    }, TABLEAU_FLIP_PAUSE_MS + TABLEAU_FLIP_MS + 30);
+      return;
+    }
+
+    backImg.src = cardImageSrc(card, faceDesignId, conditionId);
+    // Same double-rAF gap animateDraw already uses before its own
+    // 'flipped' trigger - lets the browser register the just-assigned src
+    // before the transform starts, rather than assuming same-tick is soon
+    // enough.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      inner.classList.add('flipped');
+      setTimeout(() => {
+        wrapper.remove();
+        el.style.visibility = '';
+      }, TABLEAU_FLIP_MS + 30);
+    }));
   }
 
   function findWasteCard(id) {
@@ -2968,7 +3028,18 @@ function initIntro() {
 
   let isDrawing = false; // guards against a rapid repeated stock tap interrupting or duplicating an in-flight draw transition
 
-  function onStockClick() {
+  // async so the cards about to be drawn can be confirmed composite-ready
+  // (see ensureCardsFaceReady) before any of it becomes visible - state
+  // mutation, render() and the animation sequence below are otherwise
+  // completely unchanged and still run in one synchronous block, so
+  // nothing about their own timing shifts once that wait is over. Safe to
+  // await ahead of the mutation here specifically (unlike commitMove,
+  // which never delays applyMove/render - see its own comment) because
+  // isDrawing is set before the await and already exists exactly to gate
+  // "don't let another draw or move start" for this action's whole
+  // lifecycle, animation included; extending what that lifecycle covers
+  // doesn't change the contract, only how much of it isDrawing spans.
+  async function onStockClick() {
     if (helpModeActive) {
       showHelp(helpConceptForTarget('stock'), document.getElementById('stock'));
       return;
@@ -2977,6 +3048,19 @@ function initIntro() {
     hideCardAnnotation(); // a real gameplay action dismisses whatever's showing
     if (state.stock.length) {
       isDrawing = true;
+      const stateAtStart = state; // newGame()/restart() always replace this with a new object - see their own bodies
+      const n = Math.min(getDrawCount(), state.stock.length);
+      const cardsAboutToDraw = state.stock.slice(-n);
+      const { ready } = ensureCardsFaceReady(cardsAboutToDraw);
+      await ready;
+      if (state !== stateAtStart) {
+        // A new game/restart superseded this draw while the wait was in
+        // flight - it already dealt and rendered its own board; there's
+        // nothing left for this click to do.
+        isDrawing = false;
+        return;
+      }
+
       const stockRect = document.getElementById('stock').getBoundingClientRect();
       const oldRectsById = new Map(
         Array.from(document.querySelectorAll('#waste .card')).map(el => [el.dataset.id, el.getBoundingClientRect()])
@@ -2984,7 +3068,6 @@ function initIntro() {
       resetTableauClickMemory();
       clearHint();
       pushHistory();
-      const n = Math.min(getDrawCount(), state.stock.length);
       const drawn = [];
       for (let i = 0; i < n; i++) {
         const card = state.stock.pop();
