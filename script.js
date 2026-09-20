@@ -297,30 +297,44 @@ function initIntro() {
   const RENDERED_CARD_W_PX = resolveCssLength('var(--card-w)') || 84;
 
   // Card-face artwork varies along two independent axes - which DESIGN
-  // (Regular, Simple, XL, future designs...) and which CONDITION of that
-  // design (Worn/New). Unlike before, neither axis points at a folder of
-  // pre-baked per-card images: every design contributes one folder of 52
-  // transparent face PNGs (facesBase, named
+  // (Regular, Simple, future designs...) the player picked, and which
+  // CONDITION of that design (Worn/New). Neither axis points at a folder
+  // of pre-baked per-card images: every design contributes one folder of
+  // 52 transparent face PNGs (facesBase, named
   // `${suitFile}_${rankFile}_${suffix}.png`), and CONDITION is resolved at
   // render time by card-face-compositor.js, which draws that transparent
   // art over a shared clean/dirty background layer (see
-  // getComposedFaceSrc). Adding a future design means adding one entry
-  // here (plus its 52 transparent PNGs) and one option in
-  // PREFERENCE_SECTIONS' 'faceDesign' section below - nothing else in this
-  // file needs to change, since every call site only ever asks
-  // cardImageSrc for a URL, never a design's folder directly. Card backs
-  // are deliberately NOT part of this registry - see BACKS_BASE; CARD
-  // FACES has no effect on which back design/condition is used (see
-  // backCondition below).
+  // getComposedFaceSrc). Card backs are deliberately NOT part of this
+  // registry - see BACKS_BASE; CARD FACES has no effect on which back
+  // design/condition is used (see backCondition below).
+  //
+  // Regular additionally varies by CARD_SIZE, same art at two different
+  // source resolutions rather than two different styles - this is NOT a
+  // player-visible choice (there is no "XL" option in PREFERENCE_SECTIONS
+  // below), it's the same automatic, device-driven split Mobile-size backs
+  // and the pre-compositing system's own art already used (see CARD_SIZE's
+  // own comment): Standard TX for iPad/browser-class rendered sizes, XL TX
+  // - the same design, just legible at genuinely small physical card sizes
+  // - once CARD_SIZE is 'mobile'. Simple has no separate Mobile-tuned set
+  // (its bold, minimal style already reads fine at any size), so it uses
+  // SIMPLE TX for both. See activeDesignAssets, the one place this gets
+  // resolved - every other call site asks it or cardImageSrc for a URL,
+  // never CARD_FACE_DESIGNS directly.
   //
   // Naming assumption: 'regular' keeps its existing preference id (a
   // returning player's stored choice must keep resolving to something),
-  // now backed by the STANDARD TX art rather than a rename to 'standard' -
-  // see PREFERENCE_SECTIONS below for the matching display label.
+  // now backed by the STANDARD/XL TX art rather than a rename to
+  // 'standard' - see PREFERENCE_SECTIONS below for the matching display
+  // label.
   const CARD_FACE_DESIGNS = {
-    regular: { facesBase: 'assets/cards/STANDARD TX', suffix: 'STANDARD' },
-    simple: { facesBase: 'assets/cards/SIMPLE TX', suffix: 'SIMPLE' },
-    xl: { facesBase: 'assets/cards/XL TX', suffix: 'XL' },
+    regular: {
+      standard: { facesBase: 'assets/cards/STANDARD TX', suffix: 'STANDARD' },
+      mobile: { facesBase: 'assets/cards/XL TX', suffix: 'XL' },
+    },
+    simple: {
+      standard: { facesBase: 'assets/cards/SIMPLE TX', suffix: 'SIMPLE' },
+      mobile: { facesBase: 'assets/cards/SIMPLE TX', suffix: 'SIMPLE' },
+    },
   };
   const DEFAULT_FACE_DESIGN = 'regular';
   // Every design shares the same two condition ids - validated against this
@@ -348,6 +362,15 @@ function initIntro() {
   function getActiveCondition() {
     const id = getPreference('cardStyle', DEFAULT_CONDITION);
     return CONDITIONS.includes(id) ? id : DEFAULT_CONDITION;
+  }
+
+  // The one place CARD_FACE_DESIGNS' Standard/Mobile split (see its own
+  // comment) actually gets resolved down to a single {facesBase, suffix}.
+  // Keyed off CARD_SIZE, not a player preference - frozen for the session
+  // for the same reason CARD_SIZE itself is, so this never needs to react
+  // to anything changing mid-game.
+  function activeDesignAssets(faceDesignId) {
+    return CARD_FACE_DESIGNS[faceDesignId][CARD_SIZE];
   }
 
   // Card backs aren't collection-specific artwork the way faces are -
@@ -459,7 +482,7 @@ function initIntro() {
   // is about to switch, before the corresponding preference actually
   // changes, while the OTHER axis stays at its current live value.
   function cardImageSrc(card, faceDesignId = getActiveFaceDesign(), conditionId = getActiveCondition()) {
-    const design = CARD_FACE_DESIGNS[faceDesignId];
+    const design = activeDesignAssets(faceDesignId);
     return getComposedFaceSrc(design, faceCardId(card), conditionId, faceCompositeTargetSize(), ASSET_VERSION);
   }
 
@@ -586,7 +609,6 @@ function initIntro() {
       options: [
         { id: 'regular', label: 'Regular', previewSrc: () => cardImageSrc(FACE_DESIGN_PREVIEW_CARD, 'regular', 'clean') },
         { id: 'simple', label: 'Simple', previewSrc: () => cardImageSrc(FACE_DESIGN_PREVIEW_CARD, 'simple', 'clean') },
-        { id: 'xl', label: 'XL', previewSrc: () => cardImageSrc(FACE_DESIGN_PREVIEW_CARD, 'xl', 'clean') },
       ],
     },
     {
@@ -791,25 +813,24 @@ function initIntro() {
     scheduleNext();
   }
 
-  // The other two Card Faces options the player hasn't picked (out of
-  // regular/simple/xl) each need their own 52 transparent face images
-  // loaded before their Settings preview thumbnail can show real art
-  // instead of getComposedFaceSrc's placeholder - unlike the active
-  // design, nothing else naturally triggers that load. Only the one
-  // FACE_DESIGN_PREVIEW_CARD needs to be ready (previewSrc always pins
-  // 'clean', same reasoning as its own comment), not the full 52 - loading
-  // the rest of an inactive design stays lazy, same as it's always been.
-  // Runs once, fire-and-forget, well after the critical gate and alongside
-  // backgroundPreloadRemaining - a cold preview thumbnail is a minor
-  // Settings-only detail, never worth delaying first paint over. Doesn't
-  // need its own refresh callback - see the onAssetReady listener just
-  // below, which every getComposedFaceSrc-driven load (this one included)
-  // already triggers once it lands.
+  // Every Card Faces option the player hasn't picked (out of regular/
+  // simple) needs its own transparent face images loaded before its
+  // Settings preview thumbnail can show real art instead of
+  // getComposedFaceSrc's placeholder - unlike the active design, nothing
+  // else naturally triggers that load. Only the one FACE_DESIGN_PREVIEW_CARD
+  // needs to be ready (previewSrc always pins 'clean', same reasoning as
+  // its own comment), not the full 52 - loading the rest of an inactive
+  // design stays lazy, same as it's always been. Runs once, fire-and-forget,
+  // well after the critical gate and alongside backgroundPreloadRemaining -
+  // a cold preview thumbnail is a minor Settings-only detail, never worth
+  // delaying first paint over. Doesn't need its own refresh callback - see
+  // the onAssetReady listener just below, which every getComposedFaceSrc-
+  // driven load (this one included) already triggers once it lands.
   function warmInactiveFaceDesignPreviews() {
     const size = faceCompositeTargetSize();
     const others = Object.keys(CARD_FACE_DESIGNS).filter(id => id !== getActiveFaceDesign());
     for (const id of others) {
-      ensureFacesReady(CARD_FACE_DESIGNS[id], [faceCardId(FACE_DESIGN_PREVIEW_CARD)], 'clean', size, ASSET_VERSION);
+      ensureFacesReady(activeDesignAssets(id), [faceCardId(FACE_DESIGN_PREVIEW_CARD)], 'clean', size, ASSET_VERSION);
     }
   }
 
@@ -2703,7 +2724,7 @@ function initIntro() {
   function ensureCardsFaceReady(cards) {
     const faceDesignId = getActiveFaceDesign();
     const conditionId = getActiveCondition();
-    const design = CARD_FACE_DESIGNS[faceDesignId];
+    const design = activeDesignAssets(faceDesignId);
     const ready = ensureFacesReady(design, cards.map(faceCardId), conditionId, faceCompositeTargetSize(), ASSET_VERSION);
     return { ready, faceDesignId, conditionId };
   }
@@ -4740,7 +4761,7 @@ function initIntro() {
             // before flipping the preference over is what keeps this from
             // reading as a blank-card flash. See ensureFacesReady for the
             // "never hangs" guarantee.
-            const design = CARD_FACE_DESIGNS[option.id];
+            const design = activeDesignAssets(option.id);
             const cardIds = visibleFaceUpCards().map(faceCardId);
             ensureFacesReady(design, cardIds, getActiveCondition(), faceCompositeTargetSize(), ASSET_VERSION).then(() => {
               setPreference(section.key, option.id);
@@ -4761,7 +4782,7 @@ function initIntro() {
             // to be ready before flipping the preference over is what keeps
             // this from reading as a blank-card flash. See ensureFacesReady/
             // preloadUrls for the "never hangs" guarantee.
-            const design = CARD_FACE_DESIGNS[getActiveFaceDesign()];
+            const design = activeDesignAssets(getActiveFaceDesign());
             const cardIds = visibleFaceUpCards().map(faceCardId);
             Promise.all([
               ensureFacesReady(design, cardIds, option.id, faceCompositeTargetSize(), ASSET_VERSION),
@@ -4984,7 +5005,7 @@ function initIntro() {
   criticalAssetsReadyPromise = Promise.all([
     decodeAwaitedImage(getCardBackSrc()),
     ensureFacesReadyStrict(
-      CARD_FACE_DESIGNS[getActiveFaceDesign()],
+      activeDesignAssets(getActiveFaceDesign()),
       criticalFaceUpCards().map(faceCardId),
       getActiveCondition(),
       faceCompositeTargetSize(),
