@@ -27,7 +27,14 @@ import {
 } from './autoTips.js';
 import { helpConceptForTarget, HELP_CATALOG } from './help.js';
 import { getPreference, setPreference, setPreferences } from './preferences.js';
-import { shuffle } from './shuffle.js';
+import { shuffle, randomInt } from './shuffle.js';
+import {
+  beginNewGameVariants,
+  getComposedFaceSrc,
+  ensureFacesReady,
+  ensureFacesReadyStrict,
+  onAssetReady,
+} from './card-face-compositor.js';
 import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from './victory.js';
 import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 import { buildBackup, validateBackup, resolveRestorePatch, backupFilename, VALIDATION_ERROR_MESSAGES, LEGACY_CARD_BACK_IDS } from './backup.js';
@@ -88,8 +95,8 @@ function hardReload() {
 
 // MIKE Games System readiness gate (CORE, see mike-games-system/SYSTEM.md
 // §01) - set by the game IIFE below, the instant the very first board's
-// critical art (the 7 face-up tableau cards + the one selected back
-// design/condition - see criticalFirstBoardAssetUrls) is known and its
+// critical art (the 7 face-up tableau cards - see criticalFaceUpCards -
+// plus the one selected back design/condition) is known and its
 // decode-awaited preload has been kicked off. initIntro() below awaits
 // this to decide whether MIKE is allowed to stop being alone on screen -
 // see its own comment for the three-way SUCCESS/FAILURE/TIMEOUT outcome
@@ -177,8 +184,8 @@ function initIntro() {
   //     genuine readiness.
   //
   // Both FAILURE and TIMEOUT leave the gate closed: MIKE keeps covering
-  // the game (still fully built underneath, per criticalFirstBoardAssetUrls'
-  // own comment - just not confirmed paintable), and the recovery sheet
+  // the game (still fully built underneath, per criticalFaceUpCards' own
+  // comment - just not confirmed paintable), and the recovery sheet
   // becomes visible in the same white field MIKE already occupies. Nothing
   // here ever retries automatically - only an explicit tap on Try Again
   // (a real hardReload(), the same one every other reload path in this
@@ -290,40 +297,30 @@ function initIntro() {
   const RENDERED_CARD_W_PX = resolveCssLength('var(--card-w)') || 84;
 
   // Card-face artwork varies along two independent axes - which DESIGN
-  // (Regular, Simple, future designs...) and which CONDITION of that design
-  // (Worn/New) - each pointing at its own two CARD_SIZE variants' base
-  // directory on disk. Adding a future design means adding one entry here,
-  // its four asset folders (worn/clean x standard/mobile), and one more
-  // option in PREFERENCE_SECTIONS' 'faceDesign' section below - nothing else
-  // in this file needs to change, since every call site only ever asks
-  // CARD_FACE_DESIGNS[design][condition][...] for a base path, never a
-  // hard-coded directory name. Regular's own two condition folders are
-  // untouched from before this axis existed - Simple lives alongside them
-  // as its own sibling tree (assets/cards/simple/...) rather than requiring
-  // Regular's existing paths to move. Card backs are deliberately NOT part
-  // of this registry - see BACKS_BASE; CARD FACES has no effect on which
-  // back design/condition is used (see backCondition below).
+  // (Regular, Simple, XL, future designs...) and which CONDITION of that
+  // design (Worn/New). Unlike before, neither axis points at a folder of
+  // pre-baked per-card images: every design contributes one folder of 52
+  // transparent face PNGs (facesBase, named
+  // `${suitFile}_${rankFile}_${suffix}.png`), and CONDITION is resolved at
+  // render time by card-face-compositor.js, which draws that transparent
+  // art over a shared clean/dirty background layer (see
+  // getComposedFaceSrc). Adding a future design means adding one entry
+  // here (plus its 52 transparent PNGs) and one option in
+  // PREFERENCE_SECTIONS' 'faceDesign' section below - nothing else in this
+  // file needs to change, since every call site only ever asks
+  // cardImageSrc for a URL, never a design's folder directly. Card backs
+  // are deliberately NOT part of this registry - see BACKS_BASE; CARD
+  // FACES has no effect on which back design/condition is used (see
+  // backCondition below).
+  //
+  // Naming assumption: 'regular' keeps its existing preference id (a
+  // returning player's stored choice must keep resolving to something),
+  // now backed by the STANDARD TX art rather than a rename to 'standard' -
+  // see PREFERENCE_SECTIONS below for the matching display label.
   const CARD_FACE_DESIGNS = {
-    regular: {
-      worn: {
-        standard: 'assets/cards/worn/standard',
-        mobile: 'assets/cards/worn/mobile',
-      },
-      clean: {
-        standard: 'assets/cards/clean/standard',
-        mobile: 'assets/cards/clean/mobile',
-      },
-    },
-    simple: {
-      worn: {
-        standard: 'assets/cards/simple/worn/standard',
-        mobile: 'assets/cards/simple/worn/mobile',
-      },
-      clean: {
-        standard: 'assets/cards/simple/clean/standard',
-        mobile: 'assets/cards/simple/clean/mobile',
-      },
-    },
+    regular: { facesBase: 'assets/cards/STANDARD TX', suffix: 'STANDARD' },
+    simple: { facesBase: 'assets/cards/SIMPLE TX', suffix: 'SIMPLE' },
+    xl: { facesBase: 'assets/cards/XL TX', suffix: 'XL' },
   };
   const DEFAULT_FACE_DESIGN = 'regular';
   // Every design shares the same two condition ids - validated against this
@@ -393,6 +390,40 @@ function initIntro() {
   const SMALL_FACE_THRESHOLD_PX = 65;
   const CARD_SIZE = RENDERED_CARD_W_PX <= SMALL_FACE_THRESHOLD_PX ? 'mobile' : 'standard';
 
+  // The pixel size card-face-compositor.js draws each composite at. Reuses
+  // the exact dimensions the old pre-baked tiers already shipped (mobile's
+  // own full-native-res art; Standard's hi/lo WebP tiers) rather than
+  // inventing a third notion of "how big" - CARD_SIZE/RESOLUTION_TIER above
+  // are unchanged and still frozen once per session for the same reason
+  // they always were. The source TX/DIRTYS art is fixed at 700x1015
+  // regardless of tier (there's only one set on disk), so this is what
+  // keeps a composited result the same size as what used to ship for a
+  // given device rather than always compositing at full native res.
+  const FACE_COMPOSITE_SIZE = {
+    mobile: { width: 700, height: 1015 },
+    standard: {
+      hi: { width: 350, height: 500 },
+      lo: { width: 175, height: 250 },
+    },
+  };
+  function faceCompositeTargetSize() {
+    return CARD_SIZE === 'mobile' ? FACE_COMPOSITE_SIZE.mobile : FACE_COMPOSITE_SIZE.standard[RESOLUTION_TIER];
+  }
+
+  // The one card-identity shape card-face-compositor.js needs - it never
+  // imports SUITS/RANK_FILES itself, so this is the single place that
+  // translates a real game card into filename fragments + a stable cache/
+  // variant key. 'key' must be unique and stable for a given physical card
+  // WITHIN a game (suit+rank already is - a standard 52-card deck never has
+  // two), and is deliberately not card.id: id is already guaranteed unique
+  // today, but key is what both the variant map (assignFaceVariants) and
+  // the composite cache are keyed by, so it's built in exactly one place
+  // rather than assumed to match elsewhere.
+  function faceCardId(card) {
+    const suit = SUITS.find(s => s.key === card.suit);
+    return { key: `${card.suit}-${card.rank}`, suitFile: suit.file, rankFile: RANK_FILES[card.rank] };
+  }
+
   // Displayed at the bottom of Settings (see versionLink) - no build step
   // generates this, so it's a plain hand-bumped constant, same convention
   // as ASSET_VERSION just below. A timestamp (YYYY.MM.DD.HHmm, bumped to
@@ -408,25 +439,28 @@ function initIntro() {
   // Cache-Control (see netlify.toml) without a stale deck getting stuck in
   // a returning player's cache: a version bump mints new URLs, which are
   // cache misses by construction, while every URL that didn't change keeps
-  // serving instantly from cache forever.
-  const ASSET_VERSION = 'v7';
+  // serving instantly from cache forever. Also used, unchanged, as the
+  // cache-buster on the compositor's own source-layer requests (DIRTYS/
+  // TX/WHITE - see card-face-compositor.js) - one shared version constant
+  // rather than a second one that could drift from this.
+  const ASSET_VERSION = 'v8'; // bumped: Regular/Simple faces now composite from STANDARD TX/SIMPLE TX instead of the old pre-baked art
 
-  // CARD_SIZE picks the design+condition folder for card FACES only - card
-  // backs (below) are untouched by it, always following RESOLUTION_TIER
-  // alone against the shared BACKS_BASE, since backs aren't design- or
-  // condition-specific the way faces are. Standard-size faces get a further
-  // RESOLUTION_TIER subfolder; Mobile-size faces don't (single native res).
-  // faceDesignId/conditionId each default to the live active value - every
-  // real call site wants that. The optional overrides exist solely for the
-  // Settings preload-before-switch step, which needs to resolve URLs for
-  // whichever ONE axis the player is about to switch, before the
-  // corresponding preference actually changes, while the OTHER axis stays
-  // at its current live value.
+  // Synchronous and never-throwing, same contract this always had - every
+  // call site just does img.src = cardImageSrc(...). Delegates the actual
+  // pixels to card-face-compositor.js: composites and caches on the spot
+  // if the needed source art is already loaded, otherwise kicks off
+  // loading it and returns a plain placeholder for this one call (see
+  // getComposedFaceSrc's own comment - in practice every real call site
+  // that matters has already awaited ensureFacesReady/
+  // ensureFacesReadyStrict, so this fallback is rarely if ever visible).
+  // faceDesignId/conditionId each default to the live active value - the
+  // optional overrides exist solely for the Settings preload-before-switch
+  // step, which needs to resolve a URL for whichever ONE axis the player
+  // is about to switch, before the corresponding preference actually
+  // changes, while the OTHER axis stays at its current live value.
   function cardImageSrc(card, faceDesignId = getActiveFaceDesign(), conditionId = getActiveCondition()) {
-    const suit = SUITS.find(s => s.key === card.suit);
-    const base = CARD_FACE_DESIGNS[faceDesignId][conditionId][CARD_SIZE];
-    const tierDir = CARD_SIZE === 'standard' ? `/${RESOLUTION_TIER}` : '';
-    return `${base}${tierDir}/${suit.file}_${RANK_FILES[card.rank]}.webp?v=${ASSET_VERSION}`;
+    const design = CARD_FACE_DESIGNS[faceDesignId];
+    return getComposedFaceSrc(design, faceCardId(card), conditionId, faceCompositeTargetSize(), ASSET_VERSION);
   }
 
   // Every selectable card-back DESIGN this game knows about, keyed by the
@@ -485,17 +519,16 @@ function initIntro() {
     return `${BACKS_BASE}/${RESOLUTION_TIER}/back-${designId}${backConditionSuffix(conditionId)}.webp?v=${ASSET_VERSION}`;
   }
 
-  // The original PNGs stay on disk as a graceful fallback target -
-  // untiered and unversioned, so they're guaranteed to exist regardless of
-  // RESOLUTION_TIER or a WebP request failing/being unsupported. Each
-  // CARD_SIZE carries its own such fallback (same art, same idea) inside
-  // its own design+condition folder, so even a WebP-decode failure still
-  // shows the right artwork, not just a working one. See
-  // attachImageFallback for where these get wired up.
+  // A composited face is a client-generated data URL, not a fetched file -
+  // it can't 404 or hit a format-support error the way the old per-card
+  // WebP requests could, so there's no separate fallback art to fall back
+  // TO. Returns the same src cardImageSrc would, purely so every existing
+  // attachImageFallback(img, cardPngFallbackSrc(card)) call site keeps
+  // working unchanged (a data-URL <img> essentially never fires 'error',
+  // so this is a harmless, inert safety net rather than a load-bearing
+  // one).
   function cardPngFallbackSrc(card, faceDesignId = getActiveFaceDesign(), conditionId = getActiveCondition()) {
-    const suit = SUITS.find(s => s.key === card.suit);
-    const base = CARD_FACE_DESIGNS[faceDesignId][conditionId][CARD_SIZE];
-    return `${base}/${suit.file}_${RANK_FILES[card.rank]}.png`;
+    return cardImageSrc(card, faceDesignId, conditionId);
   }
 
   function backPngFallbackSrc(designId, conditionId = getActiveCondition()) {
@@ -553,6 +586,7 @@ function initIntro() {
       options: [
         { id: 'regular', label: 'Regular', previewSrc: () => cardImageSrc(FACE_DESIGN_PREVIEW_CARD, 'regular', 'clean') },
         { id: 'simple', label: 'Simple', previewSrc: () => cardImageSrc(FACE_DESIGN_PREVIEW_CARD, 'simple', 'clean') },
+        { id: 'xl', label: 'XL', previewSrc: () => cardImageSrc(FACE_DESIGN_PREVIEW_CARD, 'xl', 'clean') },
       ],
     },
     {
@@ -679,79 +713,72 @@ function initIntro() {
 
   // ---------- background image warming ----------
 
-  // Every URL this has already kicked off a fetch+decode for - guards
-  // both against the background queue ever revisiting a card twice and
-  // against re-requesting something already on screen (backgroundPreload-
-  // Remaining only queues face-down cards; the visible ones got their
-  // fetch from render() itself and are already showing).
-  const preloadedUrls = new Set();
-
-  function preloadImageUrl(url) {
-    if (preloadedUrls.has(url)) return;
-    preloadedUrls.add(url);
-    const img = new Image();
-    img.src = url;
-    if (img.decode) img.decode().catch(() => {});
-  }
-
   // Exactly what the very first render() call needs and nothing else: one
-  // image per face-up tableau card (the rest of each column is face-down,
-  // all sharing the one back URL below) plus the currently selected back
-  // design in its correct clean/worn condition - reused across the entire
-  // stock pile and every face-down tableau card, so it's needed only once
-  // regardless of how many face-down cards this deal has. Foundations/
-  // waste start empty and need nothing. Reads straight off state (already
-  // the real, just-dealt board by the time this runs - see the call site
-  // at the bottom of this file) rather than predicting, so this is always
-  // exactly this session's actual first-paint art, never a guess. Stays
-  // scoped to whichever collection/size/tier/back-condition is already
-  // active this session - nothing here ever reaches for an inactive
-  // collection or an unselected back.
-  function criticalFirstBoardAssetUrls() {
-    const urls = [];
+  // face-up tableau card per column (the rest of each column is
+  // face-down, all sharing the one back URL the call site below handles
+  // separately) - reused across the entire stock pile and every face-down
+  // tableau card, so it's needed only once regardless of how many
+  // face-down cards this deal has. Foundations/waste start empty and need
+  // nothing. Reads straight off state (already the real, just-dealt board
+  // by the time this runs - see the call site at the bottom of this file)
+  // rather than predicting, so this is always exactly this session's
+  // actual first-paint set, never a guess. Returns card objects, not URLs
+  // - card-face-compositor.js composites from a card's identity, not a
+  // pre-built path (see ensureFacesReadyStrict at the call site).
+  function criticalFaceUpCards() {
+    const cards = [];
     for (const col of state.tableau) {
       const topCard = col[col.length - 1];
-      if (topCard && topCard.faceUp) urls.push(cardImageSrc(topCard));
+      if (topCard && topCard.faceUp) cards.push(topCard);
     }
-    urls.push(getCardBackSrc());
-    return urls;
+    return cards;
   }
 
   let backgroundPreloadStarted = false;
 
-  // Warms the browser's fetch+decode cache for every card the current
-  // deal doesn't need yet, so that by the time a real draw or tableau
-  // flip reaches one, it's already sitting in memory instead of racing a
-  // fresh network request - this is what keeps flips and newly revealed
-  // cards appearing instantly during normal play even though startup no
-  // longer preloads the whole deck up front. Runs exactly once per app
-  // load (not per newGame/restart): after the first pass the entire
-  // 52-card deck is warm regardless of how it gets reshuffled afterwards.
-  // Deliberately only queues faces, never the other 3 unselected card
-  // backs - those only get fetched if the player actually opens Settings
-  // (renderSettingsPanel's own <img> tags do that for free) or switches
-  // to one.
+  // Warms every card the current deal doesn't need yet, so that by the
+  // time a real draw or tableau flip reaches one, it's already composited
+  // and cached instead of racing anything at the moment it's revealed -
+  // this is what keeps flips and newly revealed cards appearing instantly
+  // during normal play even though startup only composites the critical
+  // first-paint cards up front. Runs exactly once per app load (not per
+  // newGame/restart): the source art this composites from (loaded lazily
+  // on the first card that needs it, see card-face-compositor.js) never
+  // changes, so once it's loaded, compositing any later game's cards is a
+  // cheap synchronous redraw with nothing left to warm. Deliberately only
+  // queues faces, never the other 3 unselected card backs - those only get
+  // fetched if the player actually opens Settings (renderSettingsPanel's
+  // own <img> tags do that for free) or switches to one.
   function backgroundPreloadRemaining() {
     if (backgroundPreloadStarted) return;
     backgroundPreloadStarted = true;
 
     // Stock first, in draw order (onStockClick pops from the end - see
     // there), since those are the cards a real move is soonest to need;
-    // covered tableau cards follow, least-likely-soonest last.
+    // covered tableau cards follow, least-likely-soonest last. Queued as
+    // card objects, not resolved URLs - compositing now does real work
+    // (a canvas draw, not just a string), so it stays deferred into the
+    // batched loop below rather than run for all ~45 cards up front in one
+    // blocking pass.
     const queue = [];
     for (let i = state.stock.length - 1; i >= 0; i--) {
-      queue.push(cardImageSrc(state.stock[i]));
+      queue.push(state.stock[i]);
     }
     for (const col of state.tableau) {
       for (const card of col) {
-        if (!card.faceUp) queue.push(cardImageSrc(card));
+        if (!card.faceUp) queue.push(card);
       }
     }
     if (!queue.length) return;
 
     const BATCH_SIZE = 4;
     function runBatch() {
-      queue.splice(0, BATCH_SIZE).forEach(preloadImageUrl);
+      // Called for its caching side effect - card-face-compositor.js's own
+      // cache is what's being warmed, not the browser's (there's no
+      // separate network fetch left to kick off once the source art is
+      // loaded, so this doesn't route through preloadImageUrl/
+      // preloadedUrls the way a plain static-URL fetch would).
+      queue.splice(0, BATCH_SIZE).forEach(card => cardImageSrc(card));
       if (queue.length) scheduleNext();
     }
     function scheduleNext() {
@@ -763,6 +790,51 @@ function initIntro() {
     }
     scheduleNext();
   }
+
+  // The other two Card Faces options the player hasn't picked (out of
+  // regular/simple/xl) each need their own 52 transparent face images
+  // loaded before their Settings preview thumbnail can show real art
+  // instead of getComposedFaceSrc's placeholder - unlike the active
+  // design, nothing else naturally triggers that load. Only the one
+  // FACE_DESIGN_PREVIEW_CARD needs to be ready (previewSrc always pins
+  // 'clean', same reasoning as its own comment), not the full 52 - loading
+  // the rest of an inactive design stays lazy, same as it's always been.
+  // Runs once, fire-and-forget, well after the critical gate and alongside
+  // backgroundPreloadRemaining - a cold preview thumbnail is a minor
+  // Settings-only detail, never worth delaying first paint over. Doesn't
+  // need its own refresh callback - see the onAssetReady listener just
+  // below, which every getComposedFaceSrc-driven load (this one included)
+  // already triggers once it lands.
+  function warmInactiveFaceDesignPreviews() {
+    const size = faceCompositeTargetSize();
+    const others = Object.keys(CARD_FACE_DESIGNS).filter(id => id !== getActiveFaceDesign());
+    for (const id of others) {
+      ensureFacesReady(CARD_FACE_DESIGNS[id], [faceCardId(FACE_DESIGN_PREVIEW_CARD)], 'clean', size, ASSET_VERSION);
+    }
+  }
+
+  // getComposedFaceSrc (see card-face-compositor.js) can hand back a plain
+  // placeholder the first time a card's face art hasn't loaded yet - most
+  // commonly a card that was still buried in the stock, under a design the
+  // player only just switched to, that nothing proactively warmed for it
+  // (a Settings switch only warms the board's CURRENTLY visible cards - see
+  // its own comment). Without this, that placeholder would never self-
+  // correct: composited art is a generated data URL, not a live network
+  // fetch, so there's no browser-native "swap it in once it arrives" the
+  // way a real <img src="https://..."> gets for free. onAssetReady fires
+  // once for every background layer or face image that finishes loading,
+  // no matter what triggered it - debounced here into a single re-render
+  // rather than one per image, since a design switch or a fresh game can
+  // resolve a whole burst of them within milliseconds of each other.
+  let assetRefreshTimer = null;
+  onAssetReady(() => {
+    if (assetRefreshTimer) return;
+    assetRefreshTimer = setTimeout(() => {
+      assetRefreshTimer = null;
+      render();
+      renderSettingsPanel();
+    }, 60);
+  });
 
   // Animation tuning.
   // One shared duration for every "card slides from A to B" glide -
@@ -1252,6 +1324,13 @@ function initIntro() {
     expandedColumnIndex = null;
     recordPlay(currentDrawModeKey()); // a fresh deal, independent of whether it's ever won - restart() replays this same deal, so it doesn't count again
     const deck = shuffle(freshDeck());
+    // A genuinely new shuffle - each card gets a fresh dirty-background +
+    // transform for the Worn condition (see card-face-compositor.js),
+    // stable for the rest of this game. Deliberately NOT called from
+    // restart() below: restart() replays this exact same deal, and the
+    // same deal should keep looking like the same deal, not get reshuffled
+    // wear on every retry.
+    beginNewGameVariants(deck.map(c => faceCardId(c).key), randomInt);
     const tableau = [[], [], [], [], [], [], []];
     let idx = 0;
     for (let col = 0; col < 7; col++) {
@@ -4570,16 +4649,17 @@ function initIntro() {
           if (section.key === 'faceDesign') {
             // Switching designs is the same category of gap as switching
             // condition just below: the entire visible board's worth of
-            // faces, in art the browser may never have fetched before.
+            // faces, in source art that may never have been loaded before.
             // Never touches back art - CARD FACES has no effect on which
             // back design/condition is used (see backCondition), so unlike
             // 'cardStyle' below there's no back URL to preload here.
-            // Waiting for visibleFaceUpCards to be decode-ready before
-            // flipping the preference over is what keeps this from reading
-            // as a blank-card flash. See preloadUrls for the "never hangs"
-            // guarantee.
-            const urls = visibleFaceUpCards().map(card => cardImageSrc(card, option.id, getActiveCondition()));
-            preloadUrls(urls).then(() => {
+            // Waiting for visibleFaceUpCards to be composited-and-cached
+            // before flipping the preference over is what keeps this from
+            // reading as a blank-card flash. See ensureFacesReady for the
+            // "never hangs" guarantee.
+            const design = CARD_FACE_DESIGNS[option.id];
+            const cardIds = visibleFaceUpCards().map(faceCardId);
+            ensureFacesReady(design, cardIds, getActiveCondition(), faceCompositeTargetSize(), ASSET_VERSION).then(() => {
               setPreference(section.key, option.id);
               renderSettingsPanel();
               render();
@@ -4589,18 +4669,21 @@ function initIntro() {
           if (section.key === 'cardStyle') {
             // Switching condition is different from every other preference
             // here: it's the entire visible board's worth of faces, plus
-            // the selected back's condition, in art the browser may never
-            // have fetched before (a Settings preview only ever warms the
+            // the selected back's condition, in art that may never have
+            // been loaded before (a Settings preview only ever warms the
             // CLEAN back - see the cardBack section's previewSrc - so the
             // worn variant of whatever's selected is still cold the first
             // time a player switches to Worn). Waiting for exactly that
             // (visibleFaceUpCards + the one back URL, not the whole deck)
-            // to be decode-ready before flipping the preference over is
-            // what keeps this from reading as a blank-card flash. See
+            // to be ready before flipping the preference over is what keeps
+            // this from reading as a blank-card flash. See ensureFacesReady/
             // preloadUrls for the "never hangs" guarantee.
-            const urls = visibleFaceUpCards().map(card => cardImageSrc(card, getActiveFaceDesign(), option.id));
-            urls.push(backImageSrc(getCardBackDesignId(), option.id));
-            preloadUrls(urls).then(() => {
+            const design = CARD_FACE_DESIGNS[getActiveFaceDesign()];
+            const cardIds = visibleFaceUpCards().map(faceCardId);
+            Promise.all([
+              ensureFacesReady(design, cardIds, option.id, faceCompositeTargetSize(), ASSET_VERSION),
+              preloadUrls([backImageSrc(getCardBackDesignId(), option.id)]),
+            ]).then(() => {
               setPreference(section.key, option.id);
               renderSettingsPanel();
               render();
@@ -4800,22 +4883,37 @@ function initIntro() {
   newGame();
   // Immediate, not idle-deferred like backgroundPreloadRemaining below -
   // this is the one thing genuinely worth prioritizing during the intro's
-  // ~3.25s window. render() (inside newGame() above) already started the
-  // real fetches for these exact URLs via the DOM <img> elements it just
-  // created; this doesn't duplicate that (the browser coalesces a second
-  // request for a URL already in flight), it just gives initIntro() an
-  // explicit promise to read once its own exit animation finishes.
-  // decodeAwaitedImage (not preloadUrls, which deliberately never
-  // rejects for its own, different caller) is what lets a genuinely
-  // failed critical asset reach initIntro() as a real rejection rather
-  // than being silently treated as readiness - see initIntro()'s own
-  // SUCCESS/FAILURE/TIMEOUT comment.
-  criticalAssetsReadyPromise = Promise.all(criticalFirstBoardAssetUrls().map(decodeAwaitedImage));
+  // ~3.25s window. render() (inside newGame() above) already called
+  // cardImageSrc for these exact cards via the DOM <img> elements it just
+  // created, which already kicked off loading the source art this needs
+  // (see getComposedFaceSrc's self-heal path); this doesn't duplicate that
+  // (card-face-compositor.js memoizes each image's own loading promise) -
+  // it just gives initIntro() an explicit promise to read once its own
+  // exit animation finishes, and chains a render() onto it so that any
+  // critical <img> still showing cardImageSrc's placeholder (from the
+  // instant before source art was ready) gets swapped to the real
+  // composited art before initIntro() ever lifts the curtain on it.
+  // ensureFacesReadyStrict/decodeAwaitedImage (not ensureFacesReady/
+  // preloadUrls, which deliberately never reject for their own, different
+  // callers) are what let a genuinely failed critical asset reach
+  // initIntro() as a real rejection rather than being silently treated as
+  // readiness - see initIntro()'s own SUCCESS/FAILURE/TIMEOUT comment.
+  criticalAssetsReadyPromise = Promise.all([
+    decodeAwaitedImage(getCardBackSrc()),
+    ensureFacesReadyStrict(
+      CARD_FACE_DESIGNS[getActiveFaceDesign()],
+      criticalFaceUpCards().map(faceCardId),
+      getActiveCondition(),
+      faceCompositeTargetSize(),
+      ASSET_VERSION
+    ),
+  ]).then(() => { render(); });
   // Called here, not at its own declaration - see initIntro()'s own
   // header comment for why calling it any earlier would have bound its
   // gate to the wrong (placeholder) promise.
   initIntro();
   backgroundPreloadRemaining(); // only schedules idle-time work - the board above is already rendered and interactive
+  warmInactiveFaceDesignPreviews(); // same idea, for the Card Faces options the player hasn't picked yet - see its own comment
 })();
 
 // ---------- update checking ----------
