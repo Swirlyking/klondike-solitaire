@@ -764,6 +764,21 @@ body {
   z-index: 1000;
   pointer-events: none;
   cursor: grabbing;
+  /* perspective and will-change both sit on the base class rather than
+     on .flick-flight, where they are actually needed - deliberately.
+     Promoting a layer or establishing a 3D context at the instant an
+     animation starts is too late to help and can itself cost the frame
+     it was meant to save, which is the one frame a flick cannot afford.
+     A drag ghost is short-lived and always about to move, so it is
+     worth promoting for its whole life; perspective has no effect until
+     a descendant uses a 3D transform, so it changes nothing about an
+     ordinary drag.
+     Two properties are listed because the two phases animate different
+     ones: the drag moves this element with the individual `translate`
+     property, the flight with `transform` (see animateFlickGhost for
+     why it has to be transform). */
+  perspective: 900px;
+  will-change: translate, transform;
 }
 
 .drag-visual {
@@ -773,6 +788,7 @@ body {
   translate: 0 0;
   scale: 1;
   rotate: 0deg;
+  will-change: transform; /* promoted up front, not at launch - see .drag-ghost */
   transition:
     translate 120ms var(--ease-out-smooth),
     scale 120ms var(--ease-out-smooth),
@@ -792,6 +808,24 @@ body {
 .drag-visual.lifted {
   translate: 0 -7px;
   scale: 1.02;
+}
+
+/* Waste flick (see executeFlickMove in script.js): the card that flies is
+   the same .drag-ghost it was already being dragged with - untouched,
+   still the complete composited .card.face-up element, which is what
+   keeps the face rendering continuously throughout the flight. The
+   perspective that makes the brief 3D turnover read as depth rather
+   than a flat horizontal squash now lives on .drag-ghost itself (see
+   there); this class only has to get the CSS transitions out of the
+   way. */
+.drag-ghost.flick-flight .drag-visual {
+  /* The flight drives `transform` directly, at up to six full turns in
+     ~700ms - the inherited 90ms rotate/120ms translate transitions must
+     not also be interpolating toward it. `rotate`/`translate`/`scale`
+     are separate properties from `transform`, so this only clears the
+     lift's own easing, which settleGhostVisuals has already reset to
+     rest by the time the flight starts. */
+  transition: none;
 }
 
 .drag-visual.lifted::after {

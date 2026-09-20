@@ -35,6 +35,14 @@ import {
   ensureFacesReadyStrict,
   onAssetReady,
 } from './card-face-compositor.js';
+import {
+  classifyPointerGesture,
+  isFlickableSource,
+  flickPlan,
+  flickKeyframes,
+  flickRefusalKeyframes,
+  FLICK_REFUSE_MS,
+} from './flick.js';
 import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from './victory.js';
 import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 import { buildBackup, validateBackup, resolveRestorePatch, backupFilename, VALIDATION_ERROR_MESSAGES, LEGACY_CARD_BACK_IDS } from './backup.js';
@@ -1324,6 +1332,8 @@ function initIntro() {
   }
 
   function newGame() {
+    flushPendingFlick(); // an in-flight flick's move must land before this reads or changes state
+
     // MIKE Games System (see mike-games-system/SYSTEM.md §02) - captured
     // before the reset just below, acted on after render() at the tail
     // of this function, so the overlay (if eligible) appears over the
@@ -1385,6 +1395,8 @@ function initIntro() {
   // fresh shuffle. Mirrors newGame()'s reset logic but restores the saved
   // initialDeal snapshot instead of drawing a new one.
   function restart() {
+    flushPendingFlick(); // an in-flight flick's move must land before this reads or changes state
+
     if (!initialDeal) return;
     justWonGenuinely = false; // diving back into the same deal, not wrapping up - see newGame()'s own comment
     cancelActiveDrag();
@@ -2153,6 +2165,8 @@ function initIntro() {
   }
 
   function startAutoFinish() {
+    flushPendingFlick(); // an in-flight flick's move must land before this reads or changes state
+
     if (autoFinishRunning || !autoFinishAvailable(state)) return;
     cancelActiveDrag();
     clearGhosts();
@@ -2378,6 +2392,8 @@ function initIntro() {
   }
 
   function undo() {
+    flushPendingFlick(); // an in-flight flick's move must land before this reads or changes state
+
     if (!history.length) return;
     cancelActiveDrag();
     clearGhosts();
@@ -2517,14 +2533,26 @@ function initIntro() {
     el.onclick = onStockClick;
   }
 
-  function renderWaste() {
+  // departingCardId (the flick only) renders the pile as it will look
+  // once that card has gone, while `state` still contains it. A flicked
+  // card's move does not commit until it lands (see pendingFlickCommit),
+  // and without this the pile sat unchanged for the whole flight and
+  // then snapped into its new fan on touchdown - the card had visibly
+  // left, but the cards behind it had not noticed. This is the same
+  // layout code rather than a special case: one card is skipped, and
+  // three elements are rebuilt instead of the whole board, which is what
+  // keeps it off the critical frame.
+  function renderWaste(departingCardId = null) {
     const el = document.getElementById('waste');
     el.innerHTML = '';
-    const n = state.waste.length;
+    const pile = departingCardId === null
+      ? state.waste
+      : state.waste.filter(c => String(c.id) !== String(departingCardId));
+    const n = pile.length;
     if (!n) return;
     const visibleStart = Math.max(0, n - 3);
     for (let i = visibleStart; i < n; i++) {
-      const card = state.waste[i];
+      const card = pile[i];
       const cardEl = makeCardEl(card, true);
       cardEl.style.left = `${(i - visibleStart) * 16}px`;
       cardEl.style.zIndex = i;
@@ -3061,6 +3089,8 @@ function initIntro() {
   // lifecycle, animation included; extending what that lifecycle covers
   // doesn't change the contract, only how much of it isDrawing spans.
   async function onStockClick() {
+    flushPendingFlick(); // an in-flight flick's move must land before this reads or changes state
+
     if (helpModeActive) {
       showHelp(helpConceptForTarget('stock'), document.getElementById('stock'));
       return;
@@ -3290,15 +3320,26 @@ function initIntro() {
   // next legal destination (see resolveClickDestination in game-logic.js
   // for the exact priority order). Reuses the same ghost/glide machinery as
   // drag-and-drop so the motion reads identically either way.
+  // "Where would this card go if the player just asked for it to be
+  // moved" - the single automatic-destination lookup in the game, shared
+  // by tap-to-move and by the waste flick (see onDragEnd). Extracted so
+  // the flick provably cannot develop its own idea of a destination:
+  // there is one call to resolveClickDestination, and both gestures go
+  // through it, so a flick always lands exactly where a tap on the same
+  // card would have sent it - whatever direction it was flicked.
+  function resolveMoveDestination(lead, source, sourceIndex, stackLength) {
+    const lastTableauDest = source === 'tableau' && tableauClickMemory && tableauClickMemory.cardId === lead.id
+      ? tableauClickMemory.destIndex
+      : null;
+    return resolveClickDestination(state, lead, source, sourceIndex, stackLength, lastTableauDest);
+  }
+
   function tryClickMove(card, source, sourceIndex) {
     if (dragCtx) return;
     const stack = getStackFrom(state, source, sourceIndex, card);
     if (!stack.length) { bounceCard(card); return; }
     const lead = stack[0];
-    const lastTableauDest = source === 'tableau' && tableauClickMemory && tableauClickMemory.cardId === lead.id
-      ? tableauClickMemory.destIndex
-      : null;
-    const dest = resolveClickDestination(state, lead, source, sourceIndex, stack.length, lastTableauDest);
+    const dest = resolveMoveDestination(lead, source, sourceIndex, stack.length);
     if (!dest) { bounceCard(lead); return; }
     executeClickMove(stack, source, sourceIndex, dest.type, dest.index);
   }
@@ -4067,8 +4108,12 @@ function initIntro() {
   // cubic-bezier transition can't express "gentle release, dominant
   // acceleration, then a short soft landing" - the WAAPI path is the one
   // place that shape is actually assembled from the profile.
-  function glideGhostsTo(ghosts, baseRects, destRects, ms, onDone, easing = 'var(--ease-out-smooth)', moveProfile = null) {
-    const { wrappers, visuals } = ghosts;
+  // Drops any lift/scale/tilt a ghost picked up while held back to rest
+  // INSTANTLY - see glideGhostsTo's comment for why that must never be
+  // eased alongside the travel that follows it. Shared with the flick
+  // (executeFlickMove), which needs the same clean slate before it
+  // starts driving the visual's own transform.
+  function settleGhostVisuals(visuals) {
     visuals.forEach(visual => {
       visual.style.transition = 'none';
       visual.classList.remove('lifted');
@@ -4076,6 +4121,11 @@ function initIntro() {
       visual.offsetHeight; // commit the instant reset before the transition below can pick it up
       visual.style.transition = '';
     });
+  }
+
+  function glideGhostsTo(ghosts, baseRects, destRects, ms, onDone, easing = 'var(--ease-out-smooth)', moveProfile = null) {
+    const { wrappers, visuals } = ghosts;
+    settleGhostVisuals(visuals);
     wrappers.forEach((wrapper, i) => {
       const dx = destRects[i].left - baseRects[i].left;
       const dy = destRects[i].top - baseRects[i].top;
@@ -4194,6 +4244,13 @@ function initIntro() {
   }
 
   function startDrag(e, card, source, sourceIndex) {
+    // A flicked card's move has not been applied yet if it is still in
+    // the air (see pendingFlickCommit). Settle it before reading the
+    // board, rather than refusing the press: the pile behind it has
+    // already been redrawn without it, so the next card looks ready to
+    // play and must actually be playable. Landing the move early also
+    // takes the ghost down, so the card is never in two places.
+    flushPendingFlick();
     if (dragCtx || autoFinishRunning || kingCascadeHoldPointerId !== null) return;
     if (e.button !== undefined && e.button !== 0) return;
     const stack = getStackFrom(state, source, sourceIndex, card);
@@ -4217,11 +4274,33 @@ function initIntro() {
       rafPending: false,
       hoverTarget: null,
       moved: false,
+      movedAt: null, // stamped by processDragFrame the frame `moved` flips - see there
+      // Raw pointer path, for the flick classifier (see flick.js). Kept
+      // here rather than in processDragFrame because that runs once per
+      // FRAME - coalescing several pointermoves into one - and velocity
+      // at the instant of release needs the events themselves. Recorded
+      // for every drag, not just waste ones: the cost is a couple of
+      // numbers per event, and making it conditional would mean a
+      // source-specific branch in the hottest pointer path for no gain.
+      samples: [{ x: e.clientX, y: e.clientY, t: performance.now() }],
     };
 
     window.addEventListener('pointermove', onDragMove, { passive: false });
     window.addEventListener('pointerup', onDragEnd);
     window.addEventListener('pointercancel', onDragCancel);
+  }
+
+  // Trailing window of the pointer path, bounded so a long slow drag
+  // can't grow it without limit. Index 0 is pinned to the press point
+  // and only the middle is dropped: the classifier measures total travel
+  // from that first sample, so losing it would make a long drag look
+  // short. Everything else it needs is either the onset (stamped
+  // separately, in processDragFrame) or inside the trailing velocity
+  // window, both of which survive any trim.
+  const POINTER_SAMPLE_LIMIT = 24;
+  function recordPointerSample(x, y) {
+    dragCtx.samples.push({ x, y, t: performance.now() });
+    if (dragCtx.samples.length > POINTER_SAMPLE_LIMIT) dragCtx.samples.splice(1, 1);
   }
 
   function onDragMove(e) {
@@ -4231,6 +4310,7 @@ function initIntro() {
     e.preventDefault();
     dragCtx.latestX = e.clientX;
     dragCtx.latestY = e.clientY;
+    recordPointerSample(e.clientX, e.clientY);
     if (!dragCtx.rafPending) {
       dragCtx.rafPending = true;
       requestAnimationFrame(processDragFrame);
@@ -4254,6 +4334,12 @@ function initIntro() {
       const dist = Math.hypot(latestX - startX, latestY - startY);
       if (dist < DRAG_THRESHOLD_PX) return;
       dragCtx.moved = true;
+      // The one place "this became a drag" is decided, so also the one
+      // place the flick classifier's movement-onset comes from (see
+      // classifyPointerGesture). Up to one frame later than the pointer
+      // event that actually crossed the threshold, which is well inside
+      // the tolerance of a ~260ms duration test.
+      dragCtx.movedAt = { x: latestX, y: latestY, t: performance.now() };
       dragCtx.originEls.forEach(el => { el.style.visibility = 'hidden'; });
       if (source === 'foundation') renderFoundation(sourceIndex, { peekBehindTop: true });
       ghosts.visuals.forEach(v => v.classList.add('lifted'));
@@ -4300,8 +4386,67 @@ function initIntro() {
     if (dragCtx && dragCtx.pointerId !== e.pointerId) return;
     removeDragListeners();
     if (!dragCtx) return;
-    const { stack, source, sourceIndex, ghosts, originRects, originEls, hoverTarget, moved } = dragCtx;
+    if (e.clientX !== undefined) recordPointerSample(e.clientX, e.clientY); // release point: the last pointermove can be several ms stale, and release velocity is the whole question
+    const { stack, source, sourceIndex, ghosts, originRects, originEls, hoverTarget, moved, samples, movedAt } = dragCtx;
     dragCtx = null;
+
+    // `moved` is set from processDragFrame, which runs on rAF - so a
+    // flick quick enough to finish inside a single frame (or one that
+    // lands on a busy frame) can reach here with `moved` still false
+    // even though the pointer plainly travelled. Passing `onset:
+    // movedAt || undefined` lets the classifier fall back to deriving
+    // the onset from the samples themselves, using the same
+    // DRAG_THRESHOLD_PX test processDragFrame applies - so the fastest
+    // flicks, which are exactly the ones most likely to outrun a frame,
+    // are still recognised as flicks rather than silently degrading to
+    // a tap. Anything genuinely motionless still has no onset to find
+    // and still classifies as a tap.
+    const gesture = classifyPointerGesture({
+      samples,
+      onset: movedAt || undefined,
+      dragThresholdPx: DRAG_THRESHOLD_PX,
+      cardWidthPx: originRects[0].width,
+      viewportMinPx: Math.min(window.innerWidth, window.innerHeight),
+    });
+
+    if (hoverTarget) hoverTarget.classList.remove('drop-target-active');
+
+    // A flick short-circuits the drop-target test entirely, rather than
+    // only applying when the release point happens to be over nothing
+    // legal. That's deliberate: the whole point of the gesture is that
+    // the player doesn't aim (the destination comes from
+    // resolveMoveDestination either way), so where the pointer happened
+    // to be at release must not change the outcome, or the same flick
+    // would do different things depending on which pile it flew over.
+    // The classifier is what keeps this from eating real drags: a
+    // deliberate drag-to-a-pile decelerates to place the card, so its
+    // release velocity is nowhere near flick-grade.
+    if (gesture.kind === 'flick' && isFlickableSource(source)) {
+      // The event's own timestamp, not now(): the handler may run a few
+      // ms after the input actually happened, and the flight is anchored
+      // to when the finger left, not to when we got around to reacting.
+      //
+      // Only trusted when it is plausibly on the same clock as
+      // performance.now(). Event.timeStamp is specified as a
+      // DOMHighResTimeStamp, but it has historically been a Unix epoch
+      // in some engines, and a stamp from the wrong epoch would put the
+      // anchor billions of milliseconds out - silently disabling the
+      // back-dating (or, worse, clamping it to the maximum and skipping
+      // part of the launch). A stamp only a sane handful of
+      // milliseconds in the past is the only one worth using.
+      const stamp = typeof e.timeStamp === 'number' ? e.timeStamp : NaN;
+      const sinceStamp = performance.now() - stamp;
+      const releasedAt = sinceStamp >= 0 && sinceStamp < 200 ? stamp : performance.now();
+      // A flick that outran processDragFrame (see above) arrives with
+      // the origin still visible underneath its own ghost. Hide it now,
+      // exactly as that frame would have, so the card doesn't briefly
+      // appear twice as the flight starts.
+      if (!moved) originEls.forEach(el => { el.style.visibility = 'hidden'; });
+      const dest = resolveMoveDestination(stack[0], source, sourceIndex, stack.length);
+      if (dest) executeFlickMove(stack, sourceIndex, dest, gesture, ghosts, originRects, releasedAt);
+      else playFlickRefusal(gesture, ghosts, originRects, originEls, releasedAt);
+      return;
+    }
 
     if (!moved) {
       // Never crossed the drag threshold: a tap/click, not a drag. The
@@ -4313,7 +4458,6 @@ function initIntro() {
       return;
     }
 
-    if (hoverTarget) hoverTarget.classList.remove('drop-target-active');
     const pileEl = pileContainerAt(e.clientX, e.clientY);
     const valid = isValidDropTarget(pileEl, stack, source, sourceIndex);
 
@@ -4339,6 +4483,302 @@ function initIntro() {
       else originEls.forEach(el => { el.style.visibility = ''; });
       glideGhostsTo(ghosts, originRects, originRects, MOVE_GLIDE_MS);
     }
+  }
+
+  // ---------- waste flick ----------
+  //
+  // A presentation layer over an ordinary move, and nothing more. The
+  // move itself is the same commitMove() a tap or a drop performs, called
+  // once, with the destination resolved by the same
+  // resolveMoveDestination() tap-to-move uses - so undo, move count, the
+  // flip of a newly-exposed card, win detection and Auto Finish
+  // availability are all reached through the existing path and need no
+  // flick-specific handling. What's new here is only the flight: a
+  // boomerang instead of a straight glide.
+  //
+  // CARD FACE VISIBILITY. The thing that flies is the DRAG GHOST that
+  // already exists - createGhostStack's makeCardEl(card, true), which is
+  // the identical element renderWaste() builds for the real card: same
+  // .card.face-up div, same single composited <img> (face art and worn
+  // texture are one image - see card-face-compositor.js), same
+  // background fill for the corner seam, same layering. This code never
+  // builds a face-less or image-only stand-in and never swaps the src
+  // mid-flight, so there is no state in which the worn texture could
+  // render without the rank/suit art on top of it. The 3D turnover is
+  // rotateY only, and TILT_PEAK_DEG is well under 90deg, so the card
+  // never turns far enough to present a mirrored or blank back side
+  // either.
+  const FLICK_CLEANUP_BUFFER_MS = 30; // matches glideGhostsTo's own ghost-removal buffer
+
+  // How far the throw is allowed to reach, in pixels - NOT a box the card
+  // has to stay inside. The card is meant to leave the viewport and come
+  // back; this only keeps the far-destination cases from flinging it so
+  // many screens out that the turnaround happens off-stage and the
+  // return leg has to be covered at a speed that reads as a teleport.
+  // Measured off the viewport's SHORTEST edge, not its longest. A throw
+  // is as likely to be sideways as vertical, and on a portrait phone the
+  // long edge is more than twice the short one - scaling a sideways
+  // throw to the 812px height sent the card 349px past the left edge of
+  // a 375px-wide screen and left it completely invisible for 31 of 61
+  // frames. The whole turnaround happened off-stage, which is the
+  // opposite of the point: the card is supposed to LOOK like it has been
+  // thrown away and then come back, and none of that reads if the
+  // coming-back is invisible. The short edge is the dimension that is
+  // true in every direction. launchDistance still scales this by
+  // intensity (see LAUNCH_REACH_LO/HI), so a hard flick reaches well
+  // past one screen-edge and a moderate one clips it.
+  function flickReachPx() {
+    return Math.min(window.innerWidth, window.innerHeight);
+  }
+
+  // Runs one ghost through a keyframe track from flick.js. The wrapper
+  // carries position and the visual carries rotation/tilt/scale - the
+  // same split .drag-ghost/.drag-visual already uses (see their CSS),
+  // which is also what lets the tilt have a perspective ancestor without
+  // the perspective applying to the travel itself. Both tracks are
+  // linear between samples on purpose: the shape is already baked into
+  // the sample spacing, so nothing depends on per-keyframe easing
+  // support.
+  // A WAAPI animation created without an explicit startTime is PENDING:
+  // it does not begin until the next animation frame, and that frame
+  // renders it at currentTime 0 - the position it already occupied. So
+  // between the last frame that tracked the finger and the first frame
+  // that shows any flight, the card sits perfectly still for one whole
+  // frame plus however much of the current frame was left when the
+  // pointer came up: 16-33ms at 60Hz. Against a launch that then covers
+  // ~80px in its first frame, that dead frame reads unmistakably as
+  // "release, pause, go" and breaks the throw.
+  //
+  // Anchoring startTime to the moment the finger actually left instead
+  // means the first painted frame already shows the card in flight, at
+  // the speed it should be doing by then. document.timeline.currentTime
+  // and performance.now() share an origin, so the arithmetic is direct.
+  // Clamped, because if the main thread was blocked we want to remove
+  // the dead frame, not skip a visible chunk of the launch.
+  const FLICK_BACKDATE_MAX_MS = 34; // ~two frames at 60Hz
+  function startAnimationAtRelease(animation, releasedAt) {
+    const timelineNow = document.timeline && document.timeline.currentTime;
+    if (timelineNow == null || releasedAt == null) return; // no timeline to anchor to; leave it pending
+    const elapsed = Math.min(Math.max(performance.now() - releasedAt, 0), FLICK_BACKDATE_MAX_MS);
+    animation.startTime = timelineNow - elapsed;
+  }
+
+  function animateFlickGhost(wrapper, visual, baseRect, frames, ms, onDone, releasedAt) {
+    wrapper.classList.add('flick-flight');
+    // The flight travels on `transform`, not on the individual
+    // `translate` property the drag uses.
+    //
+    // They are equivalent on paper and were not in practice: WebKit does
+    // not give translate/rotate/scale the compositor treatment it gives
+    // transform, so on iOS the flight was being interpolated on the main
+    // thread - the same thread that rebuilds the board one frame later
+    // (see the commit ordering in executeFlickMove). Desktop had the
+    // headroom to absorb that; a phone did not, and the launch stalled
+    // there and only there. transform is accelerated everywhere.
+    //
+    // The drag left an inline `translate` on this element; it has to go
+    // in the same synchronous block, or it would stack with the new
+    // transform and double the offset. Nothing paints in between.
+    wrapper.style.translate = '';
+    const travel = wrapper.animate(
+      frames.map(f => ({
+        offset: f.offset,
+        transform: `translate(${f.x - baseRect.left}px, ${f.y - baseRect.top}px)`,
+      })),
+      { duration: ms, fill: 'forwards', easing: 'linear' },
+    );
+    const spin = visual.animate(
+      frames.map(f => ({
+        offset: f.offset,
+        // rotateZ first, so the turnover happens about the card's own
+        // (already-spun) vertical axis rather than the screen's - a card
+        // turning over as it spins, not wobbling independently of it.
+        transform: `rotateZ(${f.spinDeg}deg) rotateY(${f.tiltDeg}deg) scale(${f.scale})`,
+      })),
+      { duration: ms, fill: 'forwards', easing: 'linear' },
+    );
+    // Both tracks get the same anchor, so translation and rotation stay
+    // locked to each other.
+    startAnimationAtRelease(travel, releasedAt);
+    startAnimationAtRelease(spin, releasedAt);
+    setTimeout(onDone, ms + FLICK_CLEANUP_BUFFER_MS);
+  }
+
+  // A flick's move is committed when the card LANDS, not when it is
+  // thrown - and this is the single most important thing about the
+  // flight's timing.
+  //
+  // commitMove() ends in render(), which empties and rebuilds all
+  // thirteen piles with thirty to fifty fresh <img> elements. On a
+  // desktop that is a few milliseconds. Measured on an iPhone it blocked
+  // the main thread for 91ms: instrumenting a real flick showed the card
+  // move 30px on the first frame and then receive no frame at all for
+  // 91ms before resuming at a clean 16ms cadence. That gap is the pause,
+  // and it is why deferring the commit by one frame did not help - it
+  // only moved the stall from the first frame of the flight to the
+  // second.
+  //
+  // Running it once the card has arrived puts the stall where nothing is
+  // moving, so it costs nothing visible.
+  //
+  // The cost of waiting is that `state` still holds the card in the
+  // waste for the length of the flight, so anything that reads or
+  // mutates state in that window has to settle the move first. That is
+  // what flushPendingFlick is for, and every such entry point calls it.
+  let pendingFlickCommit = null;
+  let pendingFlickTeardown = null;
+
+  // Settles an in-flight flick's move immediately. Safe to call at any
+  // time, including when nothing is pending.
+  function flushPendingFlick() {
+    if (!pendingFlickCommit) return;
+    const commit = pendingFlickCommit;
+    const teardown = pendingFlickTeardown;
+    pendingFlickCommit = null;
+    pendingFlickTeardown = null;
+    commit();
+    if (teardown) teardown();
+  }
+
+  function executeFlickMove(stack, sourceIndex, dest, gesture, ghosts, originRects, releasedAt) {
+    const target = dest.type;
+    const targetIndex = dest.index;
+    const destRects = computeDestRects(target, targetIndex, stack.length);
+    const previousTopCard = target === 'foundation' ? currentFoundationTop(targetIndex) : null;
+    const baseRect = originRects[0];
+    // The ghost's position right now, not where the press started: the
+    // card has been tracking the pointer for the length of the flick, so
+    // the flight has to launch from where it actually is, or it would
+    // visibly snap backwards on its first frame.
+    const startRect = ghosts.wrappers[0].getBoundingClientRect();
+
+    // Reduced motion changes ONE thing: which animation plays. The move
+    // itself - same destination, same commitMove, same reveal - is
+    // shared below, so the two paths can't drift apart. With the flight
+    // skipped, what's left is the plain position glide the game already
+    // uses for every other card move.
+    const plan = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? null : flickPlan({
+      from: { x: startRect.left, y: startRect.top },
+      to: { x: destRects[0].left, y: destRects[0].top },
+      dirX: gesture.dirX,
+      dirY: gesture.dirY,
+      intensity: gesture.intensity,
+      cardWidthPx: baseRect.width,
+      reachPx: flickReachPx(),
+      // The card leaves at the speed it was actually thrown - see
+      // LAUNCH_BOOST in flick.js.
+      releaseSpeedPxMs: gesture.speed,
+    });
+    const durationMs = plan ? plan.durationMs : MOVE_GLIDE_MS;
+
+    settleGhostVisuals(ghosts.visuals);
+    if (plan) ghosts.wrappers[0].style.zIndex = 1100; // above any other ghost still settling - this one sweeps across the whole board
+
+    // Recorded before commitMove, for the same reason executeClickMove
+    // does it: checkWin() runs synchronously inside commitMove's
+    // render() and reads lastMoveGlideMs to know how long to wait for
+    // the winning move's animation. A flick can absolutely be the
+    // winning move (a waste card onto a foundation), and it takes ~3x
+    // longer than a glide.
+    lastMoveGlideMs = durationMs;
+
+    // Reduced motion keeps the original ordering exactly: commit, then
+    // the ordinary glide. There is no launch to protect.
+    if (!plan) {
+      commitMove(stack, 'waste', sourceIndex, target, targetIndex);
+      const revealNow = hideDestElements(stack, target, targetIndex, previousTopCard);
+      glideGhostsTo(ghosts, [startRect], destRects, durationMs, revealNow);
+      return;
+    }
+
+    // LAUNCH FIRST, COMMIT SECOND. This ordering is the whole fix for
+    // the pause after release, and it is worth being precise about why.
+    //
+    // commitMove() ends in render(), which empties and rebuilds every
+    // pile - roughly thirty to fifty card elements, each with its own
+    // <img>. The JavaScript is cheap (~1.6ms measured), but the style,
+    // layout and paint it forces are not, and they all land on the frame
+    // the finger let go of. While that work occupies the main thread the
+    // flight animation did not exist yet, so nothing could be presented:
+    // the card sat still for the whole of it.
+    //
+    // Creating the animation first inverts that. A WAAPI translate /
+    // transform animation runs on the compositor, so once it has been
+    // started and given a start time it keeps advancing even while the
+    // main thread is busy rebuilding the board on the next frame. The
+    // launch is no longer waiting behind the move.
+    //
+    // Nothing about the move itself is conditional on the animation -
+    // the commit is scheduled unconditionally for the next frame, never
+    // from an animation callback - so undo, move count and win detection
+    // are unchanged; they simply happen one frame later than they used
+    // to. For that single frame the board looks exactly as it did
+    // mid-drag: the origin card is already hidden, and the ghost is on
+    // top of where it used to be.
+    const stateAtLaunch = state; // newGame()/restart() replace this - see below
+
+    // hideDestElements is deliberately absent here, unlike every other
+    // move: it exists to cover the window where render() has already
+    // painted the card at its destination while the ghost is still
+    // flying there. Committing on landing means that window never opens.
+    pendingFlickCommit = () => {
+      // A new game or restart happened mid-flight. The board this move
+      // belonged to is gone, so the move is void; that path's own
+      // clearGhosts() has already taken the ghost away.
+      if (state !== stateAtLaunch) return;
+      commitMove(stack, 'waste', sourceIndex, target, targetIndex);
+    };
+    // Abandoning the flight early (see flushPendingFlick) has to take
+    // the ghost with it, or the card would be visible both at its
+    // destination and still in the air.
+    pendingFlickTeardown = () => { ghosts.wrappers.forEach(w => w.remove()); };
+
+    // The rest of the waste settles NOW, not on touchdown. The move
+    // itself still waits for the landing, so state is untouched here -
+    // this is only the pile being drawn as it will look once the card
+    // that has visibly left is actually gone.
+    renderWaste(stack[0].id);
+
+    animateFlickGhost(ghosts.wrappers[0], ghosts.visuals[0], baseRect, flickKeyframes(plan), durationMs, () => {
+      // Commit first, then drop the ghost - both in this one task, so
+      // the real card is painted at the destination in the same frame
+      // the ghost disappears and there is no flicker between them.
+      flushPendingFlick();
+    }, releasedAt);
+  }
+
+  // An unplayable waste card, flicked. Deliberately NOT the boomerang
+  // followed by a return trip: a card that flies all the way out and
+  // comes back implies the move nearly worked, when in fact there was
+  // never anywhere for it to go. A short resistant shove that stops dead
+  // and returns says "that card is stuck" in about a fifth of the time.
+  function playFlickRefusal(gesture, ghosts, originRects, originEls, releasedAt) {
+    const wrapper = ghosts.wrappers[0];
+    const visual = ghosts.visuals[0];
+    const baseRect = originRects[0];
+    const startRect = wrapper.getBoundingClientRect();
+    settleGhostVisuals(ghosts.visuals);
+
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      // Same outcome, no motion: the card is simply back where it was.
+      ghosts.wrappers.forEach(w => w.remove());
+      originEls.forEach(el => { el.style.visibility = ''; });
+      return;
+    }
+
+    const frames = flickRefusalKeyframes({
+      from: { x: startRect.left, y: startRect.top },
+      to: { x: baseRect.left, y: baseRect.top },
+      dirX: gesture.dirX,
+      dirY: gesture.dirY,
+      cardWidthPx: baseRect.width,
+    });
+    // Restored as the nudge ends rather than up front, so the real card
+    // and its ghost are never both visible at once.
+    animateFlickGhost(wrapper, visual, baseRect, frames, FLICK_REFUSE_MS, () => {
+      ghosts.wrappers.forEach(w => w.remove());
+      originEls.forEach(el => { el.style.visibility = ''; });
+    }, releasedAt);
   }
 
   // ---------- backup / restore ----------
