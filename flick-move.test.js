@@ -402,3 +402,93 @@ test('the flying card is the complete composited drag ghost, not a bare image', 
   assert.ok(functionBody('createGhostStack').includes('makeCardEl('),
     'and that ghost is built from the same element a real card is');
 });
+
+// ---------- 12: tapping the stock while a card is in the air ----------
+//
+// ACCEPTED, DELIBERATE BEHAVIOUR, pinned here so it is not "fixed"
+// later: the stock stays tappable for the whole flight, and the drawn
+// cards are allowed to appear after the flick lands rather than being
+// animated over the top of it. The player reads that as the two actions
+// taking turns, which is fine. What must never happen is the tap being
+// LOST. These tests cover the four things that guarantee it.
+
+const CSS_RAW = readFileSync(new URL('./style.css', import.meta.url), 'utf8');
+
+test('a card in flight cannot swallow a tap on the stock', () => {
+  // The ghost sweeps across the whole board - directly over the stock -
+  // for most of its ~700ms. If it were hit-testable it would eat exactly
+  // the tap this behaviour depends on, and the player would get nothing.
+  const from = CSS_RAW.indexOf('.drag-ghost {');
+  assert.notEqual(from, -1, '.drag-ghost rule should exist');
+  const block = CSS_RAW.slice(from, CSS_RAW.indexOf('}', from));
+  assert.match(block, /pointer-events:\s*none/,
+    '.drag-ghost must stay transparent to pointer events while it flies');
+});
+
+test('a flick sets no guard that would turn the stock deaf', () => {
+  // onStockClick bails early on isDrawing/autoFinishRunning. A flick
+  // must set neither, or a mid-flight tap would be silently dropped
+  // instead of handled.
+  for (const fn of ['executeFlickMove', 'animateFlickGhost', 'playFlickRefusal', 'flushPendingFlick']) {
+    const body = functionBody(fn);
+    assert.ok(!/\bisDrawing\s*=/.test(body), `${fn} must not touch isDrawing`);
+    assert.ok(!/\bautoFinishRunning\s*=/.test(body), `${fn} must not touch autoFinishRunning`);
+  }
+  assert.match(functionBody('onStockClick'), /if \(isDrawing \|\| autoFinishRunning\) return;/,
+    'the stock guard should still be exactly those two, with nothing flick-shaped added');
+});
+
+test('a stock tap that arrives mid-flight draws against settled state', () => {
+  // The tap is handled immediately and settles the flick first, so the
+  // draw is applied to the post-move board rather than one still holding
+  // the flicked card in the waste. Whether the player sees the draw
+  // before or after touchdown is down to click delivery and face
+  // readiness - both are acceptable - but the draw must happen, and it
+  // must happen against correct state.
+  const body = functionBody('onStockClick');
+  const beforeGuard = body.slice(0, body.indexOf('if (isDrawing'));
+  assert.match(beforeGuard, /flushPendingFlick\(\)/,
+    'the pending move must land before the draw reads state');
+  assert.ok(!/setTimeout|requestAnimationFrame/.test(beforeGuard),
+    'the tap must be handled now, not parked until the flight ends');
+});
+
+test('a landing that arrives after an early settle is a no-op, not a second move', () => {
+  // Tapping the stock mid-flight settles the flick; the flight's own
+  // landing callback then fires into an already-empty pending slot a few
+  // hundred ms later. It has to do nothing at all.
+  const flush = functionBody('flushPendingFlick');
+  assert.match(flush, /if \(!pendingFlickCommit\) return;/,
+    'flushPendingFlick must be a no-op when nothing is pending');
+  assert.match(flush, /pendingFlickCommit = null;[\s\S]{0,140}commit\(\);/,
+    'the slot must be cleared BEFORE the commit runs, so re-entry cannot double-apply');
+});
+
+test('every flick ending takes its ghost back down', () => {
+  // A leaked .drag-ghost is a card frozen above the whole board,
+  // ignoring clicks, until the next full render. All three endings -
+  // normal touchdown, early settle, and a refused flick - must clear it.
+  const flight = functionBody('executeFlickMove');
+  assert.match(flight, /pendingFlickTeardown = \(\) => \{ ghosts\.wrappers\.forEach\(w => w\.remove\(\)\); \}/,
+    'an early settle removes the ghost via the teardown');
+  assert.match(flight.slice(flight.indexOf('animateFlickGhost(')), /flushPendingFlick\(\)/,
+    'touchdown goes through that same teardown rather than cleaning up its own way');
+
+  const refusal = functionBody('playFlickRefusal');
+  assert.equal((refusal.match(/ghosts\.wrappers\.forEach\(w => w\.remove\(\)\)/g) || []).length, 2,
+    'the refusal removes its ghost on both the reduced-motion and the animated path');
+  assert.equal((refusal.match(/el\.style\.visibility = ''/g) || []).length, 2,
+    'and restores the real card underneath it on both');
+});
+
+test('the flick never counts a move of its own', () => {
+  // The count and the history entry both belong to commitMove. A flick
+  // that also nudged moveCount - or called updateMoves() to "refresh"
+  // the toolbar - would either double-count or paint a number the board
+  // does not match.
+  for (const fn of ['executeFlickMove', 'animateFlickGhost', 'playFlickRefusal']) {
+    const body = functionBody(fn);
+    assert.ok(!/\bmoveCount\b/.test(body), `${fn} must leave the move count to commitMove`);
+    assert.ok(!/\bpushHistory\(/.test(body), `${fn} must leave history to commitMove`);
+  }
+});

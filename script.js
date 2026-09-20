@@ -3089,6 +3089,22 @@ function initIntro() {
   // lifecycle, animation included; extending what that lifecycle covers
   // doesn't change the contract, only how much of it isDrawing spans.
   async function onStockClick() {
+    // TAPPING THE STOCK WHILE A FLICK IS IN THE AIR IS SUPPORTED, AND
+    // THE DRAW APPEARING AFTER THE FLIGHT ENDS IS THE INTENDED
+    // BEHAVIOUR - not a bug to be tuned out. The tap cannot be lost:
+    // .drag-ghost is pointer-events: none, so the card sweeping across
+    // the board never intercepts the press, and a flick sets no guard
+    // (isDrawing/autoFinishRunning stay false for its whole flight), so
+    // this handler runs in full. What the player then sees depends only
+    // on when the browser delivers the click and how long
+    // ensureCardsFaceReady takes - on a phone that is typically after
+    // touchdown, which reads as the two actions politely taking turns.
+    //
+    // Deliberately NOT special-cased into something that animates the
+    // draw over the top of a flight in progress. Reliability matters
+    // more here than simultaneity, and every version of "make both move
+    // at once" costs a second overlapping animation path for no gain
+    // the player asked for.
     flushPendingFlick(); // an in-flight flick's move must land before this reads or changes state
 
     if (helpModeActive) {
@@ -4691,30 +4707,40 @@ function initIntro() {
       return;
     }
 
-    // LAUNCH FIRST, COMMIT SECOND. This ordering is the whole fix for
-    // the pause after release, and it is worth being precise about why.
+    // LAUNCH FIRST, COMMIT ON LANDING. This ordering is the whole fix
+    // for the pause after release, and it is worth being precise about
+    // why.
     //
     // commitMove() ends in render(), which empties and rebuilds every
     // pile - roughly thirty to fifty card elements, each with its own
     // <img>. The JavaScript is cheap (~1.6ms measured), but the style,
-    // layout and paint it forces are not, and they all land on the frame
-    // the finger let go of. While that work occupies the main thread the
-    // flight animation did not exist yet, so nothing could be presented:
-    // the card sat still for the whole of it.
+    // layout and paint it forces are not. Instrumenting a real flick on
+    // an iPhone showed that work block the main thread for 91ms: the
+    // card moved 30px on the first frame, then got no frame at all for
+    // 91ms, then resumed at a clean 16ms cadence. Committing at release
+    // drops that stall squarely on the launch - the fastest and most
+    // conspicuous part of the flight, and the one part that cannot
+    // survive losing six frames.
     //
-    // Creating the animation first inverts that. A WAAPI translate /
-    // transform animation runs on the compositor, so once it has been
-    // started and given a start time it keeps advancing even while the
-    // main thread is busy rebuilding the board on the next frame. The
-    // launch is no longer waiting behind the move.
+    // Two things move it out of the way. The animation is created
+    // before anything commits, and it animates `transform`, so the
+    // flight runs on the compositor and keeps advancing even while the
+    // main thread is busy. And the commit itself waits for touchdown
+    // (see pendingFlickCommit), where the rebuild costs nothing visible
+    // because nothing is moving any more.
     //
-    // Nothing about the move itself is conditional on the animation -
-    // the commit is scheduled unconditionally for the next frame, never
-    // from an animation callback - so undo, move count and win detection
-    // are unchanged; they simply happen one frame later than they used
-    // to. For that single frame the board looks exactly as it did
-    // mid-drag: the origin card is already hidden, and the ghost is on
-    // top of where it used to be.
+    // Deferring the commit by a single frame was tried first and did
+    // not work: it moved the stall from the first frame of the flight
+    // to the second, which looks the same.
+    //
+    // The move is otherwise untouched - same commitMove, same
+    // destination, exactly once - so undo, the move count and win
+    // detection behave just as they do for a tap; they simply happen at
+    // the end of the flight instead of the start. The price is that
+    // `state` still holds the card in the waste for the length of the
+    // flight, so anything that reads or mutates state in that window
+    // must settle the move first. That is what flushPendingFlick is
+    // for, and every such entry point calls it.
     const stateAtLaunch = state; // newGame()/restart() replace this - see below
 
     // hideDestElements is deliberately absent here, unlike every other
