@@ -492,3 +492,66 @@ test('the flick never counts a move of its own', () => {
     assert.ok(!/\bpushHistory\(/.test(body), `${fn} must leave history to commitMove`);
   }
 });
+
+// ---------- 13: nothing on the board may depend on a synthesised click ----------
+//
+// The bug this pins: after a flick, the stock silently ignored the next
+// tap and needed a second one. The flick's onDragMove preventDefault()s a
+// stream of pointermoves, and iOS WebKit then declined to synthesise a
+// click for the following tap - and the stock was the last gameplay
+// surface still driven by a native onclick.
+//
+// It was diagnosed by isolation on the live site, after failing to
+// reproduce in the iOS Simulator over real touch, in desktop browsers,
+// and on a LAN build with production's own cache headers and threading.
+// Three NO-OP capture listeners (pointerdown/pointerup/click) made the
+// stock reliable; polling timers and an inert div did not. A no-op
+// listener cannot touch game state, so the fault is event delivery - not
+// the full-board re-render, which was the leading theory and was wrong.
+//
+// attachCardInteractions has always documented this rule. These tests
+// stop any surface drifting back off it, which matters more the more of
+// the board becomes flickable.
+
+test('no board surface is driven by a native onclick', () => {
+  const src = stripComments(SCRIPT_RAW);
+  assert.ok(!/\.onclick\s*=/.test(src),
+    'a native onclick is exactly the sequence iOS drops after a preventDefault()-ed pointerdown');
+});
+
+test('the stock draws from a pointer pair, attached once', () => {
+  const src = stripComments(SCRIPT_RAW);
+  assert.match(src, /attachTap\(document\.getElementById\('stock'\), onStockClick\)/,
+    'the stock must go through attachTap');
+  // renderStock runs on every render; binding there would stack a new
+  // listener each time and fire the draw N times on one tap.
+  assert.ok(!/attachTap\(/.test(functionBody('renderStock')),
+    'the binding must NOT live in renderStock - #stock persists, only its children are replaced');
+  assert.equal((src.match(/attachTap\(document\.getElementById\('stock'\)/g) || []).length, 1,
+    'exactly one stock binding');
+});
+
+test('attachTap derives the tap from pointerdown/pointerup, never a click', () => {
+  const body = functionBody('attachTap');
+  assert.match(body, /addEventListener\('pointerdown'/);
+  assert.match(body, /addEventListener\('pointerup'/);
+  assert.match(body, /addEventListener\('pointercancel'/, 'a cancelled gesture must not leave listeners behind');
+  assert.ok(!/'click'/.test(body), 'a click listener would reintroduce the very dependency this removes');
+});
+
+test('attachTap takes pointerup from the window, so a rebuild cannot strand the gesture', () => {
+  // If the card inside the pile is replaced between press and release,
+  // an element-bound pointerup would be lost with the detached node.
+  const body = functionBody('attachTap');
+  assert.match(body, /window\.addEventListener\('pointerup'/);
+  assert.match(body, /getBoundingClientRect\(\)/,
+    'the release is validated by geometry instead of by event target');
+});
+
+test('attachTap ignores a press that travels, using the drag code threshold', () => {
+  const body = functionBody('attachTap');
+  assert.match(body, /DRAG_THRESHOLD_PX/,
+    'a tap and a drag must agree on what counts as movement, from one constant');
+  assert.match(body, /Math\.hypot[\s\S]{0,60}DRAG_THRESHOLD_PX\) return/,
+    'travel beyond the threshold is a drag or a scroll, not a tap');
+});

@@ -2021,6 +2021,37 @@ function initIntro() {
   // stay harmless no-ops outside Help mode - e.target !== e.currentTarget
   // means the tap actually landed on a real card, which attachCardInteractions
   // (or the covered-card listener) already handles.
+  // THE STOCK DERIVES ITS TAP FROM A POINTER PAIR, NOT A NATIVE CLICK -
+  // the same rule attachCardInteractions already follows, and for the
+  // same reason its comment gives: "a native click after a
+  // preventDefault()-ed pointerdown ... is a known source of
+  // cross-browser/touch inconsistency". The stock was the last gameplay
+  // surface still relying on one, and the flick is exactly that
+  // sequence: onDragMove preventDefault()s a stream of pointermoves, and
+  // iOS WebKit then declined to synthesise a click for the NEXT tap on
+  // the pile. The draw was silently dropped and only a second tap woke
+  // it up.
+  //
+  // Diagnosed on the live site by isolation, after it refused to
+  // reproduce in the iOS Simulator over real touch, in desktop browsers,
+  // and on a LAN build served with production's own cache headers and
+  // threading. Adding three NO-OP capture listeners (pointerdown,
+  // pointerup, click) to the document made the stock reliable again;
+  // polling timers and an inert overlay div did not. A no-op listener
+  // cannot change game state, so that isolates event delivery as the
+  // fault and rules out every state/guard/render explanation - including
+  // the full-board re-render, which was the leading theory for two
+  // rounds and was wrong.
+  //
+  // Attached once here rather than in renderStock(), which runs on every
+  // render and would stack a fresh listener each time. #stock itself is
+  // never replaced - only its children are - so one binding holds for
+  // the life of the page. pointerup is taken from the window, not the
+  // pile, so a rebuild of the card inside it between press and release
+  // cannot strand the gesture; the release is validated by geometry
+  // instead.
+  attachTap(document.getElementById('stock'), onStockClick);
+
   document.getElementById('waste').addEventListener('click', (e) => {
     if (!helpModeActive || e.target !== e.currentTarget) return;
     showHelp(helpConceptForTarget('waste'), e.currentTarget);
@@ -2530,7 +2561,6 @@ function initIntro() {
       hint.textContent = '↺';
       el.appendChild(hint);
     }
-    el.onclick = onStockClick;
   }
 
   // departingCardId (the flick only) renders the pile as it will look
@@ -2662,7 +2692,12 @@ function initIntro() {
         // acknowledge the tap (same bounce already used elsewhere for
         // "nothing to do here") and let Automatic Tips notice a repeated one,
         // anchored on the actual covered card the player tapped.
-        cardEl.addEventListener('click', () => {
+        // Pointer pair, not a native click - the same reason the stock
+        // uses one (see attachTap). A covered card sits directly under
+        // the cards a flick launches from, so it is squarely in the path
+        // of the dropped-click fault, and more so if the whole board
+        // becomes flickable later.
+        attachTap(cardEl, () => {
           if (helpModeActive) {
             showHelp(helpConceptForTarget('tableau', { faceUp: false }), cardEl);
             return;
@@ -4068,6 +4103,46 @@ function initIntro() {
   // cross-browser/touch inconsistency — deriving "was this a tap" from our
   // own pointerdown/pointerup pair sidesteps it entirely and behaves
   // identically for mouse, trackpad, and touch.
+  // "Was this a tap on this element?" derived from our own pointer pair -
+  // see the stock's own binding above for why nothing on the board may
+  // depend on a synthesised click. Deliberately element-agnostic: it is
+  // used for a pile (the stock) and for a card (a covered tableau card),
+  // and the set of surfaces needing it only grows if more of the board
+  // becomes flickable. Bails on a press that travels (that
+  // is a drag or a scroll, not a tap) using the same DRAG_THRESHOLD_PX
+  // the drag code uses, so the two agree on what counts as movement.
+  function attachTap(el, handler) {
+    let activeId = null, startX = 0, startY = 0;
+    function end() {
+      activeId = null;
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+    }
+    function onUp(e) {
+      if (activeId === null || e.pointerId !== activeId) return;
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      end();
+      if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) return;
+      // Released somewhere else entirely (touch keeps implicit capture,
+      // so pointerup still arrives here) - not a tap on this pile.
+      const r = el.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return;
+      handler(e);
+    }
+    function onCancel(e) {
+      if (e.pointerId === activeId) end();
+    }
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button !== undefined && e.button !== 0) return;
+      if (activeId !== null) return; // a second finger never starts a competing tap
+      activeId = e.pointerId;
+      startX = e.clientX;
+      startY = e.clientY;
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onCancel);
+    });
+  }
+
   function attachCardInteractions(cardEl, card, source, sourceIndex) {
     cardEl.addEventListener('pointerdown', (e) => {
       // Help mode: "tell me about this," not the card's normal drag/tap
