@@ -80,6 +80,39 @@ Settings ends with Support Mike's Games → Feedback → Reload App → (dev-onl
 version is fully inert, and dev/prod detection is hostname-based (`IS_LOCAL_DEV` in `script.js`, since this
 repo has no build step). Sudoku and Mahjong have not been migrated to this standard yet.
 
+## Temporary: Domain Migration Notice (remove after the old hostname is retired)
+
+This repo carries a deliberately self-contained, **temporary** system that moves players off
+`solitaire.mikestrassburger.com` and onto `https://solitaire.mikesgames.app`. It is inert everywhere
+except that one old hostname. See `mike-games-system/SYSTEM.md` §18 for the family-level pattern.
+
+- **The gate is the inline `<script>` at the end of `index.html`'s `<head>`**, not `domain-migration.js`.
+  It decides hostname + local date before first paint, before any game script, and depends on nothing but
+  `index.html` — which matters because these games have no service worker, so an installed Home Screen PWA
+  refetches that document on every launch. Read that block's comment before changing anything here.
+- **Cutoff: October 1, 2026, local midnight**, a literal constant — never deploy timing.
+- `domain-migration.js` only does DOM work (the pre-cutoff notice and its 3-day snooze, plus the live
+  cutoff watch for an installed PWA resumed from suspension). The post-cutoff screen needs none of it.
+- Two one-line guards in `script.js` (game IIFE, update-checker IIFE) keep the game from booting at all
+  past the cutoff, and `shouldShowIconNotice()` defers to the migration notice on the old hostname.
+- `domain-migration.test.js` runs the real inline gate out of `index.html` against a hostname/clock table.
+  Run it before changing the cutoff, the hostname match, or the copy.
+
+**Testing hooks** (`?migrationHost=1`, `?migrationDate=YYYY-MM-DD`, `?migrationReset=1`) can only ever make
+the migration UI *more* visible — `migrationDate` is clamped forward-only, so nothing gets a player back
+past a cutoff that has genuinely arrived. Keep that asymmetry if you touch them. Note `hardReload()` drops
+the query string, so a simulated session ends at the next in-app reload.
+
+**The old hostname stays attached.** DECIDED 2026-09-21: `solitaire.mikestrassburger.com` keeps resolving
+to this Netlify site and keeps serving the migration UI after the cutoff. The cutoff blocks *gameplay*, not
+the domain — enforcement is entirely in-page, so detaching the domain would replace the migration screen
+with a generic browser error for exactly the stranded-PWA population this exists to reach. Retiring the
+origin is a separate, later decision; don't read the Phase 2 copy as licence to pull the DNS record.
+
+**To remove the whole system:** delete `domain-migration.js`, `domain-migration.test.js`, the inline gate in
+`index.html`, the `#migration-notice`/`#migration-screen` markup, the migration block at the end of
+`style.css`, and the three `MIKE_MIGRATION` references in `script.js`.
+
 ## Repo orientation
 
 - Flat structure, no build step, no bundler — ES modules loaded directly by `index.html`. `node --test`

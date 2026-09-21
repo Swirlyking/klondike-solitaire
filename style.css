@@ -2524,3 +2524,187 @@ body {
   accent-color: var(--gold);
   cursor: pointer;
 }
+
+/* ==========================================================================
+   MIKE GAMES DOMAIN MIGRATION (temporary)
+   Remove this whole block together with domain-migration.js, the inline
+   gate in index.html's <head>, the #migration-notice/#migration-screen
+   markup, and the two guards in script.js once
+   solitaire.mikestrassburger.com is retired.
+
+   Two surfaces, both built out of the sheet language #support-overlay /
+   #install-prompt-overlay already established (dark felt card, gold hairline
+   border, gold heading, muted body copy, two-button row) rather than any new
+   warning/alert treatment - this is an announcement, and it should look like
+   the app talking, not like something went wrong.
+
+   NOTE: nothing here is load-bearing for the October 1 cutoff. The cutoff
+   screen is revealed by a stylesheet the inline gate injects itself, so an
+   old installed PWA running a stale style.css still gets an enforced,
+   readable, working migration screen - just an unstyled one.
+   ========================================================================== */
+
+#migration-notice,
+#migration-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Safe-area padding as well as the flat 20px every other sheet here uses:
+     these two are the only overlays that can be the very first thing an
+     iPhone player sees, before #app-frame's own inset padding is relevant. */
+  padding: max(20px, env(safe-area-inset-top, 0px))
+           max(20px, env(safe-area-inset-right, 0px))
+           max(20px, env(safe-area-inset-bottom, 0px))
+           max(20px, env(safe-area-inset-left, 0px));
+  /* Above every other overlay in the app (#support/#install-prompt at 2100,
+     #icon-notice above them) - the migration surfaces must never end up
+     behind another sheet. */
+  z-index: 2400;
+  overflow-y: auto;
+}
+/* The `hidden` attribute, not this app's usual .hidden class - see the
+   markup's own comment. !important so it still wins if anything else ever
+   tries to lay these out. */
+#migration-notice[hidden],
+#migration-screen[hidden] { display: none !important; }
+
+#migration-notice { background: rgba(0,0,0,0.65); }
+
+/* The cutoff screen is the whole app, not a sheet over it: opaque felt, the
+   same gradient html/body itself uses, so there is visibly nothing behind
+   it to go back to. */
+#migration-screen {
+  background: radial-gradient(ellipse at top, var(--felt), var(--felt-dark));
+  z-index: 2500;
+}
+
+#migration-notice-card,
+#migration-screen-card {
+  background: #133;
+  border: 1px solid var(--gold);
+  border-radius: 12px;
+  padding: 28px 32px;
+  width: min(90vw, 400px);
+  text-align: center;
+}
+#migration-notice-card h2,
+#migration-screen-card h2 {
+  color: var(--gold);
+  margin: 0 0 14px;
+  font-size: 21px;
+  line-height: 1.25;
+}
+#migration-notice-card p,
+#migration-screen-card p {
+  color: #dce7e0;
+  margin: 0 0 12px;
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+#migration-notice-card p:last-of-type,
+#migration-screen-card p:last-of-type { margin-bottom: 22px; }
+#migration-notice-card strong,
+#migration-screen-card strong { color: var(--gold); }
+
+/* The one line the pre-cutoff notice most needs a player to actually take
+   away - given its own quiet boxed emphasis so September 30 survives being
+   skim-read, without shouting. */
+#migration-notice-card p.migration-deadline {
+  background: rgba(217, 180, 92, 0.10);
+  border: 1px solid rgba(217, 180, 92, 0.35);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+
+#migration-notice-actions,
+#migration-screen-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+#migration-notice-actions a,
+#migration-notice-actions button,
+#migration-screen-actions a,
+#migration-screen-actions button {
+  flex: 1;
+  padding: 12px 18px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  transition: filter 0.15s;
+}
+#migration-notice-actions a:hover,
+#migration-notice-actions button:hover,
+#migration-screen-actions a:hover,
+#migration-screen-actions button:hover { filter: brightness(1.1); }
+#migration-notice-actions a:focus-visible,
+#migration-notice-actions button:focus-visible,
+#migration-screen-actions a:focus-visible,
+#migration-screen-actions button:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* Primary: the filled gold choice, same treatment as #confirmKeepBtn and
+   #installPromptGotItBtn - going to the new version is the point of both
+   surfaces. */
+#migrationNoticeNewBtn,
+#migrationScreenNewBtn {
+  background: var(--gold);
+  border: 1px solid var(--gold);
+  color: #222;
+}
+/* Secondary: de-emphasized outline, same treatment as #supportCloseBtn /
+   #installPromptNotNowBtn. */
+#migrationRemindBtn,
+#migrationScreenHomeBtn {
+  background: transparent;
+  border: 1px solid rgba(217, 180, 92, 0.6);
+  color: var(--gold);
+}
+#migrationRemindBtn:hover,
+#migrationScreenHomeBtn:hover { background: rgba(217, 180, 92, 0.12); }
+
+/* Same phone treatment as #support-actions/#confirm-actions: stacked,
+   column-reverse so the primary (last in DOM) sits on top under the thumb,
+   with a comfortably >44px tap height on each. */
+@media (max-width: 600px) {
+  #migration-notice-card,
+  #migration-screen-card { padding: 24px 22px; }
+  #migration-notice-actions,
+  #migration-screen-actions { flex-direction: column-reverse; }
+  #migration-notice-actions a,
+  #migration-notice-actions button,
+  #migration-screen-actions a,
+  #migration-screen-actions button { padding: 14px 18px; font-size: 15px; }
+}
+
+/* Short phone in landscape - four blocks of copy plus a two-button row do
+   not fit 375px of height at the sizes above, and a primary action that has
+   to be scrolled to is a primary action half the players will miss. The
+   overlay stays scrollable as a backstop (overflow-y above), but these
+   compactions are what make it actually fit: top-aligned, tighter padding,
+   one step down in type. Nothing here changes the copy or the order. */
+@media (max-height: 520px) {
+  #migration-notice,
+  #migration-screen { align-items: flex-start; }
+  #migration-notice-card,
+  #migration-screen-card { padding: 16px 22px; }
+  #migration-notice-card h2,
+  #migration-screen-card h2 { font-size: 18px; margin-bottom: 8px; }
+  #migration-notice-card p,
+  #migration-screen-card p { font-size: 13.5px; margin-bottom: 7px; }
+  #migration-notice-card p:last-of-type,
+  #migration-screen-card p:last-of-type { margin-bottom: 12px; }
+  #migration-notice-card p.migration-deadline { padding: 7px 10px; margin-bottom: 8px; }
+  #migration-notice-actions a,
+  #migration-notice-actions button,
+  #migration-screen-actions a,
+  #migration-screen-actions button { padding: 10px 14px; }
+}

@@ -59,22 +59,31 @@ import {
   recordNotNow,
 } from './install-prompt.js';
 
-// Must run before anything else touches the preferences store - see this
-// function's own comment for why (recordPlay() inside newGame() below
-// would otherwise make even a brand-new device's first-ever session look
-// like a returning player's by the time anything checked).
-ensureIconGenerationMarker();
+// MIKE GAMES DOMAIN MIGRATION (temporary) - the three startup calls below
+// are the only game code outside the two IIFEs further down, so they get
+// the same guard those do. Past the cutoff this origin is retired: there
+// is no session to stamp, no install to prompt, and a visit counter that
+// can never be acted on. Wrapped together rather than guarded one by one
+// so ensureIconGenerationMarker()'s "must be first to touch preferences"
+// ordering below is preserved exactly as it was.
+if (!(window.MIKE_MIGRATION && window.MIKE_MIGRATION.blocked)) {
+  // Must run before anything else touches the preferences store - see this
+  // function's own comment for why (recordPlay() inside newGame() below
+  // would otherwise make even a brand-new device's first-ever session look
+  // like a returning player's by the time anything checked).
+  ensureIconGenerationMarker();
 
-// MIKE Games System (see mike-games-system/SYSTEM.md §02, "Custom install
-// prompt") - as early as possible, same reasoning as Mike's Sudoku's own
-// call site: Chrome can fire beforeinstallprompt before any user
-// interaction, and it must be preventDefault()'d immediately (not just
-// handled later) to stay available for the Settings install button
-// instead of the browser's own mini-infobar. bumpVisitCount() once per
-// app load (not per render) is what "wait N visits after Not Now" in
-// install-prompt.js actually counts.
-initBeforeInstallPromptCapture();
-bumpVisitCount();
+  // MIKE Games System (see mike-games-system/SYSTEM.md §02, "Custom install
+  // prompt") - as early as possible, same reasoning as Mike's Sudoku's own
+  // call site: Chrome can fire beforeinstallprompt before any user
+  // interaction, and it must be preventDefault()'d immediately (not just
+  // handled later) to stay available for the Settings install button
+  // instead of the browser's own mini-infobar. bumpVisitCount() once per
+  // app load (not per render) is what "wait N visits after Not Now" in
+  // install-prompt.js actually counts.
+  initBeforeInstallPromptCapture();
+  bumpVisitCount();
+}
 
 // MIKE Games System (see mike-games-system/SYSTEM.md, Standard Settings
 // Architecture) - gates the dev-only "Testing" row/sheet. This project has
@@ -282,6 +291,15 @@ function initIntro() {
 }
 
 (() => {
+  // MIKE GAMES DOMAIN MIGRATION (temporary) - on the old
+  // solitaire.mikestrassburger.com hostname on or after the October 1, 2026
+  // cutoff, the game does not boot AT ALL: no deal, no listeners, no timers,
+  // no stats write. The inline gate in index.html has already hidden every
+  // other element on the page before first paint, so this is not what makes
+  // the migration screen visible - it is what makes sure there is no live
+  // game running invisibly underneath it. See that gate's own comment.
+  if (window.MIKE_MIGRATION && window.MIKE_MIGRATION.blocked) return;
+
   const SUITS = [
     { key: 'hearts', file: 'heart', color: 'red', symbol: '♥' },
     { key: 'diamonds', file: 'diamond', color: 'red', symbol: '♦' },
@@ -5143,7 +5161,14 @@ function initIntro() {
     }, 4000);
   });
 
-  if (shouldShowIconNotice()) {
+  // MIKE GAMES DOMAIN MIGRATION (temporary) - the second clause, and the
+  // whole reason for it: on the old hostname the migration notice is saying
+  // a strictly bigger version of what this sheet says (this one asks the
+  // player to reinstall from solitaire.mikesgames.app; that one is why), and
+  // both are timed to land at the same 1600ms mark. Two stacked sheets at
+  // launch is the wrong answer - migration wins, and this one comes back by
+  // itself for anyone still on the old icon once they are on the new domain.
+  if (shouldShowIconNotice() && !(window.MIKE_MIGRATION && window.MIKE_MIGRATION.active)) {
     // A short delay so this never competes visually with the opening
     // intro animation - it isn't gated ON the intro finishing (the two
     // systems stay fully independent, matching initIntro()'s own "never
@@ -5582,6 +5607,12 @@ function initIntro() {
 // no save/restore — so this deliberately never reloads on its own, only
 // on request), so it lives outside the game IIFE entirely.
 (() => {
+  // MIKE GAMES DOMAIN MIGRATION (temporary) - same reasoning as the game
+  // IIFE's own guard above: past the cutoff there is no app left to offer an
+  // update for, and the update bar would just be a dead control polling the
+  // retired origin every 60s behind the migration screen.
+  if (window.MIKE_MIGRATION && window.MIKE_MIGRATION.blocked) return;
+
   const CHECK_FILES = ['index.html', 'script.js', 'style.css'];
   const CHECK_INTERVAL_MS = 60000;
 

@@ -41,6 +41,120 @@
   window.addEventListener('orientationchange', setAppVh);
 })();
 </script>
+<!-- MIKE GAMES DOMAIN MIGRATION (temporary - remove this block, the
+     #migration-notice/#migration-screen markup below, domain-migration.js,
+     its styles in style.css, and the two guards in script.js once
+     solitaire.mikestrassburger.com is retired).
+
+     This is the authoritative gate for the whole system. It is inline and
+     synchronous, ahead of everything else, for the same reason the
+     --app-vh fix above is: it is a correctness property of the app shell
+     itself, not deferrable work. Three things follow from it living
+     exactly here, and only here:
+
+       1. It runs before first paint, so a visit past the cutoff never
+          flashes a frame of real gameplay before the migration screen.
+       2. It runs before any game script, so no board is ever dealt.
+       3. It depends on NOTHING but index.html. These games have no service
+          worker, so an installed Home Screen PWA refetches this document
+          on every launch (and cannot launch at all offline) - index.html
+          is the one file that is reliably fresh on an old installed app.
+          That is also why the blackout rules below are injected from here
+          rather than read from style.css: a stale style.css or script.js
+          can degrade how the migration screen LOOKS, never whether the
+          cutoff is enforced.
+
+     The cutoff is an explicit local-time date, never deploy timing - an
+     already-installed old PWA has to be able to reach October 1 on its own
+     clock, with no further deploy and nothing to fetch.
+
+     Testing hooks (see domain-migration.js and CLAUDE.md): ?migrationHost=1
+     simulates the old hostname anywhere else, ?migrationDate=YYYY-MM-DD
+     simulates the clock, ?migrationReset=1 clears the Remind Me Later
+     snooze. Every one of them can only ever make the migration UI MORE
+     visible - ?migrationDate is clamped so it can only move the clock
+     FORWARD, so there is no query string that gets a player back past a
+     cutoff that has genuinely arrived, and none of them can suppress
+     anything. That is what makes them safe to ship. -->
+<script>
+(function () {
+  var OLD_DOMAIN = 'mikestrassburger.com';
+  var NEW_GAME_URL = 'https://solitaire.mikesgames.app';
+  var HOME_URL = 'https://mikesgames.app';
+  // October 1, 2026 at 12:00 AM LOCAL time. Month is 0-indexed: 9 = October.
+  // Local, not UTC, and not a parsed date string (which would be treated as
+  // UTC by some engines and local by others) - the player's own midnight is
+  // the contract.
+  var CUTOFF_MS = new Date(2026, 9, 1, 0, 0, 0, 0).getTime();
+
+  var host = String(location.hostname || '').toLowerCase();
+  var search = String(location.search || '');
+  function param(name) {
+    var m = new RegExp('[?&]' + name + '=([^&]*)').exec(search);
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+
+  // Old-host test: that exact registrable domain, or any subdomain of it.
+  // Nothing else ever matches - not solitaire.mikesgames.app, not
+  // mikesgames.app, not localhost/127.0.0.1, not a *.netlify.app preview.
+  var isOldHost = host === OLD_DOMAIN
+    || host.slice(-(OLD_DOMAIN.length + 1)) === '.' + OLD_DOMAIN;
+  // The one sanctioned way to see this UI anywhere else - explicitly
+  // simulating the old hostname, per the hostname rules for this system.
+  if (!isOldHost && param('migrationHost') === '1') isOldHost = true;
+
+  // Forward-only clock simulation. A simulated date EARLIER than the real
+  // one is ignored outright; that asymmetry is the whole reason this is
+  // safe to leave in production.
+  var offset = 0;
+  var sim = param('migrationDate');
+  var m = sim && /^(\d{4})-(\d{2})-(\d{2})$/.exec(sim);
+  if (m) {
+    var simMs = new Date(+m[1], +m[2] - 1, +m[3], 0, 0, 0, 0).getTime();
+    if (simMs > Date.now()) offset = simMs - Date.now();
+  }
+
+  var phase = !isOldHost ? 'none'
+    : (Date.now() + offset >= CUTOFF_MS ? 'blocked' : 'notice');
+
+  var blackout = null;
+  // Shared by the boot-time decision below and domain-migration.js's live
+  // watch for an app that is still open when midnight arrives, so a cutoff
+  // crossed mid-session lands in exactly the same state as one crossed
+  // before the page ever loaded.
+  function enforceBlock() {
+    api.phase = 'blocked';
+    api.blocked = true;
+    document.documentElement.setAttribute('data-mike-migration', 'blocked');
+    if (blackout) return;
+    blackout = document.createElement('style');
+    // Everything the game would render is hidden OUTRIGHT, not merely
+    // covered, and #migration-screen is revealed from the same rules - so
+    // neither half depends on style.css having been refetched.
+    blackout.textContent =
+      'html[data-mike-migration="blocked"] body > * { display: none !important; }'
+      + 'html[data-mike-migration="blocked"] body > #migration-screen { display: flex !important; }';
+    (document.head || document.documentElement).appendChild(blackout);
+  }
+
+  var api = {
+    phase: phase,
+    active: phase !== 'none',
+    blocked: phase === 'blocked',
+    newGameUrl: NEW_GAME_URL,
+    homeUrl: HOME_URL,
+    cutoffMs: CUTOFF_MS,
+    dateOffsetMs: offset,
+    clearSnooze: param('migrationReset') === '1',
+    enforceBlock: enforceBlock
+  };
+  window.MIKE_MIGRATION = api;
+
+  if (phase === 'none') return;
+  document.documentElement.setAttribute('data-mike-migration', phase);
+  if (phase === 'blocked') enforceBlock();
+})();
+</script>
 </head>
 <body>
   <!-- OPENING INTRO - mirrors Mike's Mahjong's intro architecture beat-for-
@@ -548,11 +662,72 @@
     </div>
   </div>
 
+  <!-- MIKE GAMES DOMAIN MIGRATION (temporary) - PHASE 1, the pre-cutoff
+       notice, shown only on the old solitaire.mikestrassburger.com
+       hostname and only before October 1, 2026 (see the inline gate in
+       <head>, and domain-migration.js for the reveal/snooze wiring). The
+       game stays completely playable behind it; this is an announcement,
+       not a warning, and it uses the same tiny dark-felt sheet
+       #support-overlay/#install-prompt-overlay already establish rather
+       than inventing an alert UI for it.
+
+       Starts with the `hidden` ATTRIBUTE rather than this app's usual
+       .hidden class, deliberately and only here: `hidden` is honored by
+       the browser's own stylesheet, so this sheet cannot flash up
+       unstyled-and-visible on a load where index.html is fresh but
+       style.css is still the cached old one - the exact condition this
+       whole system exists to survive. -->
+  <div id="migration-notice" hidden>
+    <div id="migration-notice-card" role="dialog" aria-modal="true" aria-labelledby="migration-notice-title">
+      <h2 id="migration-notice-title">Mike's Games has moved</h2>
+      <p>This game has a new home at <strong>mikesgames.app</strong>.</p>
+      <p class="migration-deadline">This old version will be available through <strong>September 30</strong>.</p>
+      <p>You can move this game to its new home now, or simply delete this version and visit mikesgames.app to start fresh.</p>
+      <!-- Secondary first in DOM, primary last - the same ordering
+           #support-actions/#confirm-actions use, so the mobile
+           column-reverse rule in style.css puts the primary action on top
+           under the thumb. -->
+      <div id="migration-notice-actions">
+        <button type="button" id="migrationRemindBtn">Remind Me Later</button>
+        <a id="migrationNoticeNewBtn" href="https://solitaire.mikesgames.app" target="_blank" rel="noopener noreferrer">Go to the New Version</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- MIKE GAMES DOMAIN MIGRATION (temporary) - PHASE 2, the post-cutoff
+       screen. Deliberately 100% static: it is revealed by the stylesheet
+       the inline gate in <head> injects, both actions are real <a href>
+       elements, and nothing here needs domain-migration.js, script.js or
+       even style.css to have loaded. That is the point - this is the one
+       piece that has to keep working inside an old installed PWA running
+       on whatever it happens to have cached.
+
+       No dismissal of any kind: no close button, no backdrop handler, no
+       Escape. After the cutoff there is nothing behind this to go back
+       to - the gate has already removed the rest of the app from the
+       page, and script.js never boots. -->
+  <div id="migration-screen" hidden>
+    <div id="migration-screen-card" role="dialog" aria-modal="true" aria-labelledby="migration-screen-title">
+      <h2 id="migration-screen-title">This game has moved</h2>
+      <p>Mike's Games now lives at <strong>mikesgames.app</strong>.</p>
+      <p>This old version is no longer available. You can install the new version of this game, or delete this one and visit mikesgames.app to start fresh.</p>
+      <div id="migration-screen-actions">
+        <a id="migrationScreenHomeBtn" href="https://mikesgames.app" target="_blank" rel="noopener noreferrer">Visit Mike's Games</a>
+        <a id="migrationScreenNewBtn" href="https://solitaire.mikesgames.app" target="_blank" rel="noopener noreferrer">Go to the New Version</a>
+      </div>
+    </div>
+  </div>
+
   <div id="drag-layer"></div>
   <!-- Win-celebration clone cards only ever live here - never in #drag-layer,
        so the two systems can't collide in z-index or cleanup ordering. -->
   <div id="celebration-layer"></div>
 
+  <!-- MIKE GAMES DOMAIN MIGRATION (temporary) - the DOM half only; the
+       decision itself already happened in the inline gate in <head>.
+       Classic script, before the module below, so the pre-cutoff notice is
+       wired up independently of script.js's whole module graph. -->
+  <script src="domain-migration.js"></script>
   <script type="module" src="script.js"></script>
 </body>
 </html>
