@@ -1,15 +1,42 @@
-// TEMPORARY INSTRUMENTATION - remove once the stock-after-flick reading
-// is in hand. Loaded ONLY when the URL contains "diag"; on every ordinary
-// visit this file is never even requested.
+// TEMPORARY INSTRUMENTATION - remove once diagnosed.
 //
-// One question: when a tap on the stock does nothing after a flick, where
-// does it break?
-//   no DOWN                -> the touch never reached the pile
-//   DOWN, no UP            -> gesture cancelled/stolen
-//   DOWN+UP, no CLICK      -> iOS declined to synthesise the click
-//   CLICK, no draw         -> onStockClick ran and bailed on a guard
-//   draw arrives LATE      -> the tap worked, but something awaited
+// The full overlay (?diag=1) MASKS the bug: with it on, the stock draws
+// on the first tap after a flick; with it off, it needs two. So one of
+// the three things the overlay does is suppressing the fault. These
+// modes isolate them, one variable at a time:
+//
+//   ?diag=L   three no-op capture listeners (pointerdown/up/click), nothing else
+//   ?diag=T   two polling timers (16ms querySelector, 100ms innerText read), nothing else
+//   ?diag=D   one fixed pointer-events:none div, nothing else
+//   ?diag=1   the full logging overlay (known to mask it)
+//
+// L, T and D are INVISIBLE by design - there is nothing to see. Play as
+// normal and report only whether the stock still needs two taps.
 (() => {
+  const mode = (location.search.match(/[?&]diag=([A-Za-z0-9]+)/) || [, '1'])[1];
+
+  if (mode !== '1') {
+    // --- isolation modes: do exactly one thing, and nothing else ---
+    if (mode.indexOf('L') !== -1) {
+      const noop = () => {};
+      addEventListener('pointerdown', noop, true);
+      addEventListener('pointerup', noop, true);
+      addEventListener('click', noop, true);
+    }
+    if (mode.indexOf('T') !== -1) {
+      setInterval(() => { document.querySelector('.drag-ghost.flick-flight'); }, 16);
+      setInterval(() => { void (document.body && document.body.innerText); }, 100);
+    }
+    if (mode.indexOf('D') !== -1) {
+      const d = document.createElement('div');
+      d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;height:52px;'
+        + 'background:rgba(0,0,0,.9);z-index:2147483647;pointer-events:none';
+      const mount = () => document.body && document.body.appendChild(d);
+      if (document.body) mount(); else addEventListener('DOMContentLoaded', mount);
+    }
+    return;
+  }
+
   const box = document.createElement('div');
   box.style.cssText = 'position:fixed;left:0;right:0;bottom:0;max-height:50vh;overflow:hidden;'
     + 'background:rgba(0,0,0,.9);color:#0f0;font:9px/1.2 ui-monospace,Menlo,monospace;'
