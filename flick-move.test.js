@@ -216,7 +216,7 @@ function functionBody(name) {
 
 test('the flick commits the canonical move exactly once per path', () => {
   const body = functionBody('executeFlickMove');
-  const commits = body.match(/\bcommitMove\(/g) || [];
+  const commits = body.match(/\bcommitFlickMove\(/g) || [];
   // Two call sites, one per branch: the reduced-motion early return and
   // the flight's deferred commit. They are mutually exclusive - the
   // first branch returns - so any given flick commits exactly once.
@@ -225,10 +225,10 @@ test('the flick commits the canonical move exactly once per path', () => {
   // lives inside the deferred pendingFlickCommit closure and only runs
   // from flushPendingFlick.
   const reduced = body.slice(0, body.indexOf('pendingFlickCommit = () => {'));
-  assert.equal((reduced.match(/\bcommitMove\(/g) || []).length, 1, 'exactly one commit in the reduced-motion branch');
-  assert.match(reduced, /commitMove\([\s\S]{0,400}?return;/, 'the reduced-motion branch must return');
+  assert.equal((reduced.match(/\bcommitFlickMove\(/g) || []).length, 1, 'exactly one commit in the reduced-motion branch');
+  assert.match(reduced, /commitFlickMove\([\s\S]{0,400}?return;/, 'the reduced-motion branch must return');
   const deferred = body.slice(body.indexOf('pendingFlickCommit = () => {'));
-  assert.equal((deferred.match(/\bcommitMove\(/g) || []).length, 1, 'exactly one commit in the deferred closure');
+  assert.equal((deferred.match(/\bcommitFlickMove\(/g) || []).length, 1, 'exactly one commit in the deferred closure');
 });
 
 test('the pending commit can only ever run once', () => {
@@ -264,20 +264,34 @@ test('every state entry point settles an in-flight flick first', () => {
   }
 });
 
-test('a card in flight cannot be picked up again', () => {
-  // Two things together make this safe. The pile is redrawn without the
-  // departing card the moment it launches, so its element is gone from
-  // the DOM entirely - there is nothing left to press. And startDrag
-  // settles any pending flick before reading the board, so the next card
-  // is played against the real post-move state rather than a stale one.
+test('a card in flight cannot be picked up again, from any source', () => {
+  // The card in the air must not also be pressable where it started.
+  // That holds for all three sources, but for a DIFFERENT reason each
+  // time, which is why the launch-time render is chosen per source:
+  //   waste      its element is gone - the pile is re-fanned without it
+  //   tableau    its element is visibility:hidden, which also removes it
+  //              from hit-testing, while leaving the column's geometry
+  //              intact and the covered card still hidden
+  //   foundation its element was replaced by the peek-render
+  // And whichever it was, startDrag settles any pending flick before it
+  // reads the board, so the next card is played against post-move state.
   const drag = functionBody('startDrag');
   assert.match(drag.slice(0, 500), /flushPendingFlick\(\);/,
     'startDrag must settle a pending flick before it reads state');
-  const flight = functionBody('executeFlickMove');
-  assert.match(flight, /renderWaste\(stack\[0\]\.id\)/,
-    'the launching card must be dropped from the pile immediately');
+
+  const launch = functionBody('renderFlickSourceAtLaunch');
+  assert.match(launch, /source === 'waste'[\s\S]{0,80}renderWaste\(stack\[0\]\.id\)/,
+    'the waste re-fans at launch');
+  assert.ok(!/renderTableauCol|render\(\)/.test(launch),
+    'a tableau column must NOT be re-rendered at launch: that would collapse the cascade early '
+    + 'and expose the covered card before the move committed');
   assert.match(functionBody('renderWaste'), /departingCardId/,
-    'renderWaste has to support omitting it');
+    'renderWaste has to support omitting the departing card');
+
+  // the hidden/peeked origin is what covers the other two sources
+  const hide = functionBody('hideDragSource');
+  assert.match(hide, /visibility = 'hidden'/);
+  assert.match(hide, /source === 'foundation'[\s\S]{0,90}peekBehindTop: true/);
 });
 
 test('settling a flick early takes its ghost down with it', () => {
@@ -317,7 +331,7 @@ test('the board is never rebuilt while the card is flying', () => {
   // The only commitMove reached before the launch belongs to the
   // reduced-motion branch, which returns before the flight exists.
   const beforeLaunch = body.slice(0, prepared);
-  assert.match(beforeLaunch, /if \(!plan\)[\s\S]*?commitMove\([\s\S]{0,400}?return;/,
+  assert.match(beforeLaunch, /if \(!plan\)[\s\S]*?commitFlickMove\([\s\S]{0,400}?return;/,
     'the only pre-launch commit is the reduced-motion branch, and it returns');
   assert.match(body.slice(launch), /flushPendingFlick\(\)/, 'the flight commits from its landing callback');
 });
@@ -330,7 +344,7 @@ test('the flick records its own duration for win detection', () => {
   assert.ok(body.includes('lastMoveGlideMs = durationMs'));
   assert.match(body, /durationMs = plan \? plan\.durationMs : MOVE_GLIDE_MS/,
     'the recorded duration must be this flight\'s own, not a fixed guess');
-  assert.ok(body.indexOf('lastMoveGlideMs') < body.indexOf('commitMove('),
+  assert.ok(body.indexOf('lastMoveGlideMs') < body.indexOf('commitFlickMove('),
     'it must be set before commitMove, whose render() calls checkWin synchronously');
 });
 
@@ -363,8 +377,9 @@ test('flick detection does not depend on a frame having been rendered', () => {
     'the classifier must be allowed to derive the onset when no frame stamped one');
   assert.ok(body.indexOf("kind === 'flick'") < body.indexOf('if (!moved)'),
     'the flick check must come before the tap fallback');
-  assert.match(body, /if \(!moved\) originEls\.forEach/,
-    'a flick that outran the frame must still hide the origin the frame would have hidden');
+  assert.match(body, /if \(!moved\) hideDragSource\(source, sourceIndex, originEls\)/,
+    'a flick that outran the frame must hide the origin exactly as that frame would have - '
+    + 'through the shared source-aware helper, not a partial copy of it');
 });
 
 test('the release point is recorded before the gesture is classified', () => {
@@ -477,8 +492,9 @@ test('every flick ending takes its ghost back down', () => {
   const refusal = functionBody('playFlickRefusal');
   assert.equal((refusal.match(/ghosts\.wrappers\.forEach\(w => w\.remove\(\)\)/g) || []).length, 2,
     'the refusal removes its ghost on both the reduced-motion and the animated path');
-  assert.equal((refusal.match(/el\.style\.visibility = ''/g) || []).length, 2,
-    'and restores the real card underneath it on both');
+  assert.equal((refusal.match(/restoreDragSource\(source, sourceIndex, originEls\)/g) || []).length, 2,
+    'and restores the source through the shared source-aware helper on both paths - a bare '
+    + 'visibility reset is a no-op for a foundation, whose element was replaced by the peek-render');
 });
 
 test('the flick never counts a move of its own', () => {
@@ -583,4 +599,181 @@ test('attachTap ignores a press that travels, using the drag code threshold', ()
     'a tap and a drag must agree on what counts as movement, from one constant');
   assert.match(body, /Math\.hypot[\s\S]{0,60}DRAG_THRESHOLD_PX\) return/,
     'travel beyond the threshold is a drag or a scroll, not a tap');
+});
+
+// ---------- 14: expanding the flick to ANY eligible single card ----------
+//
+// "Eligible single card" = a source the gesture is offered on (waste,
+// tableau, foundation) AND a move of exactly one card, as decided by
+// getStackFrom - the same function the drag uses. Nothing here consults
+// the DOM. The multi-card boundary is the point of most of these tests:
+// a flick must never quietly reduce a movable run to its first card.
+
+function col(state, i, cards) { state.tableau[i] = cards; return state; }
+
+test('a tableau card is a single-card source only when it is the column top', () => {
+  const s = emptyState();
+  const nine = card('spades', 9), eight = card('hearts', 8), seven = card('clubs', 7);
+  col(s, 2, [nine, eight, seven]);
+  // the exposed top: nothing travels with it
+  assert.equal(getStackFrom(s, 'tableau', 2, seven).length, 1);
+  // one card up: a two-card run goes with it
+  assert.equal(getStackFrom(s, 'tableau', 2, eight).length, 2);
+  // the bottom card takes the whole column
+  assert.equal(getStackFrom(s, 'tableau', 2, nine).length, 3);
+});
+
+test('waste and foundation are always single-card sources', () => {
+  const s = emptyState();
+  const a = card('hearts', 5), b = card('clubs', 9);
+  s.waste = [card('spades', 2), a];
+  s.foundations[0] = [card('hearts', 1), card('hearts', 2), b];
+  assert.equal(getStackFrom(s, 'waste', null, a).length, 1);
+  assert.equal(getStackFrom(s, 'foundation', 0, b).length, 1);
+});
+
+test('MULTI-CARD SAFETY: eligibility is length-gated, so a run can never flick', () => {
+  // The regression boundary. isFlickEligible pairs the pile rule with a
+  // hard length test; onDragEnd must use THAT, not the pile rule alone,
+  // or a fast gesture on a run would fling its first card and silently
+  // orphan the rest.
+  const src = stripComments(SCRIPT_RAW);
+  assert.match(functionBody('isFlickEligible'), /isFlickableSource\(source\)\s*&&\s*stack\.length === 1/,
+    'both halves of the rule, in one place');
+  assert.match(src, /kind === 'flick' && isFlickEligible\(source, stack\)/,
+    'the gate must be the full eligibility test');
+  assert.ok(!/kind === 'flick' && isFlickableSource\(source\)\)/.test(src),
+    'the pile rule alone must never be the gate again');
+  // and the stack handed to it is the canonical one
+  assert.match(functionBody('startDrag'), /getStackFrom\(state, source, sourceIndex, card\)/);
+});
+
+test('MULTI-CARD SAFETY: a non-eligible gesture falls through to the ordinary drop path', () => {
+  // A fast gesture on a run is still a drag: it must reach the
+  // drop-target test and be resolved by where it was released, exactly
+  // as before the flick existed.
+  const body = functionBody('onDragEnd');
+  const gate = body.indexOf("kind === 'flick' && isFlickEligible");
+  assert.ok(gate !== -1);
+  const after = body.slice(gate);
+  assert.match(after, /pileContainerAt\(e\.clientX, e\.clientY\)/,
+    'the drop-target test must still be reachable when the flick gate does not fire');
+  assert.match(after, /isValidDropTarget\(/);
+});
+
+test('a covered tableau card can never reach the flick path at all', () => {
+  // It gets attachTap (bounce + tip), not attachCardInteractions, so it
+  // never begins a drag and so never produces a gesture to classify.
+  const src = stripComments(SCRIPT_RAW);
+  assert.match(src, /attachTap\(cardEl, \(\) => \{/, 'covered cards use attachTap');
+  const covered = src.slice(src.indexOf('attachTap(cardEl'), src.indexOf('attachTap(cardEl') + 400);
+  assert.ok(!/startDrag|attachCardInteractions/.test(covered),
+    'a covered card must not be given drag interactions');
+});
+
+test('the three gesture-capable sources are exactly the ones with card interactions', () => {
+  const src = stripComments(SCRIPT_RAW);
+  for (const s of ['waste', 'foundation', 'tableau']) {
+    assert.ok(src.includes(`attachCardInteractions(cardEl, card, '${s}'`),
+      `${s} cards must carry the shared pointer model`);
+  }
+  assert.ok(!/attachCardInteractions\(cardEl, card, 'stock'/.test(src),
+    'the stock has no card interactions - a flick cannot originate there');
+});
+
+test('a foundation card resolves only to the tableau, never back to a foundation', () => {
+  const s = emptyState();
+  const six = card('spades', 6);
+  s.foundations[0] = [card('spades', 1), six];        // 6 of spades on top
+  s.tableau[1] = [card('hearts', 7)];                 // red 7 accepts a black 6
+  const stack = getStackFrom(s, 'foundation', 0, six);
+  assert.equal(stack.length, 1);
+  assert.deepEqual(resolveClickDestination(s, six, 'foundation', 0, 1), { type: 'tableau', index: 1 });
+});
+
+test('a foundation card with nowhere legal to go resolves to null, so it only ever nudges', () => {
+  const s = emptyState();
+  const six = card('spades', 6);
+  s.foundations[0] = [card('spades', 1), six];
+  s.tableau[1] = [card('spades', 7)];  // same colour - illegal
+  assert.equal(resolveClickDestination(s, six, 'foundation', 0, 1), null);
+});
+
+test('an Ace on a foundation never moves - the existing rules say so, and the flick inherits that', () => {
+  const s = emptyState();
+  const ace = card('hearts', 1);
+  s.foundations[0] = [ace];
+  s.tableau[0] = [card('spades', 2)];
+  assert.equal(resolveClickDestination(s, ace, 'foundation', 0, 1), null,
+    'the flick must not invent a foundation rule the game does not have');
+});
+
+test('a single tableau card prefers a foundation, exactly as tap-to-move does', () => {
+  const s = emptyState();
+  const two = card('hearts', 2);
+  s.foundations[0] = [card('hearts', 1)];
+  col(s, 3, [two]);
+  s.tableau[5] = [card('spades', 3)]; // a legal tableau home too
+  assert.deepEqual(resolveClickDestination(s, two, 'tableau', 3, 1), { type: 'foundation', index: 0 },
+    'single tableau card: foundation first - one shared policy, not a flick-specific one');
+});
+
+test('the flick records the tableau cycle exactly as tap-to-move does', () => {
+  // resolveClickDestination cycles a tableau card through legal columns
+  // using lastTableauDest. Tap-to-move writes that memory after
+  // committing; a flick must too, or the same card would be offered the
+  // same column twice and the two gestures would disagree.
+  const body = functionBody('commitFlickMove');
+  assert.match(body, /commitMove\(stack, source, sourceIndex, target, targetIndex\)/);
+  assert.match(body, /source === 'tableau' && target === 'tableau'[\s\S]{0,120}tableauClickMemory = \{ cardId: stack\[0\]\.id, destIndex: targetIndex \}/,
+    'same bookkeeping executeClickMove does');
+  assert.ok(body.indexOf('commitMove(') < body.indexOf('tableauClickMemory ='),
+    'commitMove clears the memory, so it must be re-set after it');
+});
+
+test('undo reverses a flicked TABLEAU single card exactly', () => {
+  const s = emptyState();
+  const two = card('hearts', 2);
+  col(s, 3, [card('clubs', 9), two]);
+  s.foundations[0] = [card('hearts', 1)];
+  const before = JSON.stringify(s);
+  const dest = resolveClickDestination(s, two, 'tableau', 3, 1);
+  const { history } = commitLikeScriptJs(s, 0, [two], 'tableau', 3, dest.type, dest.index);
+  assert.notEqual(JSON.stringify(s), before);
+  assert.equal(JSON.stringify(history[0]), before, 'undo restores the pre-flick board exactly');
+});
+
+test('undo reverses a flicked FOUNDATION card exactly', () => {
+  const s = emptyState();
+  const six = card('spades', 6);
+  s.foundations[0] = [card('spades', 1), six];
+  s.tableau[1] = [card('hearts', 7)];
+  const before = JSON.stringify(s);
+  const dest = resolveClickDestination(s, six, 'foundation', 0, 1);
+  const { history, moveCount } = commitLikeScriptJs(s, 0, [six], 'foundation', 0, dest.type, dest.index);
+  assert.equal(moveCount, 1, 'exactly one move counted');
+  assert.equal(s.foundations[0].length, 1, 'the card left the foundation');
+  assert.equal(s.tableau[1].length, 2);
+  assert.equal(JSON.stringify(history[0]), before, 'undo restores it');
+});
+
+test('a tableau departure leaves the reveal to the canonical move, at the canonical time', () => {
+  // The covered card underneath must not turn over until the move has
+  // actually committed - which, for a flick, is on landing. So the flick
+  // must not flip anything itself, and must not pre-render the column.
+  const flight = functionBody('executeFlickMove');
+  assert.ok(!/flipNewTopIfNeeded|faceUp = true/.test(flight),
+    'the flick must never flip a card itself - commitMove owns the reveal');
+  assert.ok(!/renderTableauCol/.test(flight),
+    'and must not re-render the source column early, which would expose it');
+  // commitMove is what performs it, and the flick reaches it unchanged
+  assert.match(functionBody('commitFlickMove'), /commitMove\(/);
+});
+
+test('the launch-time source render is chosen per source, not applied blanket', () => {
+  const body = functionBody('renderFlickSourceAtLaunch');
+  assert.match(body, /source === 'waste'/, 'the waste is the only source needing one');
+  assert.ok(!/render\(\)/.test(body), 'never a full board render at launch');
+  assert.ok(!/renderTableauCol|renderFoundation/.test(body),
+    'tableau and foundation need no launch render: hidden-in-place and peek-render already cover them');
 });

@@ -234,14 +234,21 @@ export function classifyPointerGesture({ samples, onset: givenOnset, dragThresho
   };
 }
 
-// Where a flick may start. Only the waste, for this first version - the
-// gesture is deliberately not offered on tableau runs (multi-card
-// stacks), foundations (taking a card back off one is a considered
-// move, not a fling), or the stock (not draggable at all - it has its
-// own click handler, so a flick can never originate there regardless).
-// A named predicate rather than an inline `source === 'waste'` so the
+// Which PILES a flick may start from. Not the whole eligibility rule:
+// the gesture is only ever offered for a move of exactly ONE card, and
+// how many cards a given press would move is a Solitaire question this
+// file deliberately cannot answer (it knows no rules - see the header).
+// The caller pairs this with that test; see isFlickEligible in
+// script.js, which asks getStackFrom - the same function the drag uses.
+//
+// The stock is absent and can never be added: it is not draggable and
+// has no card interactions, so a flick cannot originate there at all.
+// A covered tableau card is likewise unreachable - it never gets the
+// pointer handlers that begin a drag.
+//
+// A named predicate rather than an inline source comparison so the
 // scope rule is stated, and tested, in exactly one place.
-const FLICKABLE_SOURCES = ['waste'];
+const FLICKABLE_SOURCES = ['waste', 'tableau', 'foundation'];
 export function isFlickableSource(source) {
   return FLICKABLE_SOURCES.includes(source);
 }

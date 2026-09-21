@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   classifyPointerGesture,
   releaseVelocity,
@@ -275,11 +276,31 @@ test('intensity spans 0..1 across the usable speed range and clamps outside it',
 
 // ---------- 11: scope ----------
 
-test('only the waste can start a flick', () => {
-  assert.equal(isFlickableSource('waste'), true);
-  for (const source of ['tableau', 'foundation', 'stock']) {
-    assert.equal(isFlickableSource(source), false, `${source} must not be flickable in this version`);
+test('a flick may start from the waste, the tableau or a foundation - never the stock', () => {
+  for (const source of ['waste', 'tableau', 'foundation']) {
+    assert.equal(isFlickableSource(source), true, `${source} should offer the gesture`);
   }
+  // The stock is not merely disallowed, it is unreachable: it is not
+  // draggable and carries no card interactions, so no gesture on it can
+  // ever produce a flick regardless of what this predicate says.
+  assert.equal(isFlickableSource('stock'), false);
+  assert.equal(isFlickableSource('nonsense'), false);
+});
+
+test('this predicate is about PILES, not about how many cards would move', () => {
+  // Deliberate division of labour: flick.js knows no Solitaire rules, so
+  // it cannot decide whether a given press would move one card or a run.
+  // That half lives in script.js's isFlickEligible, which asks
+  // getStackFrom. A tableau source passes here and can still be refused
+  // there - which is what protects multi-card runs.
+  assert.equal(isFlickableSource('tableau'), true);
+  // Comments stripped: the file's own prose legitimately points at
+  // getStackFrom to say where the other half of the rule lives. What must
+  // stay absent is CODE reaching for it.
+  const src = readFileSync(new URL('./flick.js', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  assert.ok(!/getStackFrom|state\.|stackLength|\.length > 1/.test(src),
+    'flick.js must not start reasoning about how many cards a source would move');
 });
 
 // ---------- flight plan ----------

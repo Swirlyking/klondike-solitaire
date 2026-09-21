@@ -562,6 +562,21 @@
     <button id="winNewGameBtn">New Game</button>
   </div>
 
+  <!-- One-time "what's new" sheet (see whats-new.js for who sees it and
+       when). Its own overlay rather than showConfirm()'s shared
+       #confirm-overlay for the same reason the Support sheet has its own:
+       that system always renders two buttons wired to one onConfirm, and
+       this is a single-button acknowledgement. -->
+  <div id="whats-new-overlay" class="hidden">
+    <div id="whats-new-card" role="dialog" aria-modal="true" aria-labelledby="whats-new-title">
+      <h2 id="whats-new-title">Flick &rsquo;em.</h2>
+      <p>You can now flick any playable single card. Give it a quick swipe in any direction and it&rsquo;ll spin off and boomerang to wherever it can legally go.</p>
+      <p class="whats-new-kicker">No aiming required.</p>
+      <p class="whats-new-footnote">Multi-card runs still drag normally.</p>
+      <button type="button" id="whatsNewGotItBtn">Got it</button>
+    </div>
+  </div>
+
   <div id="confirm-overlay" class="hidden">
     <div id="confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
       <h2 id="confirm-title"></h2>

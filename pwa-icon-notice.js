@@ -34,14 +34,24 @@ const DISMISSED_VALUE = 'v2-dismissed';
 // immediately.
 export function ensureIconGenerationMarker() {
   if (getPreference(ICON_GEN_KEY, null) != null) return;
+  setPreference(ICON_GEN_KEY, hasPriorActivity() ? 'v1' : CURRENT_ICON_GEN);
+}
 
+// "Has this device ever actually played?" - the test for telling a
+// returning player apart from a genuinely fresh install. Exported (not
+// just used above) so whats-new.js asks this exact question rather than
+// writing a second, independently-drifting copy of it - same reasoning as
+// isStandalonePwa() below, which install-prompt.js reuses.
+//
+// Reads stats rather than any marker of its own, so it is true for a
+// player who predates whichever marker is being stamped. Must only ever be
+// consulted BEFORE this session writes to the store - see the callers.
+export function hasPriorActivity() {
   const existingStats = getPreference('stats', null);
-  const hadPriorActivity = existingStats != null && ['draw1', 'draw3'].some(mode => {
+  return existingStats != null && ['draw1', 'draw3'].some(mode => {
     const modeStats = existingStats[mode];
     return modeStats && ((modeStats.plays ?? 0) > 0 || (modeStats.wins ?? 0) > 0);
   });
-
-  setPreference(ICON_GEN_KEY, hadPriorActivity ? 'v1' : CURRENT_ICON_GEN);
 }
 
 // Exported (not just used internally) so install-prompt.js's own

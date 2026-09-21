@@ -47,6 +47,7 @@ import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from '.
 import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 import { buildBackup, validateBackup, resolveRestorePatch, backupFilename, VALIDATION_ERROR_MESSAGES, LEGACY_CARD_BACK_IDS } from './backup.js';
 import { ensureIconGenerationMarker, shouldShowIconNotice, dismissIconNoticePermanently } from './pwa-icon-notice.js';
+import { ensureWhatsNewMarker, shouldShowWhatsNew, markWhatsNewSeen } from './whats-new.js';
 import { shareCelebration, formatRecordLine, buildShareText } from './share.js';
 import {
   bumpVisitCount,
@@ -72,6 +73,7 @@ if (!(window.MIKE_MIGRATION && window.MIKE_MIGRATION.blocked)) {
   // would otherwise make even a brand-new device's first-ever session look
   // like a returning player's by the time anything checked).
   ensureIconGenerationMarker();
+  ensureWhatsNewMarker(); // same must-run-before-anything-writes-preferences rule - see its own comment
 
   // MIKE Games System (see mike-games-system/SYSTEM.md §02, "Custom install
   // prompt") - as early as possible, same reasoning as Mike's Sudoku's own
@@ -480,7 +482,7 @@ function initIntro() {
   // to track features, it's to let you glance at Settings on any given
   // tab/device and immediately tell whether it's running the build you just
   // pushed or a stale cached one from before.
-  const APP_VERSION = '2026.08.12.1129';
+  const APP_VERSION = '2026.09.21.1333';
 
   // Cache-buster on every card image URL, not a build/deploy version -
   // bump this by hand whenever the card art itself changes. It's what
@@ -1333,6 +1335,8 @@ function initIntro() {
     testingOverlay.remove();
   }
   const iconNoticeOverlay = document.getElementById('icon-notice-overlay');
+  const whatsNewOverlay = document.getElementById('whats-new-overlay');
+  const whatsNewGotItBtn = document.getElementById('whatsNewGotItBtn');
   const iconNoticeCloseBtn = document.getElementById('iconNoticeCloseBtn');
   const iconNoticeGotItBtn = document.getElementById('iconNoticeGotItBtn');
   const iconNoticeBackupBtn = document.getElementById('iconNoticeBackupBtn');
@@ -4340,6 +4344,36 @@ function initIntro() {
   // action triggered a full render(). Restoring here instead makes every
   // caller safe by construction, present and future; for the callers that
   // do re-render immediately afterwards it's a harmless no-op.
+  // "THIS CARD HAS LEFT ITS PILE, VISUALLY" - the one place that decision
+  // is made, because it is source-specific and getting it wrong is
+  // invisible until a different source type is used. A waste or tableau
+  // card is hidden in place, which preserves the pile's geometry: a
+  // tableau column must not collapse before the move commits, and must
+  // not expose the covered card beneath it either. A foundation's top
+  // card cannot simply be hidden - the card underneath has to become
+  // visible - so that pile is re-rendered with a peek instead.
+  //
+  // Shared by the drag (processDragFrame, on the frame a drag begins) and
+  // by the flick, whose fast path can outrun that frame entirely. Before
+  // this was shared, the flick's own path hid the element but skipped the
+  // foundation re-render, which showed an empty foundation slot for the
+  // length of the flight.
+  function hideDragSource(source, sourceIndex, originEls) {
+    originEls.forEach(el => { el.style.visibility = 'hidden'; });
+    if (source === 'foundation') renderFoundation(sourceIndex, { peekBehindTop: true });
+  }
+
+  // The exact inverse, equally source-specific. A foundation's origin
+  // element was REPLACED by the peek-render above, not hidden, so putting
+  // visibility back on it is a no-op and the pile would keep showing the
+  // peeked card - it needs a real re-render. Shared by cancelActiveDrag
+  // and by a refused flick, which previously had its own (wrong for
+  // foundations) copy.
+  function restoreDragSource(source, sourceIndex, originEls) {
+    if (source === 'foundation') renderFoundation(sourceIndex);
+    else originEls.forEach(el => { el.style.visibility = ''; });
+  }
+
   function cancelActiveDrag() {
     if (!dragCtx) return;
     removeDragListeners();
@@ -4347,13 +4381,7 @@ function initIntro() {
     dragCtx = null;
     if (hoverTarget) hoverTarget.classList.remove('drop-target-active');
     ghosts.wrappers.forEach(w => w.remove());
-    if (moved) {
-      // A foundation's origin element was replaced by the peek-render, not
-      // just hidden - restoring visibility on it would be a no-op, so the
-      // real top card needs a proper re-render instead.
-      if (source === 'foundation') renderFoundation(sourceIndex);
-      else originEls.forEach(el => { el.style.visibility = ''; });
-    } // unmoved: origin was never hidden
+    if (moved) restoreDragSource(source, sourceIndex, originEls); // unmoved: origin was never hidden
   }
 
   // The browser fires this instead of pointerup when it takes the gesture
@@ -4465,8 +4493,7 @@ function initIntro() {
       // event that actually crossed the threshold, which is well inside
       // the tolerance of a ~260ms duration test.
       dragCtx.movedAt = { x: latestX, y: latestY, t: performance.now() };
-      dragCtx.originEls.forEach(el => { el.style.visibility = 'hidden'; });
-      if (source === 'foundation') renderFoundation(sourceIndex, { peekBehindTop: true });
+      hideDragSource(source, sourceIndex, dragCtx.originEls);
       ghosts.visuals.forEach(v => v.classList.add('lifted'));
     }
 
@@ -4546,7 +4573,7 @@ function initIntro() {
     // The classifier is what keeps this from eating real drags: a
     // deliberate drag-to-a-pile decelerates to place the card, so its
     // release velocity is nowhere near flick-grade.
-    if (gesture.kind === 'flick' && isFlickableSource(source)) {
+    if (gesture.kind === 'flick' && isFlickEligible(source, stack)) {
       // The event's own timestamp, not now(): the handler may run a few
       // ms after the input actually happened, and the flight is anchored
       // to when the finger left, not to when we got around to reacting.
@@ -4566,10 +4593,10 @@ function initIntro() {
       // the origin still visible underneath its own ghost. Hide it now,
       // exactly as that frame would have, so the card doesn't briefly
       // appear twice as the flight starts.
-      if (!moved) originEls.forEach(el => { el.style.visibility = 'hidden'; });
+      if (!moved) hideDragSource(source, sourceIndex, originEls);
       const dest = resolveMoveDestination(stack[0], source, sourceIndex, stack.length);
-      if (dest) executeFlickMove(stack, sourceIndex, dest, gesture, ghosts, originRects, releasedAt);
-      else playFlickRefusal(gesture, ghosts, originRects, originEls, releasedAt);
+      if (dest) executeFlickMove(stack, source, sourceIndex, dest, gesture, ghosts, originRects, releasedAt);
+      else playFlickRefusal(gesture, ghosts, originRects, originEls, source, sourceIndex, releasedAt);
       return;
     }
 
@@ -4608,6 +4635,77 @@ function initIntro() {
       else originEls.forEach(el => { el.style.visibility = ''; });
       glideGhostsTo(ghosts, originRects, originRects, MOVE_GLIDE_MS);
     }
+  }
+
+  // WHICH CARDS MAY BE FLICKED. Two conditions, and neither looks at the
+  // DOM:
+  //
+  //   1. the source is one the gesture is offered on at all
+  //      (isFlickableSource, flick.js - waste, tableau, foundation; never
+  //      the stock, which is not draggable and has no card interactions), and
+  //   2. the move is exactly ONE card.
+  //
+  // The second is the one that matters, and getStackFrom decides it - the
+  // same function the drag uses to work out what the player just picked
+  // up. For a tableau source it returns every card from the touched one
+  // downward, so a length of 1 means the touched card is the column's
+  // exposed top and nothing travels with it. Anything longer is a run and
+  // must stay a drag: a flick may never quietly reduce a movable run to
+  // its first card. Because both the drag and the flick ask the same
+  // function, they cannot disagree about what would have moved - which is
+  // the whole point of deriving this from the move model rather than from
+  // positions, offsets or z-indexes.
+  //
+  // A covered tableau card never even reaches this test: it gets
+  // attachTap, not attachCardInteractions, so it can never begin a drag,
+  // and a gesture on it is a bounce either way.
+  function isFlickEligible(source, stack) {
+    return isFlickableSource(source) && stack.length === 1;
+  }
+
+  // THE SOURCE PILE'S APPEARANCE DURING THE FLIGHT, chosen per source type
+  // rather than by one blanket rule. `state` is untouched here whatever
+  // the source - the move does not commit until the card lands - so this
+  // is purely what the player sees while it is away.
+  //
+  //   waste      re-fan the remaining cards NOW. Without this the two
+  //              cards behind it sat unchanged for the whole flight and
+  //              then snapped into their new fan on touchdown.
+  //   tableau    deliberately NOTHING. The card's element is already
+  //              hidden in place, which keeps the column's cascade
+  //              geometry exactly as it was. Re-rendering the column
+  //              without the card would collapse that cascade early AND
+  //              expose the covered card beneath it before the move had
+  //              committed. The canonical render at landing does the
+  //              collapse and the flip together, which is the timing
+  //              every other move in the game already uses.
+  //   foundation nothing further - hideDragSource has already
+  //              peek-rendered the card underneath, which is all a
+  //              foundation ever shows.
+  //
+  // This is the smallest correct strategy per type, not a general render
+  // refactor: two of the three source types need no launch-time render at
+  // all.
+  // The flick's single commit point. commitMove is the canonical move -
+  // unchanged, called once - but tap-to-move does one extra thing after
+  // it that a flick must match: it records where a tableau card was sent,
+  // so the NEXT gesture on that same card advances to the following legal
+  // column instead of re-proposing the one it just came from (see
+  // resolveClickDestination's cycling rules, and executeClickMove which
+  // does exactly this). Without it, flicking a King along a row of empty
+  // columns would keep offering the same column and the two gestures
+  // would disagree about the same card.
+  //
+  // commitMove clears the memory itself, so this has to come after it.
+  function commitFlickMove(stack, source, sourceIndex, target, targetIndex) {
+    commitMove(stack, source, sourceIndex, target, targetIndex);
+    if (source === 'tableau' && target === 'tableau') {
+      tableauClickMemory = { cardId: stack[0].id, destIndex: targetIndex };
+    }
+  }
+
+  function renderFlickSourceAtLaunch(source, sourceIndex, stack) {
+    if (source === 'waste') renderWaste(stack[0].id);
   }
 
   // ---------- waste flick ----------
@@ -4765,7 +4863,7 @@ function initIntro() {
     if (teardown) teardown();
   }
 
-  function executeFlickMove(stack, sourceIndex, dest, gesture, ghosts, originRects, releasedAt) {
+  function executeFlickMove(stack, source, sourceIndex, dest, gesture, ghosts, originRects, releasedAt) {
     const target = dest.type;
     const targetIndex = dest.index;
     const destRects = computeDestRects(target, targetIndex, stack.length);
@@ -4810,7 +4908,7 @@ function initIntro() {
     // Reduced motion keeps the original ordering exactly: commit, then
     // the ordinary glide. There is no launch to protect.
     if (!plan) {
-      commitMove(stack, 'waste', sourceIndex, target, targetIndex);
+      commitFlickMove(stack, source, sourceIndex, target, targetIndex);
       const revealNow = hideDestElements(stack, target, targetIndex, previousTopCard);
       glideGhostsTo(ghosts, [startRect], destRects, durationMs, revealNow);
       return;
@@ -4861,7 +4959,7 @@ function initIntro() {
       // belonged to is gone, so the move is void; that path's own
       // clearGhosts() has already taken the ghost away.
       if (state !== stateAtLaunch) return;
-      commitMove(stack, 'waste', sourceIndex, target, targetIndex);
+      commitFlickMove(stack, source, sourceIndex, target, targetIndex);
     };
     // Abandoning the flight early (see flushPendingFlick) has to take
     // the ghost with it, or the card would be visible both at its
@@ -4872,7 +4970,7 @@ function initIntro() {
     // itself still waits for the landing, so state is untouched here -
     // this is only the pile being drawn as it will look once the card
     // that has visibly left is actually gone.
-    renderWaste(stack[0].id);
+    renderFlickSourceAtLaunch(source, sourceIndex, stack);
 
     animateFlickGhost(ghosts.wrappers[0], ghosts.visuals[0], baseRect, flickKeyframes(plan), durationMs, () => {
       // Commit first, then drop the ghost - both in this one task, so
@@ -4887,7 +4985,7 @@ function initIntro() {
   // comes back implies the move nearly worked, when in fact there was
   // never anywhere for it to go. A short resistant shove that stops dead
   // and returns says "that card is stuck" in about a fifth of the time.
-  function playFlickRefusal(gesture, ghosts, originRects, originEls, releasedAt) {
+  function playFlickRefusal(gesture, ghosts, originRects, originEls, source, sourceIndex, releasedAt) {
     const wrapper = ghosts.wrappers[0];
     const visual = ghosts.visuals[0];
     const baseRect = originRects[0];
@@ -4897,7 +4995,7 @@ function initIntro() {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       // Same outcome, no motion: the card is simply back where it was.
       ghosts.wrappers.forEach(w => w.remove());
-      originEls.forEach(el => { el.style.visibility = ''; });
+      restoreDragSource(source, sourceIndex, originEls);
       return;
     }
 
@@ -4912,7 +5010,7 @@ function initIntro() {
     // and its ghost are never both visible at once.
     animateFlickGhost(wrapper, visual, baseRect, frames, FLICK_REFUSE_MS, () => {
       ghosts.wrappers.forEach(w => w.remove());
-      originEls.forEach(el => { el.style.visibility = ''; });
+      restoreDragSource(source, sourceIndex, originEls);
     }, releasedAt);
   }
 
@@ -5168,13 +5266,26 @@ function initIntro() {
   // both are timed to land at the same 1600ms mark. Two stacked sheets at
   // launch is the wrong answer - migration wins, and this one comes back by
   // itself for anyone still on the old icon once they are on the new domain.
-  if (shouldShowIconNotice() && !(window.MIKE_MIGRATION && window.MIKE_MIGRATION.active)) {
-    // A short delay so this never competes visually with the opening
-    // intro animation - it isn't gated ON the intro finishing (the two
-    // systems stay fully independent, matching initIntro()'s own "never
-    // gates or delays game boot" rule), just timed to land safely after it.
+  // AT MOST ONE LAUNCH SHEET, and a fixed order of precedence. The 1600ms
+  // delay on each is so it never competes visually with the opening intro
+  // animation - none of them is gated ON the intro finishing (these
+  // systems stay fully independent, matching initIntro()'s own "never
+  // gates or delays game boot" rule), just timed to land safely after it.
+  const migrationActive = !!(window.MIKE_MIGRATION && window.MIKE_MIGRATION.active);
+  if (shouldShowIconNotice() && !migrationActive) {
     setTimeout(() => iconNoticeOverlay.classList.remove('hidden'), 1600);
+  } else if (shouldShowWhatsNew() && !migrationActive) {
+    // Last in line, deliberately: migration and the icon sheet both ask
+    // the player to DO something, while this only tells them something.
+    // Skipping a launch costs nothing because the seen-marker is written
+    // when the sheet actually appears, not here - so it simply arrives on
+    // a later launch instead of being lost.
+    markWhatsNewSeen();
+    setTimeout(() => whatsNewOverlay.classList.remove('hidden'), 1600);
   }
+  // Acknowledgement only - the marker was already written when it opened,
+  // so this button has nothing to persist and the sheet cannot come back.
+  whatsNewGotItBtn.addEventListener('click', () => whatsNewOverlay.classList.add('hidden'));
 
   // ---------- settings panel ----------
 
