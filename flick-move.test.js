@@ -513,10 +513,39 @@ test('the flick never counts a move of its own', () => {
 // stop any surface drifting back off it, which matters more the more of
 // the board becomes flickable.
 
-test('no board surface is driven by a native onclick', () => {
+test('gesture-capable gameplay surfaces never depend on a synthesised click', () => {
+  // The rule is SCOPED, not blanket. Menus, settings, overlays and the
+  // toolbar may use a native click freely - nothing there can be touched
+  // in the same breath as a drag, so nothing there is exposed. What must
+  // use one coherent pointer model is a surface that can COEXIST with a
+  // drag/swipe/flick, because that gesture's preventDefault()-ed
+  // pointermoves are what make iOS drop the following click.
   const src = stripComments(SCRIPT_RAW);
-  assert.ok(!/\.onclick\s*=/.test(src),
-    'a native onclick is exactly the sequence iOS drops after a preventDefault()-ed pointerdown');
+
+  // The stock sits directly beside the pile a flick launches from.
+  assert.ok(!/getElementById\('stock'\)\.onclick/.test(src) && !/\bel\.onclick\s*=/.test(src),
+    'the stock must not be driven by a native click');
+  assert.match(src, /attachTap\(document\.getElementById\('stock'\), onStockClick\)/);
+
+  // A card is gesture-capable by definition - draggable or covered.
+  assert.ok(!/cardEl\.addEventListener\('click'/.test(src),
+    'no card may take its tap from a click; covered cards included');
+  assert.match(functionBody('attachCardInteractions'), /addEventListener\('pointerdown'/);
+});
+
+test('the Help-mode pile listeners are exempt because Help mode precludes a gesture', () => {
+  // The waste/foundation/tableau CONTAINERS still use a native click, and
+  // legitimately so: they fire only while Help mode is active, and Help
+  // mode intercepts a card press before startDrag is ever reached - so no
+  // flick, drag or swipe can precede those taps. This test pins the
+  // invariant the exemption rests on; if the help check ever moved after
+  // startDrag, those listeners would become exposed and need converting.
+  const body = functionBody('attachCardInteractions');
+  assert.ok(body.indexOf('helpModeActive') !== -1, 'the help check must exist');
+  assert.ok(body.indexOf('helpModeActive') < body.indexOf('startDrag('),
+    'Help mode must be handled BEFORE a drag can start, or a gesture could precede a pile tap');
+  assert.match(body, /helpModeActive[\s\S]{0,220}return;/,
+    'the help branch must return rather than falling through into startDrag');
 });
 
 test('the stock draws from a pointer pair, attached once', () => {

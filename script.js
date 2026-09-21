@@ -2021,9 +2021,10 @@ function initIntro() {
   // stay harmless no-ops outside Help mode - e.target !== e.currentTarget
   // means the tap actually landed on a real card, which attachCardInteractions
   // (or the covered-card listener) already handles.
-  // THE STOCK DERIVES ITS TAP FROM A POINTER PAIR, NOT A NATIVE CLICK -
-  // the same rule attachCardInteractions already follows, and for the
-  // same reason its comment gives: "a native click after a
+  // A GESTURE-CAPABLE GAMEPLAY SURFACE USES ONE COHERENT POINTER-EVENT
+  // MODEL. The stock derives its tap from a pointer pair, not a native
+  // click - the same rule attachCardInteractions already follows, and for
+  // the same reason its comment gives: "a native click after a
   // preventDefault()-ed pointerdown ... is a known source of
   // cross-browser/touch inconsistency". The stock was the last gameplay
   // surface still relying on one, and the flick is exactly that
@@ -2050,6 +2051,17 @@ function initIntro() {
   // pile, so a rebuild of the card inside it between press and release
   // cannot strand the gesture; the release is validated by geometry
   // instead.
+  //
+  // SCOPE. This is not a blanket ban on native clicks. Menus, settings,
+  // overlays and the toolbar keep theirs: nothing there can be touched in
+  // the same breath as a drag, so nothing there is exposed. The rule
+  // binds surfaces that can COEXIST with a drag/swipe/flick. The
+  // waste/foundation/tableau containers are the one board exception, and
+  // only because their click listeners fire exclusively in Help mode,
+  // which intercepts a card press before startDrag - so no gesture can
+  // ever precede them. Widening the flick beyond the waste does not
+  // change any of this; it only makes the exposed set larger, which is
+  // why it is worth having one rule rather than a list.
   attachTap(document.getElementById('stock'), onStockClick);
 
   document.getElementById('waste').addEventListener('click', (e) => {
@@ -4147,7 +4159,11 @@ function initIntro() {
     cardEl.addEventListener('pointerdown', (e) => {
       // Help mode: "tell me about this," not the card's normal drag/tap
       // action - source is always a face-up card here (a covered card gets
-      // its own separate click listener below, not this one).
+      // its own separate attachTap below, not this one). Handled BEFORE
+      // startDrag deliberately: it is what guarantees no gesture can run
+      // while Help is active, which is in turn what lets the pile
+      // containers keep their plain click listeners (see their own
+      // comment above).
       if (helpModeActive) {
         e.preventDefault();
         showHelp(helpConceptForTarget(source, { faceUp: true }), cardEl);
