@@ -103,7 +103,7 @@ export async function shareCelebration({ text, nav = globalThis.navigator, clipb
 // one place that link is written, so nothing downstream can regress it back
 // to an origin lookup. Mirrors the exact reasoning Sudoku's own
 // celebrationShare.js documents for its own CANONICAL_SHARE_URL.
-export const CANONICAL_SHARE_URL = 'https://solitaire.mikestrassburger.com';
+export const CANONICAL_SHARE_URL = 'https://solitaire.mikesgames.app';
 
 // The exact wording of one record line - "🏆 NEW FASTEST TIME" if this win
 // just broke that record, otherwise the ordinary "Fastest: 2:11" readout.

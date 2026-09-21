@@ -202,3 +202,24 @@ test('buildShareText: always ends with the canonical URL on its own trailing lin
   });
   assert.ok(text.endsWith(`\n${CANONICAL_SHARE_URL}`));
 });
+
+// Every existing assertion above compares against the CANONICAL_SHARE_URL
+// symbol, so the share text stays self-consistent no matter what the
+// constant says - which is exactly why none of them noticed when the
+// constant went stale. The game moved to solitaire.mikesgames.app while
+// this still read solitaire.mikestrassburger.com, and every shared win
+// kept pointing at the old host. This is the one test that asserts the
+// literal value, so a future domain move has to be deliberate.
+test('the canonical share URL is the live production host, spelled exactly', () => {
+  assert.equal(CANONICAL_SHARE_URL, 'https://solitaire.mikesgames.app');
+});
+
+test('the canonical share URL is an absolute https origin with no path or trailing slash', () => {
+  // A recipient has to be able to paste it anywhere: no scheme-relative
+  // form, no localhost/deploy-preview leakage, nothing to strip.
+  const u = new URL(CANONICAL_SHARE_URL);
+  assert.equal(u.protocol, 'https:');
+  assert.equal(u.pathname, '/');
+  assert.equal(u.search, '');
+  assert.ok(!CANONICAL_SHARE_URL.endsWith('/'), 'no trailing slash - it is appended to share text verbatim');
+});
