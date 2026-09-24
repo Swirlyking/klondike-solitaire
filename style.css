@@ -134,7 +134,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  padding: 8px 16px;
+  padding: 4px 8px 4px 16px;
   background: var(--gold);
   color: #241c05;
   font-size: 13px;
@@ -150,19 +150,25 @@ body {
   font-weight: 700;
 }
 
+/* Both bar buttons get a full 44px touch target (they were ~22px tall);
+   the bar's own vertical padding shrinks to match, so it grows only a
+   little. */
 #updateReloadBtn {
   background: #241c05;
   color: var(--gold);
-  padding: 4px 12px;
-  font-size: 12px;
+  padding: 0 16px;
+  min-height: 44px;
+  font-size: 13px;
 }
 #updateReloadBtn:hover { background: #382c0c; }
 
 #updateDismissBtn {
   background: transparent;
   color: #241c05;
-  padding: 2px 6px;
-  font-size: 16px;
+  padding: 0;
+  min-width: 44px;
+  min-height: 44px;
+  font-size: 18px;
   line-height: 1;
   opacity: 0.65;
 }
