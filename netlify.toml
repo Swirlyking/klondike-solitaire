@@ -33,6 +33,13 @@
 # ?v=ASSET_VERSION cache-busting convention, just scoped to fewer, shared
 # files (6 dirty backgrounds + 1 white background + 52 transparent faces
 # per design, instead of a whole tiered clean+worn tree per design).
+#
+# The three TX folders have a space in their names, and a rule has to be
+# written the way the browser actually requests the path - URL-encoded,
+# %20 (card-face-compositor.js builds these URLs with encodeURI). Written
+# with a literal space, these rules silently never matched: production
+# served XL/STANDARD/SIMPLE TX with max-age=0 while the space-free
+# DIRTYS/WHITE rules just below worked.
 [[headers]]
   for = "/assets/cards/DIRTYS/*"
   [headers.values]
@@ -44,16 +51,16 @@
     Cache-Control = "public, max-age=31536000, immutable"
 
 [[headers]]
-  for = "/assets/cards/SIMPLE TX/*"
+  for = "/assets/cards/SIMPLE%20TX/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 
 [[headers]]
-  for = "/assets/cards/STANDARD TX/*"
+  for = "/assets/cards/STANDARD%20TX/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
 
 [[headers]]
-  for = "/assets/cards/XL TX/*"
+  for = "/assets/cards/XL%20TX/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
