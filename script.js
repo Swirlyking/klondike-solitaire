@@ -49,6 +49,7 @@ import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
 import { buildBackup, validateBackup, resolveRestorePatch, backupFilename, VALIDATION_ERROR_MESSAGES, LEGACY_CARD_BACK_IDS } from './backup.js';
 import { ensureIconGenerationMarker, shouldShowIconNotice, dismissIconNoticePermanently } from './pwa-icon-notice.js';
 import { ensureWhatsNewMarker, shouldShowWhatsNew, markWhatsNewSeen } from './whats-new.js';
+import { CHECK_FILES, CHECK_INTERVAL_MS, fingerprint, isNewer, shouldShowUpdateBar } from './update-check.js';
 import { shareCelebration, formatRecordLine, buildShareText } from './share.js';
 import {
   bumpVisitCount,
@@ -112,6 +113,13 @@ const IS_LOCAL_DEV = ['localhost', '127.0.0.1'].includes(location.hostname);
 function hardReload() {
   location.replace(`${location.pathname}?_r=${Date.now()}`);
 }
+
+// Whether a reload right now would throw nothing away - the update bar (see
+// "update checking" at the end of this file) only appears when this says so.
+// The game IIFE replaces it with the real answer (the same
+// needsAbandonConfirmation() judgement guardAbandon() uses) as soon as its
+// state exists; until then there's no deal to lose.
+let isBetweenGames = () => true;
 
 // MIKE Games System readiness gate (CORE, see mike-games-system/SYSTEM.md
 // §01) - set by the game IIFE below, the instant the very first board's
@@ -1527,6 +1535,10 @@ function initIntro() {
     }
     showConfirm({ ...ABANDON_COPY[actionKey], onConfirm: action });
   }
+  // Same judgement, exported to the update checker (module scope, top of
+  // file): only offer "a new version is available" when a reload would lose
+  // nothing - no move made yet, a won deal, or no progressing move left.
+  isBetweenGames = () => !needsAbandonConfirmation(state, history.length, won, getDrawCount());
 
   // ---------- hint ----------
   //
@@ -5758,7 +5770,10 @@ function initIntro() {
 // ---------- update checking ----------
 // Independent of game state (a reload discards the current board — there's
 // no save/restore — so this deliberately never reloads on its own, only
-// on request), so it lives outside the game IIFE entirely.
+// on request), so it lives outside the game IIFE entirely; the one thing it
+// asks the game is isBetweenGames() (module scope, top of file), so the bar
+// only appears when a reload would lose nothing. Pure pieces (the watched
+// file list, fingerprinting, the show rule) live in update-check.js.
 (() => {
   // MIKE GAMES DOMAIN MIGRATION (temporary) - same reasoning as the game
   // IIFE's own guard above: past the cutoff there is no app left to offer an
@@ -5766,46 +5781,53 @@ function initIntro() {
   // retired origin every 60s behind the migration screen.
   if (window.MIKE_MIGRATION && window.MIKE_MIGRATION.blocked) return;
 
-  const CHECK_FILES = ['index.html', 'script.js', 'style.css'];
-  const CHECK_INTERVAL_MS = 60000;
-
   const bar = document.getElementById('update-bar');
   const reloadBtn = document.getElementById('updateReloadBtn');
   const dismissBtn = document.getElementById('updateDismissBtn');
 
   let baseline = null;
+  let updateAvailable = false;
   let dismissed = false;
+  let gateTimer = null;
 
   // A composite "fingerprint" of the deployed files. Netlify (and most
   // static hosts/CDNs) serve content-derived ETags, so a file untouched by
   // a deploy keeps the same tag and only genuinely changed files shift it —
-  // checking several files this way catches an update regardless of which
-  // one actually changed, without needing a hand-maintained version number.
+  // checking every file the page is built from catches an update regardless
+  // of which one actually changed, without a hand-maintained version number.
   async function fetchFingerprint() {
     try {
       const responses = await Promise.all(
         CHECK_FILES.map(f => fetch(f, { method: 'HEAD', cache: 'no-store' }))
       );
-      if (responses.some(r => !r.ok)) return null;
-      return responses
-        .map(r => r.headers.get('etag') || r.headers.get('last-modified') || '')
-        .join('|');
+      return fingerprint(responses.map(r => ({
+        ok: r.ok, etag: r.headers.get('etag'), lastModified: r.headers.get('last-modified'),
+      })));
     } catch {
       return null; // offline, blocked, etc. — just skip this check
     }
   }
 
+  function renderBar() {
+    const show = shouldShowUpdateBar({ updateAvailable, dismissed, betweenGames: isBetweenGames() });
+    bar.classList.toggle('hidden', !show);
+  }
+
   async function checkForUpdate() {
-    if (dismissed) return;
+    if (dismissed || updateAvailable) return;
     const tag = await fetchFingerprint();
     if (!tag) return;
     if (baseline === null) {
       baseline = tag; // first successful check establishes the baseline
       return;
     }
-    if (tag !== baseline) {
-      bar.classList.remove('hidden');
-    }
+    if (!isNewer(baseline, tag)) return;
+    updateAvailable = true;
+    renderBar();
+    // Only runs once an update exists: follows deals starting and ending,
+    // so the bar steps aside the moment a game is under way and comes back
+    // when there's nothing to lose again.
+    gateTimer = setInterval(renderBar, 1000);
   }
 
   // hardReload() (module scope, top of file) rather than a plain
@@ -5815,6 +5837,7 @@ function initIntro() {
   reloadBtn.addEventListener('click', hardReload);
   dismissBtn.addEventListener('click', () => {
     dismissed = true;
+    clearInterval(gateTimer);
     bar.classList.add('hidden');
   });
 
@@ -5822,5 +5845,11 @@ function initIntro() {
   setInterval(checkForUpdate, CHECK_INTERVAL_MS);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') checkForUpdate();
+  });
+  // An iOS page restored from memory (back/forward cache, or a Home Screen
+  // app resumed after a while) fires pageshow with persisted=true and no
+  // load at all - the case that otherwise leaves a player on the old build.
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted) checkForUpdate();
   });
 })();
