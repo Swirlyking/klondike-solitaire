@@ -483,7 +483,7 @@ function initIntro() {
   // to track features, it's to let you glance at Settings on any given
   // tab/device and immediately tell whether it's running the build you just
   // pushed or a stale cached one from before.
-  const APP_VERSION = '2026.09.21.1333';
+  const APP_VERSION = '2026.09.24.0048';
 
   // Cache-buster on every card image URL, not a build/deploy version -
   // bump this by hand whenever the card art itself changes. It's what
@@ -495,7 +495,7 @@ function initIntro() {
   // cache-buster on the compositor's own source-layer requests (DIRTYS/
   // TX/WHITE - see card-face-compositor.js) - one shared version constant
   // rather than a second one that could drift from this.
-  const ASSET_VERSION = 'v8'; // bumped: Regular/Simple faces now composite from STANDARD TX/SIMPLE TX instead of the old pre-baked art
+  const ASSET_VERSION = 'v9'; // bumped: new Ace of Spades art (XL TX/spade_1_XL.png)
 
   // Synchronous and never-throwing, same contract this always had - every
   // call site just does img.src = cardImageSrc(...). Delegates the actual

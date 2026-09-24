@@ -89,14 +89,16 @@ test('the shipped copy says the three things it needs to', () => {
   assert.match(sheet, /id="whatsNewGotItBtn"[^>]*>Got it</);
 });
 
-test('release metadata: APP_VERSION advanced, ASSET_VERSION untouched', () => {
+test('release metadata: APP_VERSION advanced, ASSET_VERSION follows the art', () => {
   // APP_VERSION is what lets you glance at Settings and tell a fresh build
   // from a stale cached one. ASSET_VERSION is the card-art cache-buster and
-  // must NOT move for a release that changes no art: bumping it would dump
-  // a year-immutable art cache for every player and buy nothing.
+  // must move only when card art changes: bumping it dumps a year-immutable
+  // art cache for every player. v9 is the new Ace of Spades
+  // (XL TX/spade_1_XL.png) - without the bump, anyone who had already
+  // loaded the old ace would keep seeing it for up to a year.
   const app = SCRIPT.match(/const APP_VERSION = '([\d.]+)'/);
   assert.ok(app, 'APP_VERSION must exist');
   assert.notEqual(app[1], '2026.08.12.1129', 'APP_VERSION must be bumped for this release');
   assert.match(app[1], /^\d{4}\.\d{2}\.\d{2}\.\d{4}$/, 'same YYYY.MM.DD.HHmm convention');
-  assert.match(SCRIPT, /const ASSET_VERSION = 'v8'/, 'no card art changed, so this must not move');
+  assert.match(SCRIPT, /const ASSET_VERSION = 'v9'/, 'bumped for the new Ace of Spades art - move it again only when art changes');
 });
