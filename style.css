@@ -48,7 +48,14 @@ html, body {
      back to the 100dvh above until that inline script runs (effectively
      immediately, and before first paint). */
   height: var(--app-vh, 100dvh);
-  background: radial-gradient(ellipse at top, var(--felt), var(--felt-dark));
+  /* The solid color under the gradient is not decoration: a gradient alone
+     gives WebKit no page color, so iOS paints its own white anywhere it
+     shows past the document's edge - the white in every "white area
+     under the felt" report. With it, that area is felt instead. Confirmed
+     in the iPadOS 26 standalone simulator, where some launches size the
+     page 32pt short of the screen (innerHeight 802 vs 834): a white strip
+     along the bottom without this, felt with it. */
+  background: radial-gradient(ellipse at top, var(--felt), var(--felt-dark)) var(--felt-dark);
   color: #eee;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   /* Was overflow-x: hidden only - the page never legitimately scrolls
@@ -70,35 +77,44 @@ html, body {
   overscroll-behavior: none;
 }
 
-/* Only while a tableau column is in its temporary expanded/inspection
-   state (see toggleColumnExpanded, which toggles this class on both <html>
-   and <body>) - height:100% caps the document and clips anything past it
-   from ever being scrollable, so this swaps to min-height for just that
-   window, letting the page grow enough to scroll to an expanded column's
-   overflowing bottom card. Reverts to the normal fixed-viewport, no-scroll
-   layout the instant it's collapsed - never a permanent change to page
-   height.
-   Both elements need this, not just body: document.scrollingElement is
-   <html> (confirmed - this is the element whose own height actually
-   governs how far the page can scroll), so leaving it pinned to height:100%
-   while only body grows underneath it meant content could overflow body
-   without ever becoming reachable by scrolling at all - the "scroll down
-   to see the rest" promise this class exists for didn't actually hold once
-   an expanded column needed more room than min-height:100% alone (i.e. the
-   viewport) could show for it. */
-html.tableau-inspecting,
-body.tableau-inspecting {
-  height: auto;
-  min-height: 100%;
-  /* Same iOS-standalone mismatch the base html/body rule above addresses -
-     min-height needs the same floor, or an expanded column in standalone
-     mode could stop just short of the true bottom edge. */
-  min-height: 100dvh;
-  min-height: var(--app-vh, 100dvh);
-  /* The one deliberate exception to the base rule's overflow: hidden -
-     this is the single case where the document is actually meant to
-     scroll (down to an expanded column's overflowing bottom card). */
-  overflow-y: auto;
+/* THE DOCUMENT NEVER SCROLLS - not even while a column is expanded. The
+   html/body rule above is the whole page's layout, with no exception.
+   Expanded-column inspection used to be that exception (html and body went
+   height:auto + overflow-y:auto so the page could scroll down to the
+   column's bottom card), and on iPad it caused the "whole board jumps up
+   and white shows underneath" bug:
+   - With the document scrollable, a press on the felt anywhere - including
+     right beside the stock, whose card is touch-action:none but whose
+     surroundings are not - panned the ENTIRE board, top row and all.
+     Reproduced in the iPadOS standalone web app: an 80px press-and-drag
+     15px left of the stock scrolled the page 197px.
+   - Collapsing the column while scrolled shrank the document out from
+     under the scroll position. WebKit clamps the root scroller
+     asynchronously, so for a while it sat past the end of the document,
+     exposing iOS's own white under-page area below the felt (reproduced:
+     324px past the end for ~90ms in the simulator - a momentum fling on a
+     real device holds it longer). In standalone mode it then settled 32px
+     off its resting position for good: overflow:hidden stops the player
+     scrolling it back, and even window.scrollTo() could not restore it.
+   - Drag ghosts are position:fixed and glide to rects measured before the
+     move commits, so a commit that collapsed the column moved the board
+     under them mid-glide: the cascade flew to the old spot, then snapped
+     back down.
+   Inspection now scrolls inside #tableau instead (see
+   body.tableau-inspecting #tableau below), so the felt, header, top row
+   and stock stay pinned to the viewport for the whole game.
+   viewport-lock.test.js holds the shipped stylesheet to this.
+
+   Body gets overflow:clip on top of the shared overflow:hidden. With
+   html's overflow already hidden, body's is not propagated to the
+   viewport - body becomes a scroll container of its own, and it has real
+   hidden overflow (#board's bottom padding runs ~50px past it). hidden
+   only stops the player scrolling it; focus(), scrollIntoView() or
+   scrollTop can still move the whole board inside it. clip clips exactly
+   the same but is not a scroll container at all, so nothing can.
+   Browsers without clip (Safari < 16) ignore it and keep hidden. */
+body {
+  overflow: clip;
 }
 
 /* Standalone iOS home-screen mode (viewport-fit=cover in index.html) lets
@@ -627,6 +643,48 @@ body {
   align-items: flex-start;
   width: var(--tableau-width);
   margin-inline: auto;
+}
+
+/* While a column is expanded, #tableau - not the document - is what
+   scrolls down to its overflowing bottom card (see the THE DOCUMENT NEVER
+   SCROLLS comment near the top of this file for why it can't be the
+   page). render() sets max-height inline to exactly the room between the
+   columns' top and the bottom of the safe viewport, the same measurement
+   the column compression uses, and resets scrollTop to 0 on collapse.
+   A scroll container clips, so --inspect-pad gives the expanded column's
+   glow and the cards' shadows room inside it; the negative margins cancel
+   that padding exactly, so no column moves by even a pixel when
+   inspection starts or ends. margin-inline is written out rather than
+   left as auto because auto collapses to 0 once the padded box is wider
+   than #board's content box (iPhone), which would shift every column
+   right by --inspect-pad.
+   The top padding is its own variable because it must never be more than
+   #top-row's margin-bottom: the scroller's clip edge sits that far above
+   the columns, and any higher it would let scrolled cards show through
+   the top row's piles. Every breakpoint's gap is 34-40px except phone
+   landscape's 6px, which overrides this in its own block. */
+body.tableau-inspecting #tableau {
+  --inspect-pad: 18px;
+  --inspect-pad-top: var(--inspect-pad);
+  width: calc(var(--tableau-width) + 2 * var(--inspect-pad));
+  padding: var(--inspect-pad-top) var(--inspect-pad) var(--inspect-pad);
+  margin-top: calc(-1 * var(--inspect-pad-top));
+  margin-inline: calc(50% - var(--tableau-width) / 2 - var(--inspect-pad));
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* Nothing past this may chain to the document: it's pinned anyway, but
+     this keeps a fling that hits the end from even trying. */
+  overscroll-behavior: contain;
+}
+/* The columns fill nearly all of #tableau (min-height), and .pile is
+   touch-action:none, which would leave only the thin gaps between them to
+   scroll from. While inspecting, a swipe on a column's EMPTY background
+   scrolls #tableau instead - cards keep their own touch-action:none, so
+   every drag and tap on a card is unchanged. The document can't be what
+   this pans: it has no scroll range to give (see THE DOCUMENT NEVER
+   SCROLLS). */
+body.tableau-inspecting #tableau .column {
+  touch-action: pan-y;
 }
 
 /* A compressed column's expand/collapse handle - deliberately its own
@@ -2070,6 +2128,8 @@ body {
   #topbar h1 { font-size: 15px; }
   .stats { font-size: 11px; gap: 8px; }
   #top-row { margin-bottom: 6px; }
+  /* Must stay under that 6px gap - see body.tableau-inspecting #tableau. */
+  body.tableau-inspecting #tableau { --inspect-pad-top: 4px; }
   .column { min-height: 160px; }
 
   .controls {

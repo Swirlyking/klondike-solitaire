@@ -26,6 +26,7 @@ import {
   recordRuleDemonstrated,
 } from './autoTips.js';
 import { helpConceptForTarget, HELP_CATALOG } from './help.js';
+import { rebaseRectsForScroll } from './tableau-scroll.js';
 import { getPreference, setPreference, setPreferences } from './preferences.js';
 import { shuffle, randomInt } from './shuffle.js';
 import {
@@ -2545,19 +2546,37 @@ function initIntro() {
     // toolbar's reserved height was before inspection started right up
     // until the next resize happened to come along.
     const isInspecting = expandedColumnIndex !== null;
+    const tableauEl = document.getElementById('tableau');
     if (isInspecting !== lastRenderedInspecting) {
       lastRenderedInspecting = isInspecting;
       cachedToolbarReservedHeight = null;
+      // Collapsing: put #tableau's own scroll back to the top while it is
+      // still a scroll container, BEFORE the columns below are rebuilt and
+      // measured - a scroll offset left behind would otherwise survive
+      // into the next inspection, and cachedColTop (measured below when
+      // the layout cache is cold) has to be read unscrolled.
+      if (!isInspecting) {
+        tableauEl.scrollTop = 0;
+        tableauEl.style.maxHeight = '';
+      }
     }
-    // Lets the page scroll far enough to reach an expanded column's
-    // overflowing bottom card (see the html/body.tableau-inspecting rule) -
-    // only while one is actually expanded, never otherwise. Both html and
-    // body need the class: document.scrollingElement is html, so it has to
-    // grow too, not just body, or an expanded column can still overflow
-    // past what's actually reachable by scrolling.
-    document.documentElement.classList.toggle('tableau-inspecting', isInspecting);
+    // Makes #tableau - never the document - scrollable down to an
+    // expanded column's overflowing bottom card (see
+    // body.tableau-inspecting #tableau in style.css, and the THE DOCUMENT
+    // NEVER SCROLLS comment near its top for the iPad bug a scrollable page
+    // caused). Body only: <html> must never get this class, and
+    // viewport-lock.test.js checks that nothing styles it.
     document.body.classList.toggle('tableau-inspecting', isInspecting);
     for (let i = 0; i < 7; i++) renderTableauCol(i, cascadeDown, cascadeUp, cardHeight);
+    if (isInspecting) {
+      // The scroller ends exactly where the column compression says the
+      // visible room ends, so the expanded column scrolls within the same
+      // space the other columns are fitted to. Measured from the scroller's
+      // own top (which includes its --inspect-pad), since max-height is a
+      // border-box height; its top never moves with its own scroll.
+      const roomBottom = cachedColTop + getTableauAvailableHeight(cachedColTop);
+      tableauEl.style.maxHeight = `${Math.max(0, roomBottom - tableauEl.getBoundingClientRect().top)}px`;
+    }
     checkWin();
   }
 
@@ -2746,9 +2765,9 @@ function initIntro() {
     // a normal-flow ancestor's height on their own - min-height alone
     // can't grow to fit them, regardless of how far past it their `top`
     // pushes them. Explicitly sizing the expanded column itself to its
-    // real extent is what gives html/body.tableau-inspecting's own
-    // height:auto (see style.css) something genuine to grow around further
-    // up the tree - without this, an expanded column's overflowing bottom
+    // real extent is what gives #tableau's inspection scroll (see
+    // body.tableau-inspecting #tableau in style.css) something genuine to
+    // scroll to - without this, an expanded column's overflowing bottom
     // card renders past the fold but is never actually reachable by
     // scrolling, confirmed by measurement. Reset for every other column
     // (including one that was expanded a moment ago and just collapsed),
@@ -3302,6 +3321,16 @@ function initIntro() {
     return false;
   }
 
+  // How far #tableau is scrolled - nonzero only while a column is
+  // expanded (see body.tableau-inspecting #tableau in style.css). Every
+  // animated move below measures its tableau destination in this scrolled
+  // frame, then re-bases it with rebaseRectsForScroll once the commit has
+  // run, because a commit that collapses the expanded column resets this
+  // to 0 and moves the whole tableau under the in-flight ghosts.
+  function tableauScrollTop() {
+    return document.getElementById('tableau').scrollTop;
+  }
+
   // Predicts where cards not yet in the DOM will land - called before
   // commitMove, so state.tableau[targetIndex] is still the pre-move column.
   // Uses computeTableauTops, the exact function renderTableauCol itself
@@ -3320,7 +3349,9 @@ function initIntro() {
     const cardHeight = getCardHeight();
     const existingFlags = state.tableau[targetIndex].map(c => c.faceUp);
     const incomingFlags = new Array(count).fill(true); // only face-up sequences are ever dropped
-    const availableHeight = getTableauAvailableHeight(colRect.top);
+    // The unscrolled top, as renderTableauCol measures it - colRect.top
+    // alone reads high by the scroll while a column is expanded.
+    const availableHeight = getTableauAvailableHeight(colRect.top + tableauScrollTop());
     const tops = computeTableauTops(existingFlags.concat(incomingFlags), availableHeight, cascadeDown, cascadeUp, cardHeight);
     return tops.slice(existingFlags.length).map(top => ({ left: colRect.left, top: colRect.top + top }));
   }
@@ -3339,7 +3370,7 @@ function initIntro() {
     const cascadeDown = getCascadeDown();
     const cascadeUp = getCascadeUp();
     const cardHeight = getCardHeight();
-    const availableHeight = getTableauAvailableHeight(colRect.top);
+    const availableHeight = getTableauAvailableHeight(colRect.top + tableauScrollTop()); // unscrolled - see computeDestRects
     const tops = computeTableauTops(fullFaceUpFlags, availableHeight, cascadeDown, cascadeUp, cardHeight);
     return tops.slice(fullFaceUpFlags.length - revealCount).map(top => ({ left: colRect.left, top: colRect.top + top }));
   }
@@ -3369,6 +3400,7 @@ function initIntro() {
     // each other's current (pre-swap) contents.
     const sourceFullFlags = state.tableau[sourceIndex].map(c => c.faceUp);
     const targetFullFlags = targetCol.map(c => c.faceUp);
+    const scrollAtMeasure = tableauScrollTop();
     const destForDraggedStack = computeColumnDestRects(sourceFullFlags, targetIndex, stack.length);
     const destForTargetStack = computeColumnDestRects(targetFullFlags, sourceIndex, targetStack.length);
 
@@ -3385,8 +3417,9 @@ function initIntro() {
 
     const revealDragged = hideDestElements(stack, 'tableau', targetIndex, null);
     const revealTarget = hideDestElements(targetStack, 'tableau', sourceIndex, null);
-    glideGhostsTo(ghosts, originRects, destForDraggedStack, MOVE_GLIDE_MS, revealDragged);
-    glideGhostsTo(targetGhosts, targetOriginRects, destForTargetStack, MOVE_GLIDE_MS, revealTarget);
+    const scrollNow = tableauScrollTop(); // 0 if render() just collapsed an expanded column
+    glideGhostsTo(ghosts, originRects, rebaseRectsForScroll(destForDraggedStack, scrollAtMeasure, scrollNow), MOVE_GLIDE_MS, revealDragged);
+    glideGhostsTo(targetGhosts, targetOriginRects, rebaseRectsForScroll(destForTargetStack, scrollAtMeasure, scrollNow), MOVE_GLIDE_MS, revealTarget);
   }
 
   // A small "acknowledged, but nowhere to go" nudge for a click/tap that
@@ -3439,6 +3472,7 @@ function initIntro() {
     // glides flat from the instant it's committed.
     const ghosts = createGhostStack(stack, originRects);
 
+    const scrollAtMeasure = tableauScrollTop();
     const destRects = computeDestRects(target, targetIndex, stack.length);
     const previousTopCard = target === 'foundation' ? currentFoundationTop(targetIndex) : null;
     // Auto Finish passes its own {duration, moveProfile} for a gentler,
@@ -3458,7 +3492,9 @@ function initIntro() {
     }
     const revealDest = hideDestElements(stack, target, targetIndex, previousTopCard);
 
-    glideGhostsTo(ghosts, originRects, destRects, glideMs, revealDest, undefined, options?.moveProfile);
+    // Only a tableau destination scrolls with #tableau - see tableauScrollTop.
+    const landingRects = target === 'tableau' ? rebaseRectsForScroll(destRects, scrollAtMeasure, tableauScrollTop()) : destRects;
+    glideGhostsTo(ghosts, originRects, landingRects, glideMs, revealDest, undefined, options?.moveProfile);
   }
 
   // Testing Tools' "Force Win" (see mike-games-system/SYSTEM.md, Standard
@@ -4620,12 +4656,18 @@ function initIntro() {
         commitKingColumnSwap(sourceIndex, targetIndex, stack, ghosts, originRects);
         return;
       }
+      const scrollAtMeasure = tableauScrollTop();
       const destRects = computeDestRects(target, targetIndex, stack.length);
       const previousTopCard = target === 'foundation' ? currentFoundationTop(targetIndex) : null;
       lastMoveGlideMs = MOVE_GLIDE_MS; // see its declaration - this drag-drop is the other path (besides executeClickMove) that can complete a win
       commitMove(stack, source, sourceIndex, target, targetIndex);
       const revealDest = hideDestElements(stack, target, targetIndex, previousTopCard);
-      glideGhostsTo(ghosts, originRects, destRects, MOVE_GLIDE_MS, revealDest);
+      // A drop into or out of the expanded column collapses it, snapping
+      // #tableau's scroll back to 0 under the fixed-position ghosts - see
+      // tableauScrollTop. This is the "cascade jumped up and came back
+      // down" path.
+      const landingRects = target === 'tableau' ? rebaseRectsForScroll(destRects, scrollAtMeasure, tableauScrollTop()) : destRects;
+      glideGhostsTo(ghosts, originRects, landingRects, MOVE_GLIDE_MS, revealDest);
     } else {
       checkAutoTipOnIllegalTableauDrop(pileEl, stack, source, sourceIndex);
       // See onDragCancel's comment: a foundation's origin element was
