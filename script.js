@@ -513,7 +513,8 @@ function initIntro() {
   let metricsDealId = 0;
   let metricsDealMode = null;
   import('./metrics.js')
-    .then(mod => { metrics = mod.createSolitaireMetrics({ hostname: location.hostname, search: location.search, appVersion: APP_VERSION }); })
+    .then(mod => mod.initSolitaireMetrics({ hostname: location.hostname, search: location.search, appVersion: APP_VERSION }))
+    .then(m => { metrics = m; })
     .catch(() => {});
 
   // Synchronous and never-throwing, same contract this always had - every

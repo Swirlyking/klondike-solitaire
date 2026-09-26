@@ -1,14 +1,19 @@
-// mike-metrics.js — Mike's Games anonymous game metrics client, schema v1.
+// mike-metrics.js — Mike's Games privacy-minimal usage metrics client, schema v1.
 //
 // Canonical copy: mike-games-metrics/client/mike-metrics.js. Games copy this file verbatim;
 // everything game-specific lives in the game's own adapter (METRICS-13).
 //
 // Two events only (game_started, game_completed). The payload is exactly v, event, game,
 // install_id and, where the game has them, mode, difficulty and app_version (METRICS-2).
-// install_id is one random UUID per game installation, created on first use and kept in this
-// game's own local storage; it is never derived from the device, never shared between games and
-// never accompanied by a session identifier (METRICS-3). No timestamps, retries or UI
-// (METRICS-10). Every function is synchronous, returns nothing and cannot throw.
+// install_id is one random installation ID per game installation, created on first use and kept
+// in this game's own local storage; it is never derived from the device, never shared between
+// games and never accompanied by a session identifier (METRICS-3). No timestamps, retries or UI
+// (METRICS-10). Every event function is synchronous, returns nothing and cannot throw.
+//
+// Eligibility (METRICS-16): before creating the helper, an adapter asks the collector whether this
+// request is eligible (currently: United States only) with checkEligibility(). The answer is kept
+// in page memory only. An ineligible or failed check means the adapter never creates the helper,
+// so no installation ID is created or read and nothing is sent.
 
 export const SCHEMA_VERSION = 1;
 export const TOKEN = /^[a-z][a-z0-9_]{0,23}$/;
@@ -71,6 +76,34 @@ export function buildPayload(event, game, ctx, appVersion, installId) {
   }
   if (typeof appVersion === 'string' && APP_VERSION.test(appVersion)) body.app_version = appVersion;
   return body;
+}
+
+// Asks the collector's eligibility endpoint. Resolves true only for an explicit
+// {"enabled":true}; any error, timeout, non-OK response or other body resolves false (fail
+// closed). Never rejects, never stores the answer, sends no cookies or referrer.
+export function checkEligibility(url, { fetchImpl = globalThis.fetch, timeoutMs = 3000 } = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => { if (!settled) { settled = true; resolve(value); } };
+    try {
+      if (!url || typeof fetchImpl !== 'function') { done(false); return; }
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const timer = setTimeout(() => { try { controller?.abort(); } catch { /* ignore */ } done(false); }, timeoutMs);
+      Promise.resolve(fetchImpl(url, {
+        method: 'GET',
+        mode: 'cors',
+        credentials: 'omit',
+        referrerPolicy: 'no-referrer',
+        cache: 'no-store',
+        signal: controller?.signal,
+      }))
+        .then(res => (res && res.ok ? res.json() : null))
+        .then(body => { clearTimeout(timer); done(!!body && body.enabled === true); })
+        .catch(() => { clearTimeout(timer); done(false); });
+    } catch {
+      done(false);
+    }
+  });
 }
 
 function defaultStorage() {

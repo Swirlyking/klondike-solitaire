@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { routeFor, createSolitaireMetrics, COLLECTOR } from './metrics.js';
+import { routeFor, createSolitaireMetrics, initSolitaireMetrics, COLLECTOR, ELIGIBILITY } from './metrics.js';
 import { createMetrics } from './mike-metrics.js';
 
 const js = readFileSync(new URL('./script.js', import.meta.url), 'utf8');
@@ -149,4 +149,57 @@ test('installation ID: a new deal, a restart or a reload never changes it; only 
   assert.equal(ids.length, 4);
   assert.equal(new Set(ids).size, 1);
   assert.equal(m.size, 1);
+});
+
+// Eligibility (METRICS-16): United States only; ineligible means no helper, no ID, no events.
+function storageSpy() {
+  const m = new Map(); const log = [];
+  return { m, log, getItem: k => { log.push(['get', k]); return m.has(k) ? m.get(k) : null; }, setItem: (k, v) => { log.push(['set', k]); m.set(k, String(v)); } };
+}
+
+test('eligible (US): the helper is created and the event carries the installation ID', async () => {
+  const storage = storageSpy(); const sent = [];
+  const metrics = await initSolitaireMetrics({
+    hostname: 'solitaire.mikesgames.app', search: '', appVersion: 'x',
+    check: async url => { assert.equal(url, ELIGIBILITY); return true; },
+    create: o => createMetrics({ ...o, storage, send: (u, b) => sent.push(JSON.parse(b)) }),
+  });
+  metrics.started(1, { mode: 'draw1' });
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].install_id, /^[0-9a-f-]{36}$/);
+});
+
+test('not eligible (outside the US, or the check fails): no helper, no installation ID, no events, nothing stored', async () => {
+  for (const check of [async () => false, async () => { throw new Error('offline'); }]) {
+    const storage = storageSpy(); const sent = []; let created = false;
+    const metrics = await initSolitaireMetrics({
+      hostname: 'solitaire.mikesgames.app', search: '', appVersion: 'x',
+      check: async (...a) => { try { return await check(...a); } catch { return false; } },
+      create: o => { created = true; return createMetrics({ ...o, storage, send: (u, b) => sent.push(b) }); },
+    });
+    assert.equal(metrics, null);
+    assert.equal(created, false);
+    metrics?.started(1, { mode: 'draw1' });
+    assert.equal(sent.length, 0);
+    assert.deepEqual(storage.log, [], 'the installation ID is neither read nor written');
+  }
+});
+
+test('the eligibility answer itself is never stored', async () => {
+  const storage = storageSpy();
+  const saved = globalThis.localStorage;
+  globalThis.localStorage = storage;
+  try {
+    await initSolitaireMetrics({ hostname: 'solitaire.mikesgames.app', search: '', appVersion: 'x', check: async () => false });
+    await initSolitaireMetrics({ hostname: 'solitaire.mikesgames.app', search: '', appVersion: 'x', check: async () => true,
+      create: o => createMetrics({ ...o, storage, send: () => {} }) });
+    assert.deepEqual(storage.log, [], 'creating the helper touches no storage until an event is sent');
+  } finally { globalThis.localStorage = saved; }
+});
+
+test('hosts that send nothing never ask for eligibility', async () => {
+  let asked = false;
+  const m = await initSolitaireMetrics({ hostname: 'deploy-preview-1--x.netlify.app', search: '', appVersion: 'x', check: async () => { asked = true; return true; } });
+  assert.equal(m, null);
+  assert.equal(asked, false);
 });
