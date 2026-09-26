@@ -16,6 +16,7 @@ export const CHECK_FILES = [
   'game-logic.js', 'help.js', 'install-prompt.js', 'preferences.js',
   'pwa-icon-notice.js', 'share.js', 'shuffle.js', 'stats.js',
   'tableau-scroll.js', 'update-check.js', 'victory.js', 'whats-new.js',
+  'metrics.js', 'mike-metrics.js',
 ];
 
 export const CHECK_INTERVAL_MS = 60000;

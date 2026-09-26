@@ -505,6 +505,17 @@ function initIntro() {
   // rather than a second one that could drift from this.
   const ASSET_VERSION = 'v9'; // bumped: new Ace of Spades art (XL TX/spade_1_XL.png)
 
+  // Anonymous game metrics (mike-games-system, anonymous game metrics standard): counts of
+  // games started and completed, nothing about the player. One deal is one instance; its mode
+  // is snapshotted when it is dealt. metrics.js is loaded lazily so a missing or failing file
+  // can never break boot or play, and every call below is synchronous, void and never throws.
+  let metrics = null;
+  let metricsDealId = 0;
+  let metricsDealMode = null;
+  import('./metrics.js')
+    .then(mod => { metrics = mod.createSolitaireMetrics({ hostname: location.hostname, search: location.search, appVersion: APP_VERSION }); })
+    .catch(() => {});
+
   // Synchronous and never-throwing, same contract this always had - every
   // call site just does img.src = cardImageSrc(...). Delegates the actual
   // pixels to card-face-compositor.js: composites and caches on the spot
@@ -1385,6 +1396,8 @@ function initIntro() {
     resetAutoTipState(); // a genuinely fresh deal - fair game to teach a repeated mistake again (see its own comment)
     expandedColumnIndex = null;
     recordPlay(currentDrawModeKey()); // a fresh deal, independent of whether it's ever won - restart() replays this same deal, so it doesn't count again
+    metricsDealId += 1; // a new metrics instance; restart() replays this same deal and keeps it
+    metricsDealMode = currentDrawModeKey(); // snapshotted now - Draw 1/3 can change mid-deal
     const deck = shuffle(freshDeck());
     // A genuinely new shuffle - each card gets a fresh dirty-background +
     // transform for the Worn condition (see card-face-compositor.js),
@@ -2467,6 +2480,10 @@ function initIntro() {
   function pushHistory() {
     history.push({ state: cloneState(state), moveCount });
     if (history.length > 200) history.shift();
+    // Every committed player action passes through here, so the first call in a deal is the
+    // game's first meaningful action; the helper sends once per deal (never from history.length,
+    // which undo can empty).
+    metrics?.started(metricsDealId, { mode: metricsDealMode });
   }
 
   function undo() {
@@ -3581,6 +3598,9 @@ function initIntro() {
       // eligibility check, consulted there rather than here.
       justWonGenuinely = !skipNextStatsRecord;
       skipNextStatsRecord = false;
+      // A genuine, credited win only - Force Win never counts. Sent once per deal, with the
+      // deal's own mode.
+      if (justWonGenuinely) metrics?.completed(metricsDealId, { mode: metricsDealMode });
       pendingWinResult = { moveCount, secs, statsResult };
       setAutoFinishControlsDisabled(true);
 
