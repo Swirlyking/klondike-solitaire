@@ -118,3 +118,35 @@ test('scenario: change mode mid-deal, then win -> completion carries the deal-ti
   m.completed(1, { mode: 'draw1' });
   assert.equal(sent[1].mode, 'draw3');
 });
+
+test('installation ID: one per Solitaire installation, stored under its own key, sent with both events', () => {
+  const m = new Map();
+  const storage = { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) };
+  const sent = [];
+  const metrics = createMetrics({ game: 'solitaire', endpoint: 'https://c/e', storage, send: (u, b) => sent.push(JSON.parse(b)) });
+  metrics.started(1, { mode: 'draw1' }); metrics.completed(1);
+  assert.deepEqual([...m.keys()], ['mike-metrics:install-id:solitaire']);
+  assert.equal(sent[0].install_id, m.get('mike-metrics:install-id:solitaire'));
+  assert.equal(sent[1].install_id, sent[0].install_id);
+});
+
+test('installation ID never enters a backup', () => {
+  const backup = readFileSync(new URL('./backup.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(backup, /mike-metrics|install-id/);
+});
+
+test('installation ID: a new deal, a restart or a reload never changes it; only one key is ever stored', () => {
+  const m = new Map();
+  const storage = { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) };
+  const ids = [];
+  const page = () => createMetrics({ game: 'solitaire', endpoint: 'https://c/e', storage, send: (u, b) => ids.push(JSON.parse(b).install_id) });
+  const first = page();
+  first.started(1, { mode: 'draw1' });            // first deal
+  first.started(1, { mode: 'draw1' });            // restart keeps the deal: no new event
+  first.started(2, { mode: 'draw1' }); first.completed(2); // a new deal, won
+  const afterReload = page();                     // a reload is a fresh page on the same installation
+  afterReload.started(1, { mode: 'draw3' });
+  assert.equal(ids.length, 4);
+  assert.equal(new Set(ids).size, 1);
+  assert.equal(m.size, 1);
+});
