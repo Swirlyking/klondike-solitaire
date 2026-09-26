@@ -118,3 +118,19 @@ test('scenario: change mode mid-deal, then win -> completion carries the deal-ti
   m.completed(1, { mode: 'draw1' });
   assert.equal(sent[1].mode, 'draw3');
 });
+
+test('installation ID: one per Solitaire installation, stored under its own key, sent with both events', () => {
+  const m = new Map();
+  const storage = { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) };
+  const sent = [];
+  const metrics = createMetrics({ game: 'solitaire', endpoint: 'https://c/e', storage, send: (u, b) => sent.push(JSON.parse(b)) });
+  metrics.started(1, { mode: 'draw1' }); metrics.completed(1);
+  assert.deepEqual([...m.keys()], ['mike-metrics:install-id:solitaire']);
+  assert.equal(sent[0].install_id, m.get('mike-metrics:install-id:solitaire'));
+  assert.equal(sent[1].install_id, sent[0].install_id);
+});
+
+test('installation ID never enters a backup', () => {
+  const backup = readFileSync(new URL('./backup.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(backup, /mike-metrics|install-id/);
+});
