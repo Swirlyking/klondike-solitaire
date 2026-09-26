@@ -3,12 +3,16 @@
 // Canonical copy: mike-games-metrics/client/mike-metrics.js. Games copy this file verbatim;
 // everything game-specific lives in the game's own adapter (METRICS-13).
 //
-// Two events only (game_started, game_completed). The payload is exactly v, event, game,
-// install_id and, where the game has them, mode, difficulty and app_version (METRICS-2).
-// install_id is one random installation ID per game installation, created on first use and kept
-// in this game's own local storage; it is never derived from the device, never shared between
-// games and never accompanied by a session identifier (METRICS-3). No timestamps, retries or UI
-// (METRICS-10). Every event function is synchronous, returns nothing and cannot throw.
+// Gameplay events (game_started, game_completed) carry exactly v, event, game and, where the game
+// has them, mode, difficulty and app_version — never an identifier (METRICS-2). A separate
+// installation_active event carries exactly v, event, game and install_id, and nothing about play:
+// it is sent once per UTC day per page, at the first start or completion, so active installations
+// can be counted without linking them to gameplay (METRICS-3). install_id is one random
+// installation ID per game installation, created on first use and kept in this game's own local
+// storage; it is never derived from the device, never shared between games and never accompanied by
+// a session identifier. The day an activity event was last sent is held in page memory only.
+// No timestamps, retries or UI (METRICS-10). Every event function is synchronous, returns nothing
+// and cannot throw.
 //
 // Eligibility (METRICS-16): before creating the helper, an adapter asks the collector whether this
 // request is eligible (currently: United States only) with checkEligibility(). The answer is kept
@@ -60,12 +64,19 @@ export function loadInstallId(game, storage, cryptoObj) {
   }
 }
 
-// Build the exact wire payload, or null if anything is invalid (the whole event is dropped).
-export function buildPayload(event, game, ctx, appVersion, installId) {
+// The installation_active payload, or null: exactly v, event, game and install_id.
+export function buildActivityPayload(game, installId) {
+  if (typeof game !== 'string' || !TOKEN.test(game)) return null;
+  if (typeof installId !== 'string' || !INSTALL_ID.test(installId)) return null;
+  return { v: SCHEMA_VERSION, event: 'installation_active', game, install_id: installId };
+}
+
+// Build the exact gameplay payload, or null if anything is invalid (the whole event is dropped).
+// Gameplay payloads never contain an identifier.
+export function buildPayload(event, game, ctx, appVersion) {
   if (event !== 'game_started' && event !== 'game_completed') return null;
   if (typeof game !== 'string' || !TOKEN.test(game)) return null;
   const body = { v: SCHEMA_VERSION, event, game };
-  if (typeof installId === 'string' && INSTALL_ID.test(installId)) body.install_id = installId;
   if (ctx && ctx.mode !== undefined) {
     if (typeof ctx.mode !== 'string' || !TOKEN.test(ctx.mode)) return null;
     body.mode = ctx.mode;
@@ -119,15 +130,32 @@ export function createMetrics({ game, appVersion, endpoint, send = post, log = n
   const startedCtx = new Map(); // instanceKey -> ctx; this page only; keys are never sent
   const completedKeys = new Set();
   let installId; // undefined until first use; then the stored ID or null
+  let activeDay = null; // UTC day an installation_active event was last sent from this page
+
+  function deliver(body) {
+    if (log) { log(body); return; }
+    send(endpoint, JSON.stringify(body));
+  }
+
+  // Once per UTC day per page: the installation is active. Never combined with gameplay data.
+  function markActive() {
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      if (activeDay === today) return;
+      activeDay = today;
+      if (installId === undefined) installId = loadInstallId(game, storage, cryptoObj);
+      const body = buildActivityPayload(game, installId);
+      if (body) deliver(body);
+    } catch { /* never the player's problem */ }
+  }
 
   function emit(event, ctx) {
     try {
       if (!log && !endpoint) return;
-      if (installId === undefined) installId = loadInstallId(game, storage, cryptoObj);
-      const body = buildPayload(event, game, ctx, appVersion, installId);
+      const body = buildPayload(event, game, ctx, appVersion);
       if (!body) return;
-      if (log) { log(body); return; }
-      send(endpoint, JSON.stringify(body));
+      markActive();
+      deliver(body);
     } catch { /* never the player's problem */ }
   }
 

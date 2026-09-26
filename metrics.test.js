@@ -119,15 +119,17 @@ test('scenario: change mode mid-deal, then win -> completion carries the deal-ti
   assert.equal(sent[1].mode, 'draw3');
 });
 
-test('installation ID: one per Solitaire installation, stored under its own key, sent with both events', () => {
+test('installation ID: one per Solitaire installation, stored under its own key, sent only in installation_active', () => {
   const m = new Map();
   const storage = { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) };
   const sent = [];
   const metrics = createMetrics({ game: 'solitaire', endpoint: 'https://c/e', storage, send: (u, b) => sent.push(JSON.parse(b)) });
   metrics.started(1, { mode: 'draw1' }); metrics.completed(1);
   assert.deepEqual([...m.keys()], ['mike-metrics:install-id:solitaire']);
-  assert.equal(sent[0].install_id, m.get('mike-metrics:install-id:solitaire'));
-  assert.equal(sent[1].install_id, sent[0].install_id);
+  assert.deepEqual(sent.map(p => p.event), ['installation_active', 'game_started', 'game_completed']);
+  assert.deepEqual(sent[0], { v: 1, event: 'installation_active', game: 'solitaire', install_id: m.get('mike-metrics:install-id:solitaire') });
+  assert.equal('install_id' in sent[1], false);
+  assert.equal('install_id' in sent[2], false);
 });
 
 test('installation ID never enters a backup', () => {
@@ -139,14 +141,14 @@ test('installation ID: a new deal, a restart or a reload never changes it; only 
   const m = new Map();
   const storage = { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) };
   const ids = [];
-  const page = () => createMetrics({ game: 'solitaire', endpoint: 'https://c/e', storage, send: (u, b) => ids.push(JSON.parse(b).install_id) });
+  const page = () => createMetrics({ game: 'solitaire', endpoint: 'https://c/e', storage, send: (u, b) => { const p = JSON.parse(b); if (p.event === 'installation_active') ids.push(p.install_id); } });
   const first = page();
   first.started(1, { mode: 'draw1' });            // first deal
   first.started(1, { mode: 'draw1' });            // restart keeps the deal: no new event
   first.started(2, { mode: 'draw1' }); first.completed(2); // a new deal, won
   const afterReload = page();                     // a reload is a fresh page on the same installation
   afterReload.started(1, { mode: 'draw3' });
-  assert.equal(ids.length, 4);
+  assert.equal(ids.length, 2, 'one activity record per page per day');
   assert.equal(new Set(ids).size, 1);
   assert.equal(m.size, 1);
 });
@@ -157,7 +159,7 @@ function storageSpy() {
   return { m, log, getItem: k => { log.push(['get', k]); return m.has(k) ? m.get(k) : null; }, setItem: (k, v) => { log.push(['set', k]); m.set(k, String(v)); } };
 }
 
-test('eligible (US): the helper is created and the event carries the installation ID', async () => {
+test('eligible (US): the helper is created; the installation ID travels only in installation_active', async () => {
   const storage = storageSpy(); const sent = [];
   const metrics = await initSolitaireMetrics({
     hostname: 'solitaire.mikesgames.app', search: '', appVersion: 'x',
@@ -165,8 +167,11 @@ test('eligible (US): the helper is created and the event carries the installatio
     create: o => createMetrics({ ...o, storage, send: (u, b) => sent.push(JSON.parse(b)) }),
   });
   metrics.started(1, { mode: 'draw1' });
-  assert.equal(sent.length, 1);
+  assert.equal(sent.length, 2); // installation_active, then game_started
+  assert.equal(sent[0].event, 'installation_active');
   assert.match(sent[0].install_id, /^[0-9a-f-]{36}$/);
+  assert.equal(sent[1].event, 'game_started');
+  assert.equal('install_id' in sent[1], false);
 });
 
 test('not eligible (outside the US, or the check fails): no helper, no installation ID, no events, nothing stored', async () => {
