@@ -6,7 +6,7 @@
 // Gameplay events (game_started, game_completed) carry exactly v, event, game and, where the game
 // has them, mode, difficulty and app_version — never an identifier (METRICS-2). A separate
 // installation_active event carries exactly v, event, game and install_id, and nothing about play:
-// it is sent once per UTC day per page, at the first start or completion, so active installations
+// it is sent once per Pacific day per page, at the first start or completion, so active installations
 // can be counted without linking them to gameplay (METRICS-3). install_id is one random
 // installation ID per game installation, created on first use and kept in this game's own local
 // storage; it is never derived from the device, never shared between games and never accompanied by
@@ -23,6 +23,23 @@ export const SCHEMA_VERSION = 1;
 export const TOKEN = /^[a-z][a-z0-9_]{0,23}$/;
 export const APP_VERSION = /^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,31}$/;
 export const INSTALL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+// Reporting days are calendar days in America/Los_Angeles (METRICS-18), PST/PDT from the platform's
+// time zone data. This is only when to send; it is never sent or stored.
+export const REPORTING_TIME_ZONE = 'America/Los_Angeles';
+
+// The Pacific calendar day (YYYY-MM-DD) of an instant. Without time zone support it falls back to
+// the UTC day; the collector still records the Pacific day and counts it once.
+export function reportingDay(date = new Date()) {
+  try {
+    const p = {};
+    for (const { type, value } of new Intl.DateTimeFormat('en-US', {
+      timeZone: REPORTING_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(date)) p[type] = value;
+    if (p.year && p.month && p.day) return `${p.year}-${p.month}-${p.day}`;
+  } catch { /* no time zone support */ }
+  return date.toISOString().slice(0, 10);
+}
 
 export function installIdKey(game) {
   return `mike-metrics:install-id:${game}`;
@@ -124,23 +141,23 @@ function defaultStorage() {
 // game: the family token. appVersion: the value Settings shows. endpoint: collector URL, or
 // null/'' to send nothing. send(url, bodyString): injectable for tests; defaults to a
 // fire-and-forget fetch. log(payload): optional local-development log instead of sending.
-// storage / cryptoObj: injectable for tests; default to localStorage and crypto.
+// storage / cryptoObj / clock: injectable for tests; default to localStorage, crypto and the current time.
 export function createMetrics({ game, appVersion, endpoint, send = post, log = null,
-  storage = defaultStorage(), cryptoObj = globalThis.crypto } = {}) {
+  storage = defaultStorage(), cryptoObj = globalThis.crypto, clock = () => new Date() } = {}) {
   const startedCtx = new Map(); // instanceKey -> ctx; this page only; keys are never sent
   const completedKeys = new Set();
   let installId; // undefined until first use; then the stored ID or null
-  let activeDay = null; // UTC day an installation_active event was last sent from this page
+  let activeDay = null; // Pacific day an installation_active event was last sent from this page
 
   function deliver(body) {
     if (log) { log(body); return; }
     send(endpoint, JSON.stringify(body));
   }
 
-  // Once per UTC day per page: the installation is active. Never combined with gameplay data.
+  // Once per Pacific day per page: the installation is active. Never combined with gameplay data.
   function markActive() {
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = reportingDay(clock());
       if (activeDay === today) return;
       activeDay = today;
       if (installId === undefined) installId = loadInstallId(game, storage, cryptoObj);
