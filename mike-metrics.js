@@ -202,13 +202,16 @@ export function createMetrics({ game, appVersion, endpoint, send = post, log = n
   };
 }
 
+// A CORS "simple" request (POST, text/plain, no custom headers): no preflight, and every browser sends
+// the page's real Origin, which the collector requires. (A no-cors POST with no-referrer makes
+// Safari and Firefox send "Origin: null", per the Fetch standard, so the collector dropped them.)
 function post(url, body) {
   try {
     const p = fetch(url, {
       method: 'POST',
       body,
       keepalive: true,
-      mode: 'no-cors',
+      mode: 'cors',
       credentials: 'omit',
       referrerPolicy: 'no-referrer',
       headers: { 'Content-Type': 'text/plain' },
