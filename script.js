@@ -491,7 +491,7 @@ function initIntro() {
   // to track features, it's to let you glance at Settings on any given
   // tab/device and immediately tell whether it's running the build you just
   // pushed or a stale cached one from before.
-  const APP_VERSION = '2026.09.24.0048';
+  const APP_VERSION = '2026.09.26.1733';
 
   // Cache-buster on every card image URL, not a build/deploy version -
   // bump this by hand whenever the card art itself changes. It's what
