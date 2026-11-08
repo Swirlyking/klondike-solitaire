@@ -9,8 +9,10 @@
 //   through script.js's pushHistory(): a card move, a stock draw or recycle,
 //   one grouped Auto Finish run) - never when it's merely dealt, so app
 //   launches and reloads don't count.
-// - Its Draw 1/Draw 3 mode is locked at that first move (or just before the
-//   first stock draw is processed - see lockMode). Every effect for the deal
+// - Its Draw 1/Draw 3 mode is locked at that first move, never earlier: an
+//   interrupted attempt (a stock draw superseded by New Game/Restart while
+//   its card art loads) locks nothing. A first stock draw locks to the mode
+//   it computed its card count from, so it follows those rules. Every effect for the deal
 //   is credited to that mode, and script.js keeps dealing the stock in it
 //   until New Game, even if Deal Style changes mid-deal.
 // - One lifetime Play per deal, ever.
@@ -31,9 +33,8 @@ export function createDeal() {
   return { mode: null, playCounted: false, lastCountedDay: null, lastWinDay: null };
 }
 
-// No-op once locked. Called on its own just before a stock draw computes how
-// many cards to turn, so that very first draw already follows the deal's
-// rules; also implied by every committed move.
+// No-op once locked. Called with the stock draw's own mode just before that
+// draw is committed; also implied by every committed move.
 export function lockMode(deal, settingMode) {
   if (deal.mode) return deal;
   return { ...deal, mode: settingMode };

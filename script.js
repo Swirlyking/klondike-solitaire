@@ -803,13 +803,13 @@ function initIntro() {
     return `draw${getDrawCount()}`;
   }
 
-  // Locks the current deal's mode if it isn't already. Called on its own
-  // just before a stock draw reads its draw count, so the very first draw
-  // already follows the locked rules; noteCommittedMove() does the same for
-  // every other first move.
-  function lockDealMode() {
+  // Locks the current deal's mode if it isn't already - only ever at the
+  // moment a move is committed. A stock draw passes the mode it computed its
+  // card count from, so a first draw follows (and locks) exactly those
+  // rules; noteCommittedMove() locks every other first move to the setting.
+  function lockDealMode(modeKey = settingDrawModeKey()) {
     if (dealTally.mode) return;
-    dealTally = lockMode(dealTally, settingDrawModeKey());
+    dealTally = lockMode(dealTally, modeKey);
     metricsDealMode = dealTally.mode;
   }
 
@@ -3296,10 +3296,12 @@ function initIntro() {
     if (state.stock.length) {
       isDrawing = true;
       const stateAtStart = state; // newGame()/restart() always replace this with a new object - see their own bodies
-      // Lock the deal's mode BEFORE reading the draw count, so a first move
-      // that's a stock draw already turns the right number of cards.
-      lockDealMode();
-      const n = Math.min(getDrawCount(), state.stock.length);
+      // The mode this draw follows: the deal's locked mode, or - for a first
+      // move - the current setting. Not locked yet: the wait below can be
+      // interrupted (New Game/Restart supersedes it) before anything is
+      // committed, and an interrupted attempt must not lock the deal.
+      const drawModeKey = dealTally.mode ?? settingDrawModeKey();
+      const n = Math.min(drawModeKey === 'draw1' ? 1 : 3, state.stock.length);
       const cardsAboutToDraw = state.stock.slice(-n);
       const { ready } = ensureCardsFaceReady(cardsAboutToDraw);
       await ready;
@@ -3317,6 +3319,10 @@ function initIntro() {
       );
       resetTableauClickMemory();
       clearHint();
+      // Committing now: lock to the exact mode `n` was computed from (even if
+      // Deal Style changed during the wait), so this first draw and every
+      // later one follow the same rules. pushHistory() then counts the play.
+      lockDealMode(drawModeKey);
       pushHistory();
       const drawn = [];
       for (let i = 0; i < n; i++) {

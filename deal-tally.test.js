@@ -13,7 +13,8 @@ import { addGame, addWin, readDay, dayTotals, todayKey } from './today.js';
 //   newGame()      -> createDeal()
 //   restart()/undo -> deal untouched
 //   pushHistory()  -> onCommittedMove()
-//   stock draw     -> lockMode() BEFORE the draw count is read
+//   stock draw     -> mode = locked ?? setting; on commit, lockMode(mode) then the move
+//   interrupted draw (superseded during its art wait) -> nothing at all
 //   checkWin()     -> onWin()
 function makeGame({ setting = 'draw3', day = '2026-11-08' } = {}) {
   const sim = {
@@ -47,10 +48,14 @@ function makeGame({ setting = 'draw3', day = '2026-11-08' } = {}) {
       apply(r.effects);
     },
     stockDraw() {
-      sim.deal = lockMode(sim.deal, sim.setting);
-      sim.drawsUsed.push(drawMode());
+      const mode = drawMode();
+      sim.drawsUsed.push(mode);
+      sim.deal = lockMode(sim.deal, mode);
       sim.move();
     },
+    // A first draw whose card-art wait is superseded: computes its mode,
+    // commits nothing.
+    interruptedStockDraw() { drawMode(); },
     win() {
       const r = onWin(sim.deal, sim.day, sim.setting);
       sim.deal = r.deal;
@@ -199,7 +204,22 @@ test('the next New Game uses the newly selected Deal Style', () => {
   assert.equal(g.lifetime.draw1.plays, 1);
 });
 
-test('the mode is locked before the first stock draw reads its draw count', () => {
+test('an interrupted first stock draw locks nothing; the next attempt follows the current setting', () => {
+  const g = makeGame({ setting: 'draw3' });
+  g.newGame();
+  g.interruptedStockDraw();
+  g.restart();
+  assert.equal(g.deal.mode, null);
+  assert.equal(g.plays(), 0);
+  assert.deepEqual(g.totals(), { games: 0, wins: 0 });
+  g.setting = 'draw1';
+  g.stockDraw();
+  assert.deepEqual(g.drawsUsed, ['draw1']);
+  assert.equal(g.lifetime.draw1.plays, 1);
+  assert.equal(g.lifetime.draw3.plays, 0);
+});
+
+test('lockMode fixes the deal mode once; the committed move counts under it', () => {
   // lockMode alone (no committed move yet) already fixes the deal's rules.
   const locked = lockMode(createDeal(), 'draw1');
   assert.equal(locked.mode, 'draw1');

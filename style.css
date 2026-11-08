@@ -1469,6 +1469,16 @@ body.tableau-inspecting #tableau .column {
   height: auto;
   flex: 1;
   padding: 10px 0;
+  /* Plain button text (no .settings-option-label span here) inherited the
+     browser's near-black default against #stats-card's dark teal. Same
+     light/gold label treatment as Settings' own text and stack options. */
+  color: #cde;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+#stats-mode-toggle .settings-option--stack.selected {
+  color: var(--gold);
 }
 
 .stats-row + .stats-row {
