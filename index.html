@@ -522,6 +522,16 @@
         <h2>Your Stats</h2>
         <button id="statsCloseBtn" aria-label="Back to Settings">&times;</button>
       </div>
+      <!-- Today (see today.js): games and wins for the current local day,
+           both modes combined - above the mode toggle because it's about
+           the player's day, not one mode. -->
+      <div id="stats-today">
+        <div id="stats-today-header">
+          <h3 class="stats-today-title">Today</h3>
+          <p id="statsTodayStatus"></p>
+        </div>
+        <div id="stats-today-rows"></div>
+      </div>
       <div id="stats-mode-toggle">
         <button type="button" id="statsDraw1Btn" class="settings-option settings-option--stack">Draw 1</button>
         <button type="button" id="statsDraw3Btn" class="settings-option settings-option--stack">Draw 3</button>
@@ -535,7 +545,9 @@
        applied by script.js (one of a few random, subtle treatments).
        Hierarchy (see script.js's showVictoryMessage): a small celebratory
        emoji (from victory.js's pickHeadline(), the seam for future
-       alternates), the win number in the current draw mode (largest), how
+       alternates), the win number in the current draw mode (largest), a
+       quieter Today line (today.js's formatTodayWinLine - "First win today,
+       on game 5" or a running tally), how
        many times this draw mode has been played in total (always shown,
        never a record - just a count), this game's result, then 0 or 2
        record lines - each independently either an ordinary "Fastest:"/
@@ -544,6 +556,7 @@
   <div id="win-message" class="hidden">
     <div id="winEmoji" aria-hidden="true"></div>
     <h1 id="winHeadline"></h1>
+    <p id="winTodayLine" class="hidden"></p>
     <p id="winPlaysLine"></p>
     <p id="winResultLine"></p>
     <div id="winRecords">

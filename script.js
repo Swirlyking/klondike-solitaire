@@ -46,6 +46,8 @@ import {
 } from './flick.js';
 import { generateVictoryPersonality, assignCardBehaviors, pickHeadline } from './victory.js';
 import { recordWin, getStatsForMode, applyWin, recordPlay } from './stats.js';
+import { todayKey, getToday, loadTodayRaw, readDay, addGame, addWin, dayTotals, recordTodayGame, recordTodayWin, formatTodayWinLine, formatTodayStatus } from './today.js';
+import { createDeal, lockMode, onCommittedMove, onWin } from './deal-tally.js';
 import { buildBackup, validateBackup, resolveRestorePatch, backupFilename, VALIDATION_ERROR_MESSAGES, LEGACY_CARD_BACK_IDS } from './backup.js';
 import { ensureIconGenerationMarker, shouldShowIconNotice, dismissIconNoticePermanently } from './pwa-icon-notice.js';
 import { ensureWhatsNewMarker, shouldShowWhatsNew, markWhatsNewSeen } from './whats-new.js';
@@ -505,10 +507,18 @@ function initIntro() {
   // rather than a second one that could drift from this.
   const ASSET_VERSION = 'v9'; // bumped: new Ace of Spades art (XL TX/spade_1_XL.png)
 
+  // Per-deal counting state for lifetime Plays and Today (see deal-tally.js):
+  // the deal's locked Draw 1/Draw 3 mode, whether its one lifetime Play has
+  // been counted, and which days it has counted on. Replaced by newGame()
+  // only - restart()/undo() replay the same deal and keep it. Declared up
+  // here, ahead of getDrawCount(), which reads it.
+  let dealTally = createDeal();
+
   // Anonymous game metrics (mike-games-system, anonymous game metrics standard): counts of
   // games started and completed, nothing about the player. One deal is one instance; its mode
-  // is snapshotted when it is dealt. metrics.js is loaded lazily so a missing or failing file
-  // can never break boot or play, and every call below is synchronous, void and never throws.
+  // is snapshotted when it is dealt, then re-snapshotted when the deal's mode locks at its
+  // first committed move (see lockDealMode), so metrics credit the same mode stats do.
+  // metrics.js is loaded lazily so a missing or failing file can never break boot or play, and every call below is synchronous, void and never throws.
   let metrics = null;
   let metricsDealId = 0;
   let metricsDealMode = null;
@@ -767,19 +777,63 @@ function initIntro() {
     return backImageSrc(getCardBackDesignId());
   }
 
-  // Read live from the preference on every draw rather than cached in a
-  // local variable - single source of truth, same pattern as
-  // getCardBackSrc, so a Settings change takes effect on the very next
-  // stock click with nothing to keep in sync.
-  function getDrawCount() {
+  // The Deal Style setting as the player last chose it - what the NEXT deal
+  // will use, and what the current deal uses until its first committed move.
+  function settingDrawCount() {
     return parseInt(currentPreferenceOption(findPreferenceSection('drawCount')).id, 10);
   }
+  function settingDrawModeKey() {
+    return `draw${settingDrawCount()}`;
+  }
 
-  // The key stats.js stores each mode's records under - 'draw1'/'draw3',
-  // read live off the same preference getDrawCount() reads, so the two
-  // never drift out of sync with each other.
+  // The rules the CURRENT deal is played under. Once a deal's mode locks at
+  // its first committed move (see deal-tally.js), Deal Style changes apply
+  // to the next deal instead - the stock, Hint, the abandon check and the
+  // win screen all keep following the deal's own mode, through Undo and
+  // Restart, so one deal can never be played (or credited) under both
+  // rules. Before that first move nothing is locked and a Settings change
+  // simply changes the deal about to be played.
+  function getDrawCount() {
+    return dealTally.mode ? (dealTally.mode === 'draw1' ? 1 : 3) : settingDrawCount();
+  }
+
+  // The key stats.js stores each mode's records under - 'draw1'/'draw3' -
+  // for the current deal (see getDrawCount).
   function currentDrawModeKey() {
     return `draw${getDrawCount()}`;
+  }
+
+  // Locks the current deal's mode if it isn't already. Called on its own
+  // just before a stock draw reads its draw count, so the very first draw
+  // already follows the locked rules; noteCommittedMove() does the same for
+  // every other first move.
+  function lockDealMode() {
+    if (dealTally.mode) return;
+    dealTally = lockMode(dealTally, settingDrawModeKey());
+    metricsDealMode = dealTally.mode;
+  }
+
+  // Applies deal-tally.js's effects to the two stores. Returns recordWin's
+  // result (or null) for the win screen.
+  function applyDealEffects(effects, secs = 0, moves = 0) {
+    let winResult = null;
+    for (const e of effects) {
+      if (e.type === 'lifetimePlay') recordPlay(e.mode);
+      else if (e.type === 'todayGame') recordTodayGame(e.day, e.mode);
+      else if (e.type === 'lifetimeWin') winResult = recordWin(e.mode, secs, moves);
+      else if (e.type === 'todayWin') recordTodayWin(e.day, e.mode);
+    }
+    return winResult;
+  }
+
+  // Every committed move (see pushHistory): counts the deal's one lifetime
+  // Play on its first move, and one Today game per calendar day it's played
+  // on. Writes storage at most twice per deal per day, never per move.
+  function noteCommittedMove() {
+    lockDealMode();
+    const result = onCommittedMove(dealTally, todayKey(), dealTally.mode);
+    dealTally = result.deal;
+    if (result.effects.length) applyDealEffects(result.effects);
   }
 
   // ---------- background image warming ----------
@@ -1306,6 +1360,7 @@ function initIntro() {
   const winHeadline = document.getElementById('winHeadline');
   const winResultLine = document.getElementById('winResultLine');
   const winPlaysLine = document.getElementById('winPlaysLine');
+  const winTodayLine = document.getElementById('winTodayLine');
   const winRecordTime = document.getElementById('winRecordTime');
   const winRecordMoves = document.getElementById('winRecordMoves');
   const winRecords = document.getElementById('winRecords');
@@ -1324,6 +1379,8 @@ function initIntro() {
   const statsDraw1Btn = document.getElementById('statsDraw1Btn');
   const statsDraw3Btn = document.getElementById('statsDraw3Btn');
   const statsRows = document.getElementById('stats-rows');
+  const statsTodayStatus = document.getElementById('statsTodayStatus');
+  const statsTodayRows = document.getElementById('stats-today-rows');
   const confirmOverlay = document.getElementById('confirm-overlay');
   const confirmTitle = document.getElementById('confirm-title');
   const confirmMessage = document.getElementById('confirm-message');
@@ -1396,9 +1453,13 @@ function initIntro() {
     clearHint();
     resetAutoTipState(); // a genuinely fresh deal - fair game to teach a repeated mistake again (see its own comment)
     expandedColumnIndex = null;
-    recordPlay(currentDrawModeKey()); // a fresh deal, independent of whether it's ever won - restart() replays this same deal, so it doesn't count again
+    // A fresh deal, not yet played: its lifetime Play and Today game are
+    // counted on its first committed move (see noteCommittedMove), never
+    // here - every app launch deals a game, and an untouched deal isn't a
+    // game played. restart() replays this same deal and keeps dealTally.
+    dealTally = createDeal();
     metricsDealId += 1; // a new metrics instance; restart() replays this same deal and keeps it
-    metricsDealMode = currentDrawModeKey(); // snapshotted now - Draw 1/3 can change mid-deal
+    metricsDealMode = currentDrawModeKey(); // snapshotted now (dealTally was just reset, so this is the setting) - re-snapshotted when the mode locks
     const deck = shuffle(freshDeck());
     // A genuinely new shuffle - each card gets a fresh dirty-background +
     // transform for the Worn condition (see card-face-compositor.js),
@@ -2484,6 +2545,7 @@ function initIntro() {
     // Every committed player action passes through here, so the first call in a deal is the
     // game's first meaningful action; the helper sends once per deal (never from history.length,
     // which undo can empty).
+    noteCommittedMove(); // before metrics, so a first move's locked mode is what metrics sees
     metrics?.started(metricsDealId, { mode: metricsDealMode });
   }
 
@@ -3234,6 +3296,9 @@ function initIntro() {
     if (state.stock.length) {
       isDrawing = true;
       const stateAtStart = state; // newGame()/restart() always replace this with a new object - see their own bodies
+      // Lock the deal's mode BEFORE reading the draw count, so a first move
+      // that's a stock draw already turns the right number of cards.
+      lockDealMode();
       const n = Math.min(getDrawCount(), state.stock.length);
       const cardsAboutToDraw = state.stock.slice(-n);
       const { ready } = ensureCardsFaceReady(cardsAboutToDraw);
@@ -3590,10 +3655,29 @@ function initIntro() {
       // same pure applyWin() the real recordWin() is built on - it just
       // never persists, so the easter egg shows an honest preview of what
       // a real win would look like without inflating real stats.
-      const drawModeKey = currentDrawModeKey();
-      const statsResult = skipNextStatsRecord
-        ? applyWin(getStatsForMode(drawModeKey), secs, moveCount)
-        : recordWin(drawModeKey, secs, moveCount);
+      // Lifetime win and Today credit both go through deal-tally.js, to the
+      // deal's locked mode and the day the win completes (see onWin).
+      // Force Win previews both without saving either.
+      const day = todayKey();
+      let statsResult;
+      let todayTotals;
+      if (skipNextStatsRecord) {
+        const drawModeKey = currentDrawModeKey();
+        statsResult = applyWin(getStatsForMode(drawModeKey), secs, moveCount);
+        const preview = onWin(dealTally, day, drawModeKey);
+        let rec = loadTodayRaw();
+        for (const e of preview.effects) {
+          if (e.type === 'todayGame') rec = addGame(rec, e.day, e.mode);
+          if (e.type === 'todayWin') rec = addWin(rec, e.day, e.mode);
+        }
+        todayTotals = dayTotals(readDay(rec, day));
+      } else {
+        lockDealMode();
+        const result = onWin(dealTally, day, dealTally.mode);
+        dealTally = result.deal;
+        statsResult = applyDealEffects(result.effects, secs, moveCount);
+        todayTotals = dayTotals(getToday(day));
+      }
       // Captured before the reset just below, so it survives all the way
       // to the next newGame()/restart() - see install-prompt.js's own
       // eligibility check, consulted there rather than here.
@@ -3602,7 +3686,7 @@ function initIntro() {
       // A genuine, credited win only - Force Win never counts. Sent once per deal, with the
       // deal's own mode.
       if (justWonGenuinely) metrics?.completed(metricsDealId, { mode: metricsDealMode });
-      pendingWinResult = { moveCount, secs, statsResult };
+      pendingWinResult = { moveCount, secs, statsResult, todayLine: formatTodayWinLine(todayTotals) };
       setAutoFinishControlsDisabled(true);
 
       const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -4121,6 +4205,8 @@ function initIntro() {
     const stats = result.statsResult;
     if (stats) {
       winHeadline.textContent = `WIN #${stats.winNumber}`;
+      winTodayLine.textContent = result.todayLine || '';
+      winTodayLine.classList.toggle('hidden', !result.todayLine);
       winPlaysLine.textContent = `${stats.stats.plays} Plays`;
       // Win #1 has nothing yet to compare against - this game's own result
       // IS the new baseline, so showing it again as a "record" line right
@@ -4155,6 +4241,8 @@ function initIntro() {
       // reached some other way. Nothing meaningful to share here, so the
       // button is disabled rather than sharing an incomplete result.
       winHeadline.textContent = '';
+      winTodayLine.textContent = '';
+      winTodayLine.classList.add('hidden');
       winPlaysLine.textContent = '';
       winRecords.classList.add('hidden');
       winShareBtn.disabled = true;
@@ -5493,6 +5581,12 @@ function initIntro() {
 
       const optionsRow = document.createElement('div');
       optionsRow.className = section.scrollRow ? 'settings-options settings-options--scroll' : 'settings-options';
+      // Deal Style: once the current deal's mode has locked (its first
+      // committed move - see getDrawCount), a different selection applies
+      // to the next deal. Said quietly, in place, only while it's true -
+      // no pop-up, and the game is never interrupted or restarted.
+      const showNextDealNote = section.key === 'drawCount'
+        && dealTally.mode && !won && current.id !== String(getDrawCount());
       for (const option of section.options) {
         const optionBtn = document.createElement('button');
         optionBtn.type = 'button';
@@ -5581,6 +5675,12 @@ function initIntro() {
         optionsRow.appendChild(optionBtn);
       }
       sectionEl.appendChild(optionsRow);
+      if (showNextDealNote) {
+        const note = document.createElement('p');
+        note.className = 'settings-section-note';
+        note.textContent = 'Applies to your next deal';
+        sectionEl.appendChild(note);
+      }
       settingsSections.appendChild(sectionEl);
     }
   }
@@ -5643,6 +5743,14 @@ function initIntro() {
     const modeLabel = modeKey === 'draw1' ? 'Draw 1' : 'Draw 3';
     const stats = getStatsForMode(modeKey);
 
+    // Today: the player's day across both modes (see today.js), so it sits
+    // above the mode toggle and doesn't change with it.
+    const today = dayTotals(getToday());
+    statsTodayStatus.textContent = formatTodayStatus(today);
+    statsTodayRows.innerHTML = '';
+    statsTodayRows.appendChild(renderStatRow('Games', String(today.games)));
+    statsTodayRows.appendChild(renderStatRow('Wins', String(today.wins)));
+
     statsRows.innerHTML = '';
     statsRows.appendChild(renderStatRow(`${modeLabel} Plays`, String(stats.plays)));
     statsRows.appendChild(renderStatRow(`${modeLabel} Wins`, String(stats.wins)));
@@ -5656,7 +5764,7 @@ function initIntro() {
   // the two mode buttons are a pure local view toggle (see renderStatsPanel).
   statsLink.addEventListener('click', () => {
     settingsOverlay.classList.add('hidden');
-    renderStatsPanel(currentDrawModeKey());
+    renderStatsPanel(settingDrawModeKey());
     statsOverlay.classList.remove('hidden');
   });
   function closeStatsPanel() {
