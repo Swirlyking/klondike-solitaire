@@ -13,8 +13,11 @@ export const MODES = ['draw1', 'draw3'];
 // null (not 0) means "no record yet" - a real game can never finish in 0
 // seconds or 0 moves, so null stays an unambiguous "never won" sentinel
 // throughout, both here and in the UI that reads it. plays counts every
-// fresh deal (script.js's newGame(), not restart() - replaying the exact
-// same deal isn't a new play) started in this mode, independent of wins.
+// deal actually played in this mode, independent of wins: since 2026-11-08
+// a deal counts on its FIRST COMMITTED MOVE (see deal-tally.js), once, and
+// is credited to the mode locked at that move. Before that change it
+// counted every deal dealt (app launches included); those earlier totals
+// are kept as they are - never reset or reconstructed.
 export function emptyModeStats() {
   return { plays: 0, wins: 0, fastestTimeSeconds: null, fewestMoves: null, lastWin: null };
 }
@@ -124,8 +127,9 @@ export function recordWin(drawModeKey, elapsedSeconds, moveCount) {
 }
 
 // Loads, increments just this one mode's play count, saves, and returns the
-// updated slice. Called once per fresh deal (script.js's newGame()) -
-// independent of recordWin, since most plays never end in a win.
+// updated slice. Called once per deal, on its first committed move (see
+// deal-tally.js) - independent of recordWin, since most plays never end in
+// a win.
 export function recordPlay(drawModeKey) {
   const fullStats = loadStats();
   const updated = incrementPlays(fullStats[drawModeKey]);

@@ -1073,6 +1073,15 @@ body.tableau-inspecting #tableau .column {
   margin: 0 0 10px;
 }
 
+/* Deal Style's "Applies to your next deal" (see renderSettingsPanel) -
+   caption styling, sitting under the options instead of above them. */
+.settings-section-note {
+  color: #9fb3ac;
+  font-size: 13px;
+  line-height: 1.4;
+  margin: 8px 0 0;
+}
+
 .settings-options {
   display: flex;
   flex-wrap: wrap;
@@ -1408,6 +1417,45 @@ body.tableau-inspecting #tableau .column {
    see that class's own comment) - no separate spacing rule needed. */
 #testing-rows { margin-top: 4px; }
 
+/* Today block (see today.js) - above the mode toggle, set apart from the
+   lifetime per-mode rows below by a hairline, using the same row styling. */
+#stats-today {
+  margin-bottom: 20px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid rgba(255,255,255,0.12);
+}
+#stats-today-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.stats-today-title {
+  margin: 0;
+  color: #cde;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+#statsTodayStatus {
+  margin: 0;
+  color: #f3ead2;
+  font-size: 14px;
+  font-weight: 600;
+}
+/* Games and Wins side by side - two small numbers don't need two full rows. */
+#stats-today-rows {
+  display: flex;
+  gap: 24px;
+}
+#stats-today-rows .stats-row + .stats-row {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
 #stats-mode-toggle {
   display: flex;
   gap: 10px;
@@ -1421,6 +1469,16 @@ body.tableau-inspecting #tableau .column {
   height: auto;
   flex: 1;
   padding: 10px 0;
+  /* Plain button text (no .settings-option-label span here) inherited the
+     browser's near-black default against #stats-card's dark teal. Same
+     light/gold label treatment as Settings' own text and stack options. */
+  color: #cde;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+#stats-mode-toggle .settings-option--stack.selected {
+  color: var(--gold);
 }
 
 .stats-row + .stats-row {
@@ -1498,6 +1556,20 @@ body.tableau-inspecting #tableau .column {
   font-size: 14px;
   text-shadow: 0 1px 6px rgba(0,0,0,0.4);
 }
+
+/* Today (see today.js): directly under winHeadline, pulled close to it the
+   same way #winPlaysLine is, and a touch warmer/larger than that plain count
+   but still clearly secondary - a quiet acknowledgement, never a second
+   headline. #winPlaysLine's own -9px then tucks it under this line. */
+#winTodayLine {
+  margin: 0;
+  margin-top: -9px;
+  color: rgba(243,234,210,0.9);
+  font-size: 15px;
+  font-weight: 600;
+  text-shadow: 0 1px 6px rgba(0,0,0,0.4);
+}
+#winTodayLine.hidden { display: none; }
 
 /* The two record lines sit close together as one visual unit (tight own
    gap), separate from #win-message's own 18px gap around the whole group. */
